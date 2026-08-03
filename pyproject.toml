@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coded"
+version = "0.1.0"
+description = "A Claude Code-style terminal coding agent that works with any OpenAI-compatible model."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "coded contributors" }]
+keywords = ["ai", "agent", "cli", "coding-assistant", "openai", "llm", "mcp"]
+
+dependencies = [
+    "openai>=1.30",
+    "rich>=13.0",
+    "prompt_toolkit>=3.0",
+]
+
+[project.optional-dependencies]
+# MCP (Model Context Protocol) client support is optional; the app runs without it.
+mcp = ["mcp>=1.0"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+coded = "coded.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/krishnavams/coded"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["coded*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

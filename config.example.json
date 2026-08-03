@@ -1,0 +1,46 @@
+{
+  "default_model": "gpt-4o",
+  "models": {
+    "gpt-4o": {
+      "provider": "openai",
+      "model": "gpt-4o",
+      "max_tokens": 4096,
+      "input_cost": 2.5,
+      "output_cost": 10.0
+    },
+    "gpt-4o-mini": {
+      "provider": "openai",
+      "model": "gpt-4o-mini",
+      "input_cost": 0.15,
+      "output_cost": 0.6
+    },
+    "llama-groq": {
+      "provider": "groq",
+      "model": "llama-3.3-70b-versatile"
+    },
+    "deepseek": {
+      "provider": "deepseek",
+      "model": "deepseek-chat"
+    },
+    "qwen-local": {
+      "provider": "ollama",
+      "model": "qwen2.5-coder:7b"
+    },
+    "custom-endpoint": {
+      "provider": "openai-compatible",
+      "model": "my-model-id",
+      "base_url": "http://localhost:8000/v1",
+      "api_key_env": "MY_API_KEY"
+    }
+  },
+  "mcp_servers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "enabled": false
+    }
+  },
+  "auto_approve": false,
+  "max_turns": 100,
+  "stream": true
+}

@@ -2,86 +2,163 @@
 
 Guidance for Claude Code (and other AI assistants) working in this repository.
 
-> **Status: empty repository.** As of this file's creation, `krishnavams/coded`
-> contains no source code, build tooling, or history. This document is a
-> scaffold — a set of sections to fill in as the project takes shape. When you
-> add real code, replace the placeholder guidance below with concrete facts
-> (actual commands, real directory names, verified conventions). Do not leave
-> invented details in place.
-
-## How to keep this file accurate
-
-When updating this file, prefer facts you can verify from the repository over
-assumptions:
-
-- **Commands**: only document build/test/lint commands that actually exist
-  (check `package.json` scripts, `Makefile`, `pyproject.toml`, etc.).
-- **Structure**: describe directories that are actually present.
-- **Conventions**: derive them from existing code, linter configs, and
-  formatter settings rather than stating generic best practices.
-
-If a section does not yet apply, leave its heading with a short "not yet
-established" note so the structure is preserved for later.
-
 ## Project overview
 
-_Not yet established._ Describe what this project does, who it's for, and the
-core problem it solves once there is code to describe.
+**coded** is a Claude Code-style terminal coding agent, written in Python, that
+works with any **OpenAI-compatible** chat-completions endpoint. It runs an
+agentic tool loop (read/write/edit files, search, run shell commands, spawn
+sub-agents) in an interactive REPL, supports multiple configurable models, a
+permission layer for risky actions, and an optional MCP client. See
+[`README.md`](./README.md) for user-facing docs.
 
 ## Tech stack
 
-_Not yet established._ Record the language(s), framework(s), runtime versions,
-and package manager once chosen (e.g. from `package.json`, `go.mod`,
-`requirements.txt`, `Cargo.toml`).
+- **Language**: Python 3.10+
+- **LLM access**: [`openai`](https://pypi.org/project/openai/) SDK, pointed at
+  any OpenAI-compatible `base_url`. There is no hard dependency on OpenAI the
+  company — the same client talks to Groq, Ollama, llama.cpp, etc.
+- **Terminal UI**: [`rich`](https://pypi.org/project/rich/) (Markdown rendering,
+  tables, live streaming) and [`prompt_toolkit`](https://pypi.org/project/prompt-toolkit/)
+  (REPL input, history, completion).
+- **MCP** (optional): [`mcp`](https://pypi.org/project/mcp/) — guarded import;
+  the app runs fine without it.
+- **Tests**: `pytest`.
+- Packaging via `pyproject.toml` (setuptools). Console script: `coded`.
 
 ## Repository structure
 
-_Not yet established._ Map the top-level directories and what lives in each once
-the layout exists. Example format to fill in later:
+```
+coded/
+├── __init__.py         # version
+├── __main__.py         # `python -m coded`
+├── cli.py              # argparse entry point, subcommand dispatch, wiring
+├── config.py           # Config/ModelConfig, provider presets, layered loading
+├── llm.py              # LLMClient: OpenAI-compatible streaming + tool calls
+├── agent.py            # Agent: the agentic loop; sub-agent spawning
+├── session.py          # Session: message history + usage/cost tracking
+├── permissions.py      # PermissionManager: approve/deny/always gate
+├── prompts.py          # system prompt construction (+ project CODED.md/CLAUDE.md)
+├── repl.py             # interactive REPL and slash commands
+├── ui.py               # rich-based rendering helpers (single Console)
+├── mcp_client.py       # optional MCP stdio client (background asyncio loop)
+└── tools/
+    ├── __init__.py     # build_registry(): assembles the tool suite
+    ├── base.py         # Tool, ToolResult, ToolContext, ToolRegistry
+    ├── files.py        # read, write, edit, ls
+    ├── search.py       # glob, grep
+    ├── shell.py        # bash
+    ├── task.py         # task (sub-agent delegation)
+    └── mcp_tool.py     # wraps an MCP server tool as a coded Tool
+tests/
+├── conftest.py         # FakeServer: fake OpenAI-compatible HTTP server
+├── test_agent_e2e.py   # full agent loop (tool call, streaming, permission)
+└── test_tools.py       # tool + config unit tests
+config.example.json     # sample configuration
+```
 
-```
-src/        # application source
-tests/      # test suite
-...
-```
+## How it fits together
+
+1. `cli.main()` parses args, loads `Config`, selects a `ModelConfig`, starts MCP
+   (if configured), and builds an `Agent` via `agent.create_agent()`.
+2. `Repl` (interactive) or `_run_print_mode` (one-shot) drives the agent.
+3. `Agent.run(user_message)` appends to the `Session` and runs `_loop()`:
+   call the model (`LLMClient.complete`) → if the response has `tool_calls`,
+   execute each tool (through the permission gate) and append results → repeat
+   until the model returns text with no tool calls, or `max_turns` is hit.
+4. Tools implement `Tool.run(args, ctx) -> ToolResult`. `ToolContext` carries the
+   cwd, the `PermissionManager`, the `Config`, and a `spawn_subagent` callable.
+5. The `task` tool calls `spawn_subagent`, which builds a fresh `Agent` with a
+   separate `Session` and a registry **without** the task tool (no infinite
+   recursion), runs it non-interactively, and rolls usage back up to the parent.
+
+## Key conventions
+
+- **Adding a tool**: subclass `Tool` in `coded/tools/`, set `name`,
+  `description`, `parameters` (JSON Schema), and implement `run()`. Register it
+  in `tools/__init__.build_registry()`. Set `requires_permission = True` for
+  anything that mutates the filesystem or runs commands, and override
+  `permission_detail()` to describe the action shown in the approval prompt.
+- **Tools must never raise into the loop**: return `ToolResult.error(...)` for
+  expected failures. `Agent._run_tool` also catches unexpected exceptions and
+  feeds them back to the model as text, so the agent can recover.
+- **Return text, not exceptions, to the model.** Error strings should tell the
+  model what to do differently.
+- **Adding a provider**: add an entry to `PROVIDERS` in `config.py` (base URL +
+  API-key env var). Models reference it via `"provider": "<name>"`.
+- **UI**: use the helpers in `coded/ui.py` and its single shared `console`.
+  Displayed tool output is truncated for readability; the **model** always
+  receives the full tool result (truncation is display-only).
+- **Streaming**: `LLMClient._stream` accumulates text and tool-call deltas.
+  `stream_options={"include_usage": true}` is requested but retried without it
+  if the endpoint rejects it — keep this graceful-degradation habit for
+  endpoints that implement only part of the OpenAI API.
+- **Config is layered**: presets → user file → project file → CLI flags. Don't
+  hard-code paths or keys; go through `config.py`.
+- Follow the style already in the code: type hints, `from __future__ import
+  annotations`, dataclasses for state, concise docstrings, minimal inline
+  comments (only where they add real value).
 
 ## Development workflow
 
 ### Setup
 
-_Not yet established._ Document how to install dependencies and prepare a local
-environment.
+```bash
+pip install -e '.[dev]'        # editable install + pytest
+pip install -e '.[mcp]'        # add MCP support
+```
 
-### Build
+### Run
 
-_Not yet established._ Document the build command(s).
+```bash
+coded                          # REPL (needs a model configured or OPENAI_API_KEY)
+coded -p "..."                 # one-shot
+python -m coded                # equivalent entry point
+```
+
+To try it without real API keys, point `--base-url` at a local server, or see
+the fake server in `tests/conftest.py`.
 
 ### Test
 
-_Not yet established._ Document how to run the test suite (and a single test)
-once tests exist.
+```bash
+pytest                         # full suite
+pytest tests/test_tools.py -q  # just the unit tests
+```
+
+Tests are **offline**: `tests/conftest.py` starts an in-process fake
+OpenAI-compatible server, so the end-to-end tests exercise the real `openai`
+SDK and the full agent loop without network access. When adding features,
+prefer extending this fake-server approach over mocking internals.
 
 ### Lint / format
 
-_Not yet established._ Document linting and formatting commands and the tools
-they use.
+_No linter/formatter is configured yet._ Match the surrounding style. If you add
+one (e.g. `ruff`, `black`), record the commands here.
 
-## Coding conventions
+## Gotchas
 
-_Not yet established._ Capture naming, style, error-handling, and structural
-conventions once patterns emerge in the code. Match the style of surrounding
-code when making changes.
+- **argparse + free-form prompt**: the top-level parser has a `nargs="*"`
+  positional `prompt`, which conflicts with argparse subparsers. Subcommands
+  (`config`, `models`) are therefore dispatched manually by the first token in
+  `cli.main()` — keep new subcommands on that path, not on `add_subparsers`.
+- **MCP runs on a background thread** with its own asyncio loop
+  (`mcp_client.MCPManager`); calls into it are made with
+  `run_coroutine_threadsafe`. Always `stop()` it (the CLI does so in a
+  `finally`).
+- **Permission default is deny** when non-interactive and not `--yolo`. Don't
+  change this to "allow" — it's the safe default that keeps `--print` mode from
+  running shell commands unattended.
 
 ## Git & branching
 
-- The default working branch for AI-assisted changes in this session is
+- Development branch for AI-assisted changes in this session:
   `claude/claude-md-docs-n4n6zc`.
-- Use clear, descriptive commit messages.
-- Do not open a pull request unless explicitly asked.
+- Clear, descriptive commit messages. Do not open a pull request unless asked.
+- Never commit real API keys. Project-level config lives in `./.coded/`, which
+  is gitignored.
 
-## Notes for AI assistants
+## Keeping this file accurate
 
-- This repository currently has no code. Before claiming any command,
-  dependency, or convention exists, verify it against the actual files.
-- Keep this file in sync with reality: update it whenever the project's
-  structure, tooling, or conventions change.
+Update this file whenever the structure, tooling, tool suite, config schema, or
+conventions change. Verify commands and paths against the actual repository
+before documenting them.
