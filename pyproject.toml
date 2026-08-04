@@ -33,5 +33,8 @@ Homepage = "https://github.com/krishnavams/coded"
 where = ["."]
 include = ["coded*"]
 
+[tool.setuptools.package-data]
+coded = ["builtin_skills/*/SKILL.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

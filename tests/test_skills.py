@@ -71,6 +71,23 @@ def test_skill_tool_loads_body(tmp_path):
     assert missing.is_error and "Unknown skill" in missing.content
 
 
+def test_builtin_role_skills_available(tmp_path):
+    """The bundled planner/reviewer/qa/security roles are always discovered."""
+    skills = discover_skills(str(tmp_path))
+    for role in ("planner", "reviewer", "qa", "security"):
+        assert role in skills, role
+        assert skills[role].description
+        assert skills[role].load_body().strip()
+
+
+def test_project_skill_overrides_builtin(tmp_path):
+    """A project skill with a built-in's name shadows the built-in."""
+    _write_skill(tmp_path, "planner", "custom project planner", "# custom body")
+    skills = discover_skills(str(tmp_path))
+    assert skills["planner"].description == "custom project planner"
+    assert "custom body" in skills["planner"].load_body()
+
+
 def test_agent_registers_skill_tool_and_injects_prompt(tmp_path):
     _write_skill(tmp_path, "greeter", "Say hi.", "# Greeter")
     skills = discover_skills(str(tmp_path))

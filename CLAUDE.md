@@ -41,6 +41,7 @@ coded/
 ├── repl.py             # interactive REPL and slash commands
 ├── ui.py               # rich-based rendering helpers (single Console)
 ├── skills.py           # skill discovery, frontmatter parsing, prompt section
+├── builtin_skills/     # bundled agent roles: planner, reviewer, qa, security
 ├── checkpoints.py      # CheckpointManager: per-turn file snapshots for /undo
 ├── embeddings.py       # EmbeddingClient + embedding-model resolution
 ├── index.py            # CodeIndex: chunk/embed/store + cosine search
@@ -86,13 +87,16 @@ config.example.json     # sample configuration
 5. The `task` tool calls `spawn_subagent`, which builds a fresh `Agent` with a
    separate `Session` and a registry **without** the task tool (no infinite
    recursion), runs it non-interactively, and rolls usage back up to the parent.
-6. **Skills** (`skills.py`): `discover_skills(cwd)` scans `~/.config/coded/skills/`
-   and `./.coded/skills/` for `<name>/SKILL.md`. `create_agent` injects each
-   skill's name+description into the system prompt (level 1) and registers the
-   `skill` tool, which loads a skill's full body on demand (level 2). Bundled
-   files are reached with the normal read/bash tools (level 3). Sub-agents run
-   without skills. Frontmatter is parsed by a tiny built-in YAML subset (no
-   pyyaml dependency) — scalars, inline `[a, b]`, and block lists only.
+6. **Skills** (`skills.py`): `discover_skills(cwd)` scans three locations —
+   `coded/builtin_skills/` (bundled roles), `~/.config/coded/skills/`, and
+   `./.coded/skills/` — for `<name>/SKILL.md`; a later location overrides an
+   earlier one by name (so a project `planner` shadows the built-in). `create_agent`
+   injects each skill's name+description into the system prompt (level 1) and
+   registers the `skill` tool, which loads a skill's full body on demand (level 2).
+   Bundled files are reached with the normal read/bash tools (level 3). Sub-agents
+   run without skills. Frontmatter is parsed by a tiny built-in YAML subset (no
+   pyyaml dependency) — scalars, inline `[a, b]`, and block lists only. Built-in
+   role skills (`builtin_skills/`) ship via `[tool.setuptools.package-data]`.
 
 ## Key conventions
 
@@ -122,7 +126,9 @@ config.example.json     # sample configuration
 - **Adding a skill** (docs/instruction pack, not code): create
   `./.coded/skills/<name>/SKILL.md` with `name` + `description` frontmatter. The
   `description` drives auto-invocation — say what it does and *when* to use it.
-  See `examples/skills/`. No code changes needed.
+  See `examples/skills/`. No code changes needed. A skill shipped with the tool
+  goes in `coded/builtin_skills/<name>/SKILL.md` (e.g. the planner/reviewer/qa/
+  security roles) and must be covered by the `package-data` glob in pyproject.
 - **Adding a provider**: add an entry to `PROVIDERS` in `config.py` (base URL +
   API-key env var). Models reference it via `"provider": "<name>"`. Add local /
   keyless providers to `LOCAL_PROVIDERS` too. A model may instead be defined by

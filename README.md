@@ -43,8 +43,9 @@ runtime.
   history, tab-completion.
 - **Sub-agents** — the `task` tool spawns a focused agent with its own context
   for large searches or multi-step subtasks.
-- **Skills** — Claude Code-style `SKILL.md` instruction packs with progressive
-  disclosure; the agent auto-invokes them when a task matches.
+- **Skills & agent roles** — Claude Code-style `SKILL.md` instruction packs with
+  progressive disclosure; the agent auto-invokes them when a task matches.
+  Ships with built-in `planner`, `reviewer`, `qa`, and `security` roles.
 - **MCP client** — connect Model Context Protocol servers and expose their tools
   to the agent (optional).
 - **Cost tracking** — `/cost` shows token usage and an estimated dollar cost.
@@ -289,11 +290,27 @@ Skills are Claude Code-style instruction packs: a directory with a `SKILL.md`
 3. The body can point to other files/scripts in the skill folder, which the agent
    reads with `read` or runs with `bash`.
 
-Discovery locations (project overrides user on name clash):
+**Built-in role skills.** coded ships with ready-made agent roles that are always
+available: **`planner`** (turn a task into an ordered plan), **`reviewer`**
+(review a diff for bugs/quality), **`qa`** (write and run tests), and
+**`security`** (audit for vulnerabilities). The agent invokes them automatically
+when a task matches, or you can run one directly:
 
 ```
-./.coded/skills/<name>/SKILL.md          # project-local
-~/.config/coded/skills/<name>/SKILL.md   # user-global
+/skill planner add rate limiting to the API
+/skill reviewer            # reviews your current git diff
+```
+
+They're written to use the `task` sub-agent tool for isolated work, so a review
+or investigation doesn't clutter the main conversation.
+
+Discovery locations (a later location overrides an earlier one on name clash, so
+your own `planner` shadows the built-in):
+
+```
+<package>/builtin_skills/<name>/SKILL.md  # bundled roles (lowest priority)
+~/.config/coded/skills/<name>/SKILL.md    # user-global
+./.coded/skills/<name>/SKILL.md           # project-local (highest priority)
 ```
 
 Try the bundled example:

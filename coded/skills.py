@@ -101,15 +101,23 @@ class Skill:
         return body
 
 
+def builtin_skills_dir() -> Path:
+    """Role skills bundled with the package (planner, reviewer, qa, security)."""
+    return Path(__file__).resolve().parent / "builtin_skills"
+
+
 def skill_search_dirs(cwd: str) -> List[Path]:
+    # Order matters: later dirs override earlier ones by skill name, so a
+    # user/project skill can shadow a built-in role of the same name.
     return [
-        user_config_path().parent / "skills",   # ~/.config/coded/skills
+        builtin_skills_dir(),                    # bundled roles
+        user_config_path().parent / "skills",    # ~/.config/coded/skills
         Path(cwd) / ".coded" / "skills",         # project-local
     ]
 
 
 def discover_skills(cwd: str) -> Dict[str, Skill]:
-    """Find all skills. Project skills override user skills with the same name."""
+    """Find all skills. User/project skills override built-ins of the same name."""
     skills: Dict[str, Skill] = {}
     for base in skill_search_dirs(cwd):
         if not base.is_dir():
