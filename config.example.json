@@ -227,6 +227,19 @@
       "context_window": 32768,
       "max_tokens": 4096,
       "supports_tools": true
+    },
+    "corp-internal": {
+      "provider": "openai-compatible",
+      "model": "internal-llm",
+      "base_url": "https://llm.internal/v1",
+      "api_key_env": "INTERNAL_API_KEY",
+      "ca_bundle": "/etc/ssl/corp-ca.pem"
+    },
+    "self-signed": {
+      "provider": "openai-compatible",
+      "model": "local-llm",
+      "base_url": "https://192.168.1.5/v1",
+      "verify_ssl": false
     }
   },
 

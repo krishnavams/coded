@@ -79,6 +79,10 @@ class ModelConfig:
     supports_tools: bool = True
     # Vision-capable models accept image parts in user messages.
     supports_vision: bool = False
+    # TLS: verify the server certificate (set False for self-signed, insecure).
+    verify_ssl: bool = True
+    # Path to a custom CA cert/bundle (PEM) to trust for this endpoint.
+    ca_bundle: Optional[str] = None
 
     def resolved_base_url(self) -> str:
         if self.base_url:
@@ -112,6 +116,20 @@ class ModelConfig:
             f"No API key for model '{self.name}'. Set the '{env_name}' environment "
             f"variable, or add 'api_key' to its config entry."
         )
+
+    def ssl_verify(self):
+        """Value to pass to httpx `verify=`: a CA-bundle path, or a bool.
+
+        Precedence: explicit ca_bundle → $CODED_CA_BUNDLE (when verifying) →
+        verify_ssl flag. Returning False disables verification (insecure).
+        """
+        if self.ca_bundle:
+            return os.path.expanduser(self.ca_bundle)
+        if self.verify_ssl:
+            env = os.environ.get("CODED_CA_BUNDLE")
+            if env:
+                return os.path.expanduser(env)
+        return self.verify_ssl
 
     @classmethod
     def from_dict(cls, name: str, data: Dict[str, Any]) -> "ModelConfig":

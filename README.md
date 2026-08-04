@@ -176,6 +176,35 @@ Each entry under `models` accepts:
 
 \* Instead of `provider`, you may set `base_url` + `api_key`/`api_key_env` directly.
 
+| `verify_ssl` | no | Set `false` to disable TLS certificate verification (insecure; self-signed endpoints). |
+| `ca_bundle` | no | Path to a custom CA cert/bundle (PEM) to trust for this endpoint. |
+
+### Self-signed / custom-CA endpoints (TLS)
+
+If your OpenAI-compatible endpoint uses a private CA or a self-signed
+certificate, either **trust a CA bundle** (recommended) or **disable
+verification** (insecure). Per model in config:
+
+```json
+{
+  "models": {
+    "corp":   { "base_url": "https://llm.internal/v1", "model": "x", "ca_bundle": "/etc/ssl/corp-ca.pem" },
+    "selfsigned": { "base_url": "https://192.168.1.5/v1", "model": "x", "verify_ssl": false }
+  }
+}
+```
+
+Or from the CLI for a one-off:
+
+```bash
+coded --base-url https://llm.internal/v1 --model-name x --ca-bundle /etc/ssl/corp-ca.pem
+coded --base-url https://192.168.1.5/v1  --model-name x --insecure   # skips verification (insecure)
+```
+
+`--ca-bundle` / `--insecure` also work on `coded review` and `coded commit`, and
+a `CODED_CA_BUNDLE` environment variable is used as a default CA bundle when set.
+Disabling verification prints an insecure-connection warning.
+
 ### Built-in provider presets
 
 `openai`, `anthropic`, `google` (Gemini), `openrouter`, `groq`, `together`,

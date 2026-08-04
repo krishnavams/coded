@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+import httpx
 from openai import OpenAI
 
 from coded.config import ModelConfig
@@ -37,16 +38,24 @@ class Completion:
     finish_reason: Optional[str] = None
 
 
+def build_openai_client(model: ModelConfig) -> OpenAI:
+    """Construct an OpenAI client honoring the model's TLS settings."""
+    verify = model.ssl_verify()
+    http_client = httpx.Client(verify=verify)
+    return OpenAI(
+        base_url=model.resolved_base_url(),
+        api_key=model.resolved_api_key(),
+        default_headers=model.extra_headers or None,
+        http_client=http_client,
+    )
+
+
 class LLMClient:
     """Thin wrapper over the OpenAI SDK pointed at any compatible endpoint."""
 
     def __init__(self, model: ModelConfig):
         self.model = model
-        self.client = OpenAI(
-            base_url=model.resolved_base_url(),
-            api_key=model.resolved_api_key(),
-            default_headers=model.extra_headers or None,
-        )
+        self.client = build_openai_client(model)
 
     def complete(
         self,

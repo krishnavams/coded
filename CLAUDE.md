@@ -149,8 +149,14 @@ config.example.json     # sample configuration
   a placeholder key so keyless endpoints work without config.
 - **Model config fields** live on `ModelConfig`: `context_window`, `max_tokens`,
   `temperature`, `input_cost`/`output_cost` (per Mtok, used by `/cost`),
-  `supports_tools`, `extra_headers`. `config.example.json` is the catalogue and
-  is validated by a test — keep it parseable and every model resolvable.
+  `supports_tools`, `supports_vision`, `extra_headers`, and TLS (`verify_ssl`,
+  `ca_bundle`). `config.example.json` is the catalogue and is validated by a
+  test — keep it parseable and every model resolvable.
+- **TLS**: both the LLM and embedding clients are built by `llm.build_openai_client`,
+  which passes an `httpx.Client(verify=model.ssl_verify())` to the OpenAI SDK.
+  `ssl_verify()` resolves `ca_bundle` → `$CODED_CA_BUNDLE` → `verify_ssl`. The
+  `--ca-bundle`/`--insecure` CLI flags override the selected model; disabling
+  verification warns. Route new endpoint clients through this helper.
 - **UI**: use the helpers in `coded/ui.py` and its single shared `console`.
   Displayed tool output is truncated for readability; the **model** always
   receives the full tool result (truncation is display-only).

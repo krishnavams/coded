@@ -10,9 +10,8 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from openai import OpenAI
-
 from coded.config import Config, ConfigError, ModelConfig
+from coded.llm import build_openai_client
 
 # Reasonable default embedding model ids per provider.
 _DEFAULT_EMBED = {
@@ -53,11 +52,7 @@ def resolve_embedding_model(config: Config, active: Optional[ModelConfig] = None
 class EmbeddingClient:
     def __init__(self, model: ModelConfig):
         self.model = model
-        self.client = OpenAI(
-            base_url=model.resolved_base_url(),
-            api_key=model.resolved_api_key(),
-            default_headers=model.extra_headers or None,
-        )
+        self.client = build_openai_client(model)
 
     def embed(self, texts: List[str]) -> List[List[float]]:
         resp = self.client.embeddings.create(model=self.model.model, input=texts)

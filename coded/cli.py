@@ -65,6 +65,11 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--api-key", help="API key for the endpoint.")
     g.add_argument("--model-name", help="Concrete API model id, e.g. gpt-4o or llama-3.3-70b.")
     g.add_argument("--provider", help="Provider preset name (openai, groq, ollama, ...).")
+
+    tls = p.add_argument_group("TLS / certificates")
+    tls.add_argument("--ca-bundle", help="Path to a CA cert bundle (PEM) to trust for the endpoint.")
+    tls.add_argument("--insecure", action="store_true",
+                     help="Disable TLS certificate verification (insecure; self-signed endpoints).")
     return p
 
 
@@ -100,6 +105,17 @@ def _apply_overrides(cfg: Config, args: argparse.Namespace) -> None:
 
 def _select_model(cfg: Config, name: Optional[str]) -> ModelConfig:
     return cfg.get_model(name)
+
+
+def _apply_tls_overrides(model: ModelConfig, args: argparse.Namespace) -> None:
+    """Apply --ca-bundle / --insecure to the selected model and warn if insecure."""
+    if getattr(args, "ca_bundle", None):
+        model.ca_bundle = args.ca_bundle
+    if getattr(args, "insecure", False):
+        model.verify_ssl = False
+    if not model.verify_ssl:
+        ui.warn(f"TLS certificate verification is DISABLED for model "
+                f"'{model.name}' — the connection is insecure.")
 
 
 def _init_mcp(cfg: Config, disabled: bool):
@@ -213,6 +229,8 @@ def _handle_commit_command(argv: List[str]) -> int:
     p.add_argument("--api-key", help="Ad-hoc API key.")
     p.add_argument("--model-name", help="Ad-hoc model id.")
     p.add_argument("--provider", help="Ad-hoc provider.")
+    p.add_argument("--ca-bundle", help="CA cert bundle (PEM) to trust.")
+    p.add_argument("--insecure", action="store_true", help="Disable TLS verification (insecure).")
     args = p.parse_args(argv)
 
     cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
@@ -227,6 +245,7 @@ def _handle_commit_command(argv: List[str]) -> int:
     except ConfigError as exc:
         ui.error(str(exc))
         return 2
+    _apply_tls_overrides(model, args)
 
     from coded.skills import discover_skills
 
@@ -287,6 +306,8 @@ def _handle_review_command(argv: List[str]) -> int:
     p.add_argument("--api-key", help="Ad-hoc API key.")
     p.add_argument("--model-name", help="Ad-hoc concrete model id.")
     p.add_argument("--provider", help="Ad-hoc provider preset.")
+    p.add_argument("--ca-bundle", help="CA cert bundle (PEM) to trust.")
+    p.add_argument("--insecure", action="store_true", help="Disable TLS verification (insecure).")
     args = p.parse_args(argv)
 
     cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
@@ -301,6 +322,7 @@ def _handle_review_command(argv: List[str]) -> int:
     except ConfigError as exc:
         ui.error(str(exc))
         return 2
+    _apply_tls_overrides(model, args)
 
     from coded.review import NEEDS_CHANGES, UNKNOWN, run_review, synthesize_verdict
     from coded.skills import discover_skills
@@ -381,6 +403,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         ui.info("Tip: `coded config init` to create a config, or pass "
                 "--base-url/--api-key/--model-name for a one-off endpoint.")
         return 1
+
+    _apply_tls_overrides(model, args)
 
     permissions = PermissionManager(auto_approve=cfg.auto_approve, rules=cfg.permissions)
     mcp_manager, extra_tools = _init_mcp(cfg, disabled=args.no_mcp)
