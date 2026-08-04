@@ -34,6 +34,8 @@ runtime.
   history, tab-completion.
 - **Sub-agents** — the `task` tool spawns a focused agent with its own context
   for large searches or multi-step subtasks.
+- **Skills** — Claude Code-style `SKILL.md` instruction packs with progressive
+  disclosure; the agent auto-invokes them when a task matches.
 - **MCP client** — connect Model Context Protocol servers and expose their tools
   to the agent (optional).
 - **Cost tracking** — `/cost` shows token usage and an estimated dollar cost.
@@ -186,6 +188,8 @@ coded models                   # list configured models
 | `/model [name]` | Show or switch the active model |
 | `/models` | List configured models |
 | `/tools` | List available tools |
+| `/skills` | List available skills |
+| `/skill <name> [task]` | Invoke a skill now |
 | `/cost` | Token usage and estimated cost |
 | `/clear`, `/reset` | Clear the conversation |
 | `/config` | Show loaded config files / MCP servers |
@@ -198,6 +202,49 @@ ask before running. Answer `y` (once), `a` (always, for this session), or `n`
 (deny). Use `--yolo` / `--auto-approve` to skip prompts, or set
 `"auto_approve": true` in config. In non-interactive `--print` mode with no
 auto-approve, such actions are denied by default (safe).
+
+### Skills
+
+Skills are Claude Code-style instruction packs: a directory with a `SKILL.md`
+(YAML frontmatter + Markdown body), loaded with **progressive disclosure**.
+
+1. **At startup**, only each skill's `name` + `description` goes into the system
+   prompt (cheap), so the model knows what exists and when to use it.
+2. When a task matches, the model calls the `skill` tool (or you run
+   `/skill <name>`), which loads the **full** `SKILL.md` body into the conversation.
+3. The body can point to other files/scripts in the skill folder, which the agent
+   reads with `read` or runs with `bash`.
+
+Discovery locations (project overrides user on name clash):
+
+```
+./.coded/skills/<name>/SKILL.md          # project-local
+~/.config/coded/skills/<name>/SKILL.md   # user-global
+```
+
+Try the bundled example:
+
+```bash
+mkdir -p .coded/skills
+cp -r examples/skills/conventional-commit .coded/skills/
+coded            # then: /skills
+```
+
+A minimal `SKILL.md`:
+
+```markdown
+---
+name: my-skill
+description: What it does, and WHEN to use it (this drives auto-invocation).
+allowed-tools: read, edit, bash
+---
+
+# My skill
+Step-by-step instructions the agent follows once the skill is invoked…
+```
+
+See [`examples/skills/`](./examples/skills/) for a working example and a guide.
+Use `--no-skills` to disable discovery for a run.
 
 ### MCP servers
 

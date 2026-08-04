@@ -40,6 +40,7 @@ coded/
 ├── prompts.py          # system prompt construction (+ project CODED.md/CLAUDE.md)
 ├── repl.py             # interactive REPL and slash commands
 ├── ui.py               # rich-based rendering helpers (single Console)
+├── skills.py           # skill discovery, frontmatter parsing, prompt section
 ├── mcp_client.py       # optional MCP stdio client (background asyncio loop)
 └── tools/
     ├── __init__.py     # build_registry(): assembles the tool suite
@@ -48,11 +49,14 @@ coded/
     ├── search.py       # glob, grep
     ├── shell.py        # bash
     ├── task.py         # task (sub-agent delegation)
+    ├── skill.py        # skill (loads a SKILL.md body into context)
     └── mcp_tool.py     # wraps an MCP server tool as a coded Tool
 tests/
 ├── conftest.py         # FakeServer: fake OpenAI-compatible HTTP server
 ├── test_agent_e2e.py   # full agent loop (tool call, streaming, permission)
+├── test_skills.py      # skill discovery, frontmatter, skill tool
 └── test_tools.py       # tool + config unit tests
+examples/skills/        # example SKILL.md packs + install guide
 config.example.json     # sample configuration
 ```
 
@@ -70,6 +74,13 @@ config.example.json     # sample configuration
 5. The `task` tool calls `spawn_subagent`, which builds a fresh `Agent` with a
    separate `Session` and a registry **without** the task tool (no infinite
    recursion), runs it non-interactively, and rolls usage back up to the parent.
+6. **Skills** (`skills.py`): `discover_skills(cwd)` scans `~/.config/coded/skills/`
+   and `./.coded/skills/` for `<name>/SKILL.md`. `create_agent` injects each
+   skill's name+description into the system prompt (level 1) and registers the
+   `skill` tool, which loads a skill's full body on demand (level 2). Bundled
+   files are reached with the normal read/bash tools (level 3). Sub-agents run
+   without skills. Frontmatter is parsed by a tiny built-in YAML subset (no
+   pyyaml dependency) — scalars, inline `[a, b]`, and block lists only.
 
 ## Key conventions
 
@@ -83,6 +94,10 @@ config.example.json     # sample configuration
   feeds them back to the model as text, so the agent can recover.
 - **Return text, not exceptions, to the model.** Error strings should tell the
   model what to do differently.
+- **Adding a skill** (docs/instruction pack, not code): create
+  `./.coded/skills/<name>/SKILL.md` with `name` + `description` frontmatter. The
+  `description` drives auto-invocation — say what it does and *when* to use it.
+  See `examples/skills/`. No code changes needed.
 - **Adding a provider**: add an entry to `PROVIDERS` in `config.py` (base URL +
   API-key env var). Models reference it via `"provider": "<name>"`. Add local /
   keyless providers to `LOCAL_PROVIDERS` too. A model may instead be defined by

@@ -42,6 +42,7 @@ class Agent:
         self.llm = LLMClient(model)
         for t in extra_tools or []:
             self.registry.register(t)
+        self.skills: dict = {}
         self._interrupted = False
 
     # -- public API ---------------------------------------------------------
@@ -203,14 +204,25 @@ def create_agent(
     permissions: PermissionManager,
     system_extra: Optional[str] = None,
     extra_tools: Optional[list] = None,
+    skills: Optional[dict] = None,
     stream: bool = True,
     verbose: bool = True,
 ) -> Agent:
     """Convenience constructor wiring together a fresh top-level agent."""
-    system_prompt = build_system_prompt(cwd, extra=system_extra)
+    from coded.skills import skills_prompt_section
+    from coded.tools.skill import SkillTool
+
+    skills = skills or {}
+    section = skills_prompt_section(skills)
+    combined = "\n\n".join(x for x in (system_extra, section) if x) or None
+
+    system_prompt = build_system_prompt(cwd, extra=combined)
     session = Session(system_prompt=system_prompt)
     registry = build_registry(include_task=True)
-    return Agent(
+    if skills:
+        registry.register(SkillTool(skills))
+
+    agent = Agent(
         model=model,
         config=config,
         registry=registry,
@@ -221,3 +233,5 @@ def create_agent(
         verbose=verbose,
         extra_tools=extra_tools,
     )
+    agent.skills = skills
+    return agent

@@ -47,6 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--system", help="Extra system-prompt instructions to append.")
     p.add_argument("--max-turns", type=int, help="Cap on agent tool-loop iterations.")
     p.add_argument("--no-mcp", action="store_true", help="Disable MCP servers for this run.")
+    p.add_argument("--no-skills", action="store_true", help="Disable skill discovery for this run.")
     p.add_argument("--version", action="version", version=f"coded {__version__}")
 
     # Ad-hoc model overrides (no config file needed).
@@ -187,6 +188,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     permissions = PermissionManager(auto_approve=cfg.auto_approve)
     mcp_manager, extra_tools = _init_mcp(cfg, disabled=args.no_mcp)
 
+    skills = {}
+    if not args.no_skills:
+        from coded.skills import discover_skills
+
+        skills = discover_skills(cwd)
+        if skills:
+            ui.info(f"Loaded {len(skills)} skill(s): {', '.join(skills)}")
+
     agent = create_agent(
         model=model,
         config=cfg,
@@ -194,6 +203,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         permissions=permissions,
         system_extra=args.system,
         extra_tools=extra_tools,
+        skills=skills,
         stream=cfg.stream,
         verbose=True,
     )

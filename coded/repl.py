@@ -19,6 +19,8 @@ SLASH_COMMANDS = {
     "/model": "Show or switch the active model: /model [name].",
     "/models": "List all configured models.",
     "/tools": "List available tools.",
+    "/skills": "List available skills.",
+    "/skill": "Invoke a skill now: /skill <name> [task].",
     "/cost": "Show token usage and estimated cost this session.",
     "/clear": "Clear conversation history (keep the system prompt).",
     "/reset": "Alias for /clear.",
@@ -37,7 +39,8 @@ class Repl:
     def __init__(self, agent: Agent, config: Config):
         self.agent = agent
         self.config = config
-        completer = WordCompleter(list(SLASH_COMMANDS) + list(config.models), sentence=True)
+        words = list(SLASH_COMMANDS) + list(config.models) + list(agent.skills)
+        completer = WordCompleter(words, sentence=True)
         self.prompt = PromptSession(
             history=FileHistory(str(_history_path())),
             completer=completer,
@@ -107,6 +110,10 @@ class Repl:
             self._cmd_model(args)
         elif cmd == "/tools":
             self._cmd_tools()
+        elif cmd == "/skills":
+            self._cmd_skills()
+        elif cmd == "/skill":
+            self._cmd_skill(args)
         elif cmd == "/cost":
             self._cmd_cost()
         elif cmd in ("/clear", "/reset"):
@@ -158,6 +165,42 @@ class Repl:
             desc = t.description.strip().splitlines()[0]
             table.add_row(t.name, perm, desc[:80])
         ui.console.print(table)
+
+    def _cmd_skills(self) -> None:
+        if not self.agent.skills:
+            ui.info("No skills found. Add them under ./.coded/skills/<name>/SKILL.md "
+                    "or ~/.config/coded/skills/<name>/SKILL.md.")
+            return
+        table = Table(title="Available skills")
+        table.add_column("skill", style="cyan")
+        table.add_column("description")
+        for name, s in self.agent.skills.items():
+            table.add_row(name, s.description or "(no description)")
+        ui.console.print(table)
+
+    def _cmd_skill(self, args) -> None:
+        if not args:
+            self._cmd_skills()
+            ui.info("Usage: /skill <name> [task]")
+            return
+        name = args[0]
+        if name not in self.agent.skills:
+            ui.error(f"Unknown skill '{name}'. Try /skills.")
+            return
+        skill = self.agent.skills[name]
+        try:
+            body = skill.load_body()
+        except OSError as exc:
+            ui.error(f"Could not read skill: {exc}")
+            return
+        task = " ".join(args[1:]).strip()
+        message = (
+            f"Apply the skill '{name}'. Its instructions are below; follow them"
+            + (f" for this task: {task}\n\n" if task else ".\n\n")
+            + f"---\n{body}"
+        )
+        ui.user_prefix()
+        self.agent.run(message)
 
     def _cmd_cost(self) -> None:
         u = self.agent.session.total_usage
