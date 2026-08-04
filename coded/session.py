@@ -23,6 +23,16 @@ class Session:
     def add_user(self, text: str) -> None:
         self.messages.append({"role": "user", "content": text})
 
+    def add_user_multimodal(self, text: str, image_paths: list) -> None:
+        """Add a user message with attached images (for vision-capable models)."""
+        from coded.images import encode_image_data_url
+
+        parts: list = [{"type": "text", "text": text}]
+        for path in image_paths:
+            url = encode_image_data_url(path)
+            parts.append({"type": "image_url", "image_url": {"url": url}})
+        self.messages.append({"role": "user", "content": parts})
+
     def add_assistant(self, content: str, tool_calls: list | None = None) -> None:
         msg: Dict[str, Any] = {"role": "assistant", "content": content or ""}
         if tool_calls:

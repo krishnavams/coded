@@ -77,6 +77,8 @@ class ModelConfig:
     extra_headers: Dict[str, str] = field(default_factory=dict)
     # Some smaller/older models do not support the ``tools`` parameter.
     supports_tools: bool = True
+    # Vision-capable models accept image parts in user messages.
+    supports_vision: bool = False
 
     def resolved_base_url(self) -> str:
         if self.base_url:
@@ -130,6 +132,11 @@ class Config:
     models: Dict[str, ModelConfig] = field(default_factory=dict)
     default_model: Optional[str] = None
     mcp_servers: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # Embedding model for semantic search: an inline dict, or an alias in `models`.
+    embedding: Optional[Dict[str, Any]] = None
+    embedding_model: Optional[str] = None
+    # Web-search backend config, e.g. {"backend": "tavily", "api_key": "..."}.
+    web_search: Optional[Dict[str, Any]] = None
     # Behaviour toggles.
     auto_approve: bool = False  # skip permission prompts (a.k.a. "yolo")
     max_turns: int = 100  # safety cap on agent tool-loop iterations
@@ -190,6 +197,12 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
         cfg.default_model = data["default_model"]
     for name, sdata in (data.get("mcp_servers") or {}).items():
         cfg.mcp_servers[name] = sdata
+    if data.get("embedding"):
+        cfg.embedding = data["embedding"]
+    if data.get("embedding_model"):
+        cfg.embedding_model = data["embedding_model"]
+    if data.get("web_search"):
+        cfg.web_search = data["web_search"]
     for key in ("auto_approve", "max_turns", "stream"):
         if key in data:
             setattr(cfg, key, data[key])

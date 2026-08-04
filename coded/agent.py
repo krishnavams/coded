@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional
 
 from rich.live import Live
 from rich.markdown import Markdown
@@ -30,6 +30,7 @@ class Agent:
         stream: bool = True,
         verbose: bool = True,
         extra_tools: Optional[list] = None,
+        checkpoints: Any = None,
     ):
         self.model = model
         self.config = config
@@ -39,6 +40,7 @@ class Agent:
         self.cwd = cwd
         self.stream = stream
         self.verbose = verbose
+        self.checkpoints = checkpoints
         self.llm = LLMClient(model)
         for t in extra_tools or []:
             self.registry.register(t)
@@ -46,9 +48,19 @@ class Agent:
         self._interrupted = False
 
     # -- public API ---------------------------------------------------------
-    def run(self, user_message: str) -> str:
-        """Run one user turn to completion. Returns the final assistant text."""
-        self.session.add_user(user_message)
+    def run(self, user_message: Any, images: Optional[list] = None) -> str:
+        """Run one user turn to completion. Returns the final assistant text.
+
+        `images` is an optional list of image file paths to attach (for
+        vision-capable models).
+        """
+        if self.checkpoints is not None:
+            label = user_message if isinstance(user_message, str) else "turn"
+            self.checkpoints.begin(str(label)[:60])
+        if images:
+            self.session.add_user_multimodal(str(user_message), images)
+        else:
+            self.session.add_user(user_message)
         return self._loop()
 
     def switch_model(self, model: ModelConfig) -> None:
@@ -150,6 +162,7 @@ class Agent:
             permissions=self.permissions,
             config=self.config,
             spawn_subagent=self._make_subagent_runner(),
+            checkpoints=self.checkpoints,
         )
         try:
             result = tool.run(args, ctx)
@@ -187,6 +200,7 @@ class Agent:
                 cwd=self.cwd,
                 stream=False,
                 verbose=False,
+                checkpoints=self.checkpoints,
             )
             result = sub_agent.run(prompt)
             # Roll the sub-agent's token usage up into the parent session.
@@ -207,8 +221,10 @@ def create_agent(
     skills: Optional[dict] = None,
     stream: bool = True,
     verbose: bool = True,
+    checkpoints: Any = None,
 ) -> Agent:
     """Convenience constructor wiring together a fresh top-level agent."""
+    from coded.checkpoints import CheckpointManager
     from coded.skills import skills_prompt_section
     from coded.tools.skill import SkillTool
 
@@ -222,6 +238,9 @@ def create_agent(
     if skills:
         registry.register(SkillTool(skills))
 
+    if checkpoints is None:
+        checkpoints = CheckpointManager(cwd)
+
     agent = Agent(
         model=model,
         config=config,
@@ -232,6 +251,7 @@ def create_agent(
         stream=stream,
         verbose=verbose,
         extra_tools=extra_tools,
+        checkpoints=checkpoints,
     )
     agent.skills = skills
     return agent

@@ -48,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-turns", type=int, help="Cap on agent tool-loop iterations.")
     p.add_argument("--no-mcp", action="store_true", help="Disable MCP servers for this run.")
     p.add_argument("--no-skills", action="store_true", help="Disable skill discovery for this run.")
+    p.add_argument("--image", action="append", metavar="PATH",
+                   help="Attach an image to the initial prompt (repeatable; needs a vision model).")
     p.add_argument("--version", action="version", version=f"coded {__version__}")
 
     # Ad-hoc model overrides (no config file needed).
@@ -153,6 +155,43 @@ def _handle_models_command(argv: List[str]) -> int:
     return 0
 
 
+def _handle_index_command(argv: List[str]) -> int:
+    p = argparse.ArgumentParser(prog="coded index", description="Build the semantic code index.")
+    p.add_argument("--config", help="Path to a specific config file.")
+    p.add_argument("--cwd", help="Project directory to index.")
+    p.add_argument("-m", "--model", help="Active model (used to guess the embedding provider).")
+    args = p.parse_args(argv)
+    cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
+    try:
+        cfg = load_config(cwd=cwd, config_path=args.config)
+        from coded.embeddings import EmbeddingClient, resolve_embedding_model
+        from coded.index import CodeIndex
+
+        active = None
+        try:
+            active = cfg.get_model(args.model)
+        except ConfigError:
+            pass
+        embed_model = resolve_embedding_model(cfg, active)
+        client = EmbeddingClient(embed_model)
+        index = CodeIndex(cwd)
+        ui.info(f"Indexing {cwd} with embedding model '{embed_model.model}'…")
+
+        def progress(done, total):
+            ui.console.print(f"  [dim]embedded {done}/{total} chunks[/dim]", end="\r")
+
+        n = index.build(client, progress=progress)
+        ui.console.print()
+        ui.success(f"Indexed {n} chunks → {index.path}")
+        return 0
+    except ConfigError as exc:
+        ui.error(str(exc))
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        ui.error(f"Indexing failed: {exc}")
+        return 1
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     os.environ.setdefault("CODED_DATE", _dt.date.today().isoformat())
     if argv is None:
@@ -164,6 +203,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _handle_config_command(cfg_args)
     if argv and argv[0] == "models":
         return _handle_models_command(argv[1:])
+    if argv and argv[0] == "index":
+        return _handle_index_command(argv[1:])
 
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -209,20 +250,23 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     initial_prompt = " ".join(args.prompt) if args.prompt else None
+    images = args.image or None
+    if images and not model.supports_vision:
+        ui.warn(f"Model '{model.name}' is not marked supports_vision; images may be ignored.")
 
     try:
         if args.print_mode:
-            return _run_print_mode(agent, initial_prompt)
+            return _run_print_mode(agent, initial_prompt, images)
         from coded.repl import Repl
 
-        Repl(agent, cfg).run(initial=initial_prompt)
+        Repl(agent, cfg).run(initial=initial_prompt, images=images)
         return 0
     finally:
         if mcp_manager is not None:
             mcp_manager.stop()
 
 
-def _run_print_mode(agent, prompt: Optional[str]) -> int:
+def _run_print_mode(agent, prompt: Optional[str], images=None) -> int:
     if not prompt:
         # Read the prompt from stdin when piped.
         prompt = sys.stdin.read().strip()
@@ -230,7 +274,7 @@ def _run_print_mode(agent, prompt: Optional[str]) -> int:
         ui.error("No prompt provided for --print mode.")
         return 1
     # In print mode we auto-approve nothing by default; keep it non-interactive.
-    result = agent.run(prompt)
+    result = agent.run(prompt, images=images)
     if result and not agent.stream:
         ui.assistant_markdown(result)
     return 0

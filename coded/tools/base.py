@@ -29,6 +29,8 @@ class ToolContext:
     config: Any  # Config
     # Runs a sub-agent with `prompt` and returns its final text. Injected by Agent.
     spawn_subagent: Optional[Callable[[str], str]] = None
+    # Records pre-change file state for /undo. Injected by Agent. May be None.
+    checkpoints: Any = None  # CheckpointManager
     # Names of models available (for the task tool description, etc.).
     extra: Dict[str, Any] = field(default_factory=dict)
 

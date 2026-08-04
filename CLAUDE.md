@@ -41,19 +41,31 @@ coded/
 ├── repl.py             # interactive REPL and slash commands
 ├── ui.py               # rich-based rendering helpers (single Console)
 ├── skills.py           # skill discovery, frontmatter parsing, prompt section
+├── checkpoints.py      # CheckpointManager: per-turn file snapshots for /undo
+├── embeddings.py       # EmbeddingClient + embedding-model resolution
+├── index.py            # CodeIndex: chunk/embed/store + cosine search
+├── websearch.py        # web-search backends + HTML→text fetch
+├── images.py           # image → base64 data URL for vision models
 ├── mcp_client.py       # optional MCP stdio client (background asyncio loop)
 └── tools/
     ├── __init__.py     # build_registry(): assembles the tool suite
     ├── base.py         # Tool, ToolResult, ToolContext, ToolRegistry
-    ├── files.py        # read, write, edit, ls
+    ├── files.py        # read, write, edit, ls, move, delete
     ├── search.py       # glob, grep
+    ├── semantic_search.py  # semantic_search (uses the embedded index)
     ├── shell.py        # bash
+    ├── git.py          # git (read-only free, mutations gated)
+    ├── github.py       # github (PR list/get/create, comment) via GITHUB_TOKEN
+    ├── web.py          # web_search, web_fetch
     ├── task.py         # task (sub-agent delegation)
     ├── skill.py        # skill (loads a SKILL.md body into context)
     └── mcp_tool.py     # wraps an MCP server tool as a coded Tool
 tests/
-├── conftest.py         # FakeServer: fake OpenAI-compatible HTTP server
+├── conftest.py         # FakeServer + EmbeddingsServer + RouteServer (all offline)
 ├── test_agent_e2e.py   # full agent loop (tool call, streaming, permission)
+├── test_checkpoints.py # checkpoint/undo + move/delete
+├── test_git_tools.py   # git tool + github tool (fake API)
+├── test_semantic_and_web.py  # index/search, web_fetch/search, image encoding
 ├── test_skills.py      # skill discovery, frontmatter, skill tool
 └── test_tools.py       # tool + config unit tests
 examples/skills/        # example SKILL.md packs + install guide
@@ -92,6 +104,19 @@ config.example.json     # sample configuration
 - **Tools must never raise into the loop**: return `ToolResult.error(...)` for
   expected failures. `Agent._run_tool` also catches unexpected exceptions and
   feeds them back to the model as text, so the agent can recover.
+- **Per-call permission** (git/github): a tool that is safe for some inputs and
+  risky for others sets `requires_permission = False` and calls
+  `ctx.permissions.request(...)` itself for the risky branch. Static-risk tools
+  use the class flag instead.
+- **Checkpoints**: mutating file tools call `ctx.checkpoints.record(path)` before
+  writing so `/undo` works. `bash` changes are intentionally not tracked. New
+  mutating file tools must record.
+- **Network/optional-key tools** (github/web/semantic_search) must degrade to a
+  clear `ToolResult.error` when the key/backend/index is missing — never crash.
+  Their heavy imports are done inside `run()` to keep startup light.
+- **Offline tests**: `conftest.py` provides `FakeServer` (chat), `EmbeddingsServer`
+  (deterministic embeddings), and `RouteServer` (arbitrary HTTP for web/github).
+  Keep new network features testable against these, not the real internet.
 - **Return text, not exceptions, to the model.** Error strings should tell the
   model what to do differently.
 - **Adding a skill** (docs/instruction pack, not code): create

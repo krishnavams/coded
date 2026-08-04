@@ -22,8 +22,17 @@ runtime.
 
 - **Agentic tool loop** — the model reads, writes, and edits files, searches the
   codebase, and runs shell commands until your request is done.
-- **Full tool suite** — `read`, `write`, `edit`, `ls`, `glob`, `grep`, `bash`,
-  and `task` (sub-agents).
+- **Full tool suite** — `read`, `write`, `edit`, `ls`, `move`, `delete`,
+  `glob`, `grep`, `semantic_search`, `bash`, `git`, `github`, `web_search`,
+  `web_fetch`, `skill`, and `task` (sub-agents).
+- **Semantic code search** — build an embedding index (`coded index`) and let
+  the agent search the codebase by meaning, not just literal text.
+- **Web search & fetch** — `web_search` (Tavily/Brave/SerpAPI/SearXNG) and
+  `web_fetch` to read pages, for up-to-date research.
+- **Image input** — attach images for vision-capable models (`--image`, `/image`).
+- **Checkpoint / undo** — file edits are snapshotted per turn; `/undo` reverts them.
+- **Git & GitHub tools** — a `git` tool (read-only runs freely, mutations are
+  gated) and a `github` tool (list/get/create PRs, comment) via `GITHUB_TOKEN`.
 - **Any OpenAI-compatible endpoint** — configurable base URL, API key, and model
   id, with built-in presets for common providers.
 - **Multiple models, switchable** — define models in config, switch live with
@@ -190,6 +199,9 @@ coded models                   # list configured models
 | `/tools` | List available tools |
 | `/skills` | List available skills |
 | `/skill <name> [task]` | Invoke a skill now |
+| `/image <path>... [prompt]` | Attach image(s) for a vision model |
+| `/undo` | Revert the last turn's file changes |
+| `/checkpoints` | List saved checkpoints |
 | `/cost` | Token usage and estimated cost |
 | `/clear`, `/reset` | Clear the conversation |
 | `/config` | Show loaded config files / MCP servers |
@@ -202,6 +214,68 @@ ask before running. Answer `y` (once), `a` (always, for this session), or `n`
 (deny). Use `--yolo` / `--auto-approve` to skip prompts, or set
 `"auto_approve": true` in config. In non-interactive `--print` mode with no
 auto-approve, such actions are denied by default (safe).
+
+### Semantic code search
+
+Build an embedding index of the repo, then the agent's `semantic_search` tool
+finds code by meaning. Configure an embedding model, then index:
+
+```json
+{
+  "embedding": { "provider": "openai", "model": "text-embedding-3-small" }
+}
+```
+```bash
+coded index          # build/refresh .coded/index/index.json
+coded "where is auth handled?"   # the agent can now semantic_search
+```
+
+`embedding` may instead be `"embedding_model": "<alias>"` pointing at a model in
+`models`. If neither is set, coded guesses a default embedding model from your
+active provider. `grep` is still there for exact/regex matches.
+
+### Web search & fetch
+
+`web_fetch` reads a URL (HTML stripped to text). `web_search` needs a backend —
+it auto-detects from whichever is set:
+
+| Backend | Config / env |
+|---|---|
+| Tavily | `TAVILY_API_KEY` |
+| Brave | `BRAVE_API_KEY` |
+| SerpAPI | `SERPAPI_API_KEY` |
+| SearXNG (keyless) | `SEARXNG_URL` (your instance) |
+
+Or pin it in config: `"web_search": { "backend": "tavily", "api_key": "..." }`.
+
+### Image input (vision)
+
+Attach images for a vision-capable model. Mark the model `"supports_vision": true`,
+then:
+
+```bash
+coded --image screenshot.png "what's wrong with this UI?"
+# or in the REPL:
+/image mockup.png build this layout as HTML
+```
+
+### Checkpoints & undo
+
+Every turn, changes made by `write`/`edit`/`move`/`delete` are snapshotted under
+`.coded/checkpoints/`. `/undo` restores the most recent turn (reverting edits and
+removing newly-created files); repeat `/undo` to step further back. `/checkpoints`
+lists them. Note: changes made by `bash` are **not** tracked.
+
+### Git & GitHub
+
+The `git` tool runs read-only subcommands (status/diff/log/blame/…) without
+prompting and gates mutations (commit/checkout/push/…). The `github` tool needs
+`GITHUB_TOKEN` and auto-detects the repo from the `origin` remote:
+
+```bash
+export GITHUB_TOKEN=ghp_...
+coded "open a PR from this branch to main summarizing the changes"
+```
 
 ### Skills
 

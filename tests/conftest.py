@@ -96,3 +96,113 @@ class FakeServer:
 @pytest.fixture
 def fake_server():
     return FakeServer
+
+
+# ---------------------------------------------------------------------------
+# Deterministic embeddings + generic routing server (for semantic/web/github).
+# ---------------------------------------------------------------------------
+import hashlib
+import re
+
+
+def embed_text(text: str, dim: int = 64):
+    """Stable bag-of-words embedding: shared tokens => higher cosine similarity."""
+    vec = [0.0] * dim
+    for tok in re.findall(r"[a-zA-Z_]+", text.lower()):
+        idx = int(hashlib.md5(tok.encode()).hexdigest(), 16) % dim
+        vec[idx] += 1.0
+    return vec
+
+
+class _EmbedHandler(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(length) or b"{}")
+        inp = body.get("input")
+        if isinstance(inp, str):
+            inp = [inp]
+        data = [{"object": "embedding", "index": i, "embedding": embed_text(t)}
+                for i, t in enumerate(inp)]
+        payload = {"object": "list", "data": data, "model": body.get("model", "fake"),
+                   "usage": {"prompt_tokens": 0, "total_tokens": 0}}
+        out = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+
+class EmbeddingsServer:
+    def __init__(self):
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), _EmbedHandler)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+
+    @property
+    def base_url(self):
+        host, port = self.httpd.server_address
+        return f"http://{host}:{port}/v1"
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.httpd.shutdown()
+
+
+@pytest.fixture
+def embeddings_server():
+    return EmbeddingsServer
+
+
+class _RouteHandler(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _handle(self, method):
+        length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(length) if length else b""
+        status, ctype, body = self.server.route(method, self.path, raw)  # type: ignore[attr-defined]
+        if isinstance(body, str):
+            body = body.encode()
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        self._handle("GET")
+
+    def do_POST(self):
+        self._handle("POST")
+
+
+class RouteServer:
+    """Generic HTTP server driven by a route(method, path, body) callable."""
+
+    def __init__(self, route):
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), _RouteHandler)
+        self.httpd.route = route  # type: ignore[attr-defined]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+
+    @property
+    def base(self):
+        host, port = self.httpd.server_address
+        return f"http://{host}:{port}"
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.httpd.shutdown()
+
+
+@pytest.fixture
+def route_server():
+    return RouteServer

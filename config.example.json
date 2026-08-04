@@ -230,6 +230,16 @@
     }
   },
 
+  "embedding": {
+    "provider": "openai",
+    "model": "text-embedding-3-small"
+  },
+
+  "web_search": {
+    "backend": "tavily",
+    "api_key_env": "TAVILY_API_KEY"
+  },
+
   "mcp_servers": {
     "filesystem": {
       "command": "npx",

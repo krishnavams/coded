@@ -19,6 +19,12 @@ def _resolve(ctx: ToolContext, path: str) -> Path:
     return p
 
 
+def _checkpoint(ctx: ToolContext, *paths: Path) -> None:
+    if ctx.checkpoints is not None:
+        for p in paths:
+            ctx.checkpoints.record(p)
+
+
 class ReadTool(Tool):
     name = "read"
     description = """Read a file from the filesystem. Returns the file contents with \
@@ -85,6 +91,7 @@ overwriting it entirely. For small edits to an existing file, prefer `edit`."""
     def run(self, args: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         p = _resolve(ctx, args["path"])
         try:
+            _checkpoint(ctx, p)
             p.parent.mkdir(parents=True, exist_ok=True)
             existed = p.exists()
             p.write_text(args["content"], encoding="utf-8")
@@ -141,6 +148,7 @@ Read the file first so your match is accurate."""
             )
         new_text = text.replace(old, new) if args.get("replace_all") else text.replace(old, new, 1)
         try:
+            _checkpoint(ctx, p)
             p.write_text(new_text, encoding="utf-8")
         except OSError as exc:
             return ToolResult.error(f"Could not write {p}: {exc}")
@@ -175,3 +183,65 @@ class LsTool(Tool):
         if not entries:
             return ToolResult.ok(f"{p} is empty.")
         return ToolResult.ok(f"{p}:\n" + "\n".join(entries))
+
+
+class MoveTool(Tool):
+    name = "move"
+    description = "Move or rename a file or directory. Parent directories are created as needed."
+    requires_permission = True
+    parameters = {
+        "type": "object",
+        "properties": {
+            "source": {"type": "string", "description": "Existing path."},
+            "destination": {"type": "string", "description": "New path."},
+        },
+        "required": ["source", "destination"],
+    }
+
+    def permission_detail(self, args: Dict[str, Any]) -> str:
+        return f"Move {args.get('source')} -> {args.get('destination')}"
+
+    def run(self, args: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        src = _resolve(ctx, args["source"])
+        dst = _resolve(ctx, args["destination"])
+        if not src.exists():
+            return ToolResult.error(f"Source not found: {src}")
+        if dst.exists():
+            return ToolResult.error(f"Destination already exists: {dst}")
+        try:
+            _checkpoint(ctx, src, dst)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            src.rename(dst)
+        except OSError as exc:
+            return ToolResult.error(f"Could not move: {exc}")
+        return ToolResult.ok(f"Moved {src} -> {dst}.")
+
+
+class DeleteTool(Tool):
+    name = "delete"
+    description = "Delete a file (or an empty directory). Use with care; recoverable via /undo for files."
+    requires_permission = True
+    parameters = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Path to delete."},
+        },
+        "required": ["path"],
+    }
+
+    def permission_detail(self, args: Dict[str, Any]) -> str:
+        return f"Delete {args.get('path')}"
+
+    def run(self, args: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        p = _resolve(ctx, args["path"])
+        if not p.exists():
+            return ToolResult.error(f"Not found: {p}")
+        try:
+            if p.is_dir():
+                p.rmdir()  # only succeeds if empty
+            else:
+                _checkpoint(ctx, p)
+                p.unlink()
+        except OSError as exc:
+            return ToolResult.error(f"Could not delete {p}: {exc}")
+        return ToolResult.ok(f"Deleted {p}.")

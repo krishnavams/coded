@@ -21,6 +21,9 @@ SLASH_COMMANDS = {
     "/tools": "List available tools.",
     "/skills": "List available skills.",
     "/skill": "Invoke a skill now: /skill <name> [task].",
+    "/image": "Attach image(s) to your next message: /image <path>... [prompt].",
+    "/undo": "Undo the last file changes (checkpoint).",
+    "/checkpoints": "List saved checkpoints.",
     "/cost": "Show token usage and estimated cost this session.",
     "/clear": "Clear conversation history (keep the system prompt).",
     "/reset": "Alias for /clear.",
@@ -39,6 +42,7 @@ class Repl:
     def __init__(self, agent: Agent, config: Config):
         self.agent = agent
         self.config = config
+        self._pending_images: Optional[list] = None
         words = list(SLASH_COMMANDS) + list(config.models) + list(agent.skills)
         completer = WordCompleter(words, sentence=True)
         self.prompt = PromptSession(
@@ -61,9 +65,10 @@ class Repl:
         return answer or "no"
 
     # -- main loop ----------------------------------------------------------
-    def run(self, initial: Optional[str] = None) -> None:
+    def run(self, initial: Optional[str] = None, images: Optional[list] = None) -> None:
         ui.banner(self.agent.model.name, self.agent.cwd)
         pending = initial
+        self._pending_images = images
         while True:
             if pending is not None:
                 text = pending
@@ -85,7 +90,8 @@ class Repl:
                 continue
             try:
                 ui.user_prefix()
-                self.agent.run(text)
+                self.agent.run(text, images=self._pending_images)
+                self._pending_images = None
             except KeyboardInterrupt:
                 ui.warn("Interrupted.")
             except ConfigError as exc:
@@ -110,6 +116,12 @@ class Repl:
             self._cmd_model(args)
         elif cmd == "/tools":
             self._cmd_tools()
+        elif cmd == "/image":
+            self._cmd_image(args)
+        elif cmd == "/undo":
+            ui.info(self.agent.checkpoints.undo_last() if self.agent.checkpoints else "Checkpoints disabled.")
+        elif cmd == "/checkpoints":
+            self._cmd_checkpoints()
         elif cmd == "/skills":
             self._cmd_skills()
         elif cmd == "/skill":
@@ -165,6 +177,52 @@ class Repl:
             desc = t.description.strip().splitlines()[0]
             table.add_row(t.name, perm, desc[:80])
         ui.console.print(table)
+
+    def _cmd_image(self, args) -> None:
+        if not args:
+            ui.info("Usage: /image <path> [more paths] [-- prompt] "
+                    "(or: /image <path> your prompt here)")
+            return
+        # Split image paths from an optional trailing prompt at '--', else treat
+        # tokens that exist as files as images and the rest as the prompt.
+        paths, rest = [], []
+        if "--" in args:
+            idx = args.index("--")
+            paths, rest = args[:idx], args[idx + 1:]
+        else:
+            for i, tok in enumerate(args):
+                if Path(tok).expanduser().is_file():
+                    paths.append(tok)
+                else:
+                    rest = args[i:]
+                    break
+        if not paths:
+            ui.error("No existing image file found in arguments.")
+            return
+        if not self.agent.model.supports_vision:
+            ui.warn(f"Model '{self.agent.model.name}' is not marked supports_vision; "
+                    "images may be ignored.")
+        self._pending_images = paths
+        ui.success(f"Attached {len(paths)} image(s) to your next message.")
+        prompt = " ".join(rest).strip()
+        if prompt:
+            ui.user_prefix()
+            self.agent.run(prompt, images=self._pending_images)
+            self._pending_images = None
+
+    def _cmd_checkpoints(self) -> None:
+        cp = self.agent.checkpoints
+        groups = cp.list_groups() if cp else []
+        if not groups:
+            ui.info("No checkpoints yet.")
+            return
+        table = Table(title="Checkpoints (most recent last)")
+        table.add_column("label")
+        table.add_column("files", justify="right")
+        for g in groups:
+            table.add_row(g.get("label", ""), str(len(g.get("files", []))))
+        ui.console.print(table)
+        ui.info("Use /undo to revert the most recent one.")
 
     def _cmd_skills(self) -> None:
         if not self.agent.skills:
