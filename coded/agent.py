@@ -72,8 +72,11 @@ class Agent:
         final_text = ""
         for _ in range(self.config.max_turns):
             self.session.turns += 1
+            self._maybe_compact()
             completion = self._call_model()
             self.session.record_usage(completion.usage)
+            if completion.usage.prompt_tokens:
+                self.session.last_prompt_tokens = completion.usage.prompt_tokens
 
             if completion.content and self.verbose and not self.stream:
                 ui.assistant_markdown(completion.content)
@@ -92,6 +95,17 @@ class Agent:
             if self.verbose:
                 ui.warn(f"Reached max turns ({self.config.max_turns}); stopping.")
         return final_text
+
+    def _maybe_compact(self, force: bool = False) -> bool:
+        if not force and not self.config.auto_compact:
+            return False
+        from coded.compaction import maybe_compact
+
+        did = maybe_compact(self.session, self.model, self.llm,
+                            ratio=self.config.compact_ratio, force=force)
+        if did and self.verbose:
+            ui.info("(summarized earlier conversation to stay within the context window)")
+        return did
 
     def _call_model(self) -> Completion:
         tools = self.registry.openai_schema() if self.model.supports_tools else None
@@ -145,16 +159,29 @@ class Agent:
         if self.verbose:
             ui.tool_call(tc.name, args)
 
+        preview_ctx = ToolContext(cwd=self.cwd, permissions=self.permissions,
+                                  config=self.config, checkpoints=self.checkpoints)
+
+        # Show a diff preview for mutating file tools before we prompt/apply.
+        if self.verbose and tool.requires_permission:
+            try:
+                diff = tool.preview(args, preview_ctx)
+            except Exception:  # noqa: BLE001 - preview must never break the loop
+                diff = None
+            if diff:
+                ui.diff(diff)
+
         # Permission gate.
         if tool.requires_permission:
             decision = self.permissions.request(
                 key=tc.name,
                 title=self._perm_title(tc.name),
                 detail=tool.permission_detail(args),
+                target=tool.permission_target(args),
             )
             if decision is Decision.DENY:
                 if self.verbose:
-                    ui.tool_result("Denied by user.", is_error=True)
+                    ui.tool_result("Denied.", is_error=True)
                 return "The user denied permission to run this action. Do not retry it; ask how to proceed or try another approach."
 
         ctx = ToolContext(

@@ -52,7 +52,7 @@ Pass the arguments after `git`, e.g. "status", "diff HEAD~1", "log --oneline -10
 
         if not read_only:
             decision = ctx.permissions.request(
-                key=f"git:{sub}", title="Run git command", detail=f"git {raw}"
+                key="git", title="Run git command", detail=f"git {raw}", target=raw,
             )
             if decision is Decision.DENY:
                 return ToolResult.error("The user denied this git command. Do not retry it.")

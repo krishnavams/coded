@@ -52,6 +52,14 @@ class Tool:
         """Human-readable description of what this call will do (for prompts)."""
         return f"{self.name}({args})"
 
+    def permission_target(self, args: Dict[str, Any]) -> str:
+        """The string matched against allow/deny rules (e.g. command or path)."""
+        return ""
+
+    def preview(self, args: Dict[str, Any], ctx: "ToolContext"):
+        """Optional colored/plain preview (e.g. a diff) shown before running."""
+        return None
+
     def to_openai(self) -> Dict[str, Any]:
         return {
             "type": "function",

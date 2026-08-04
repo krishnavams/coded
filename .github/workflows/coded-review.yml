@@ -1,0 +1,44 @@
+name: coded review
+
+# Runs the coded reviewer→qa→security pipeline on every pull request and fails
+# the check if the synthesized verdict is NEEDS_CHANGES.
+#
+# Setup: add an OPENAI_API_KEY (or another provider's key) repository secret.
+# Point coded at a different provider by editing the `coded review` flags below
+# (e.g. --provider groq --model-name llama-3.3-70b-versatile).
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need history to diff against the base branch
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install coded
+        run: pip install -e .
+
+      - name: Run review
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          coded review --yolo --output review.md \
+            "the changes in this pull request against origin/${{ github.base_ref }} — \
+             use the git tool to see the diff (git diff origin/${{ github.base_ref }}...HEAD)"
+
+      - name: Upload review report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coded-review
+          path: review.md

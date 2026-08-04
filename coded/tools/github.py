@@ -64,8 +64,8 @@ Repo is auto-detected from the git remote unless you pass repo='owner/name'."""
 
         if action not in _READ_ACTIONS:
             decision = ctx.permissions.request(
-                key=f"github:{action}", title="GitHub write",
-                detail=f"{action} on {repo}",
+                key="github", title="GitHub write",
+                detail=f"{action} on {repo}", target=action,
             )
             if decision is Decision.DENY:
                 return ToolResult.error("The user denied this GitHub action. Do not retry it.")

@@ -15,6 +15,9 @@ class Session:
     messages: List[Dict[str, Any]] = field(default_factory=list)
     total_usage: Usage = field(default_factory=Usage)
     turns: int = 0
+    # Input tokens of the most recent model call (drives compaction).
+    last_prompt_tokens: int = 0
+    compactions: int = 0
 
     def __post_init__(self) -> None:
         if not self.messages:

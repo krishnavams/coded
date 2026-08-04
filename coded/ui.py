@@ -11,6 +11,18 @@ from rich.panel import Panel
 from rich.text import Text
 
 console = Console()
+_err_console = Console(stderr=True)
+_quiet = False
+
+
+def set_quiet(enabled: bool) -> None:
+    """In quiet mode, log helpers write to stderr so stdout stays clean (JSON)."""
+    global _quiet
+    _quiet = enabled
+
+
+def _log() -> Console:
+    return _err_console if _quiet else console
 
 # Truncation limits for displaying tool activity (the model still sees full output).
 _MAX_ARG_LEN = 300
@@ -79,20 +91,45 @@ def tool_result(content: str, is_error: bool = False) -> None:
 
 
 def info(msg: str) -> None:
-    console.print(f"[dim]{msg}[/dim]")
+    _log().print(f"[dim]{msg}[/dim]")
 
 
 def warn(msg: str) -> None:
-    console.print(f"[yellow]! {msg}[/yellow]")
+    _log().print(f"[yellow]! {msg}[/yellow]")
 
 
 def error(msg: str) -> None:
-    console.print(f"[red]✗ {msg}[/red]")
+    _log().print(f"[red]✗ {msg}[/red]")
 
 
 def success(msg: str) -> None:
-    console.print(f"[green]✓ {msg}[/green]")
+    _log().print(f"[green]✓ {msg}[/green]")
 
 
 def rule(msg: str = "") -> None:
-    console.rule(f"[dim]{msg}[/dim]" if msg else "")
+    _log().rule(f"[dim]{msg}[/dim]" if msg else "")
+
+
+_MAX_DIFF_LINES = 60
+
+
+def diff(text: str) -> None:
+    """Render a unified diff with +/- line coloring."""
+    if not text.strip():
+        return
+    lines = text.splitlines()
+    shown = lines[:_MAX_DIFF_LINES]
+    body = Text()
+    for line in shown:
+        if line.startswith("+") and not line.startswith("+++"):
+            style = "green"
+        elif line.startswith("-") and not line.startswith("---"):
+            style = "red"
+        elif line.startswith("@@"):
+            style = "cyan"
+        else:
+            style = "dim"
+        body.append("  " + line + "\n", style=style)
+    if len(lines) > len(shown):
+        body.append(f"  … (+{len(lines) - len(shown)} more diff lines)\n", style="dim italic")
+    console.print(body, end="")

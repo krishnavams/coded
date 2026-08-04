@@ -43,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--yolo", "--auto-approve", action="store_true", dest="auto_approve",
                    help="Auto-approve all tool actions (no permission prompts). Use with care.")
     p.add_argument("--no-stream", action="store_true", help="Disable streaming output.")
+    p.add_argument("--no-compact", action="store_true", help="Disable automatic context compaction.")
     p.add_argument("--cwd", help="Working directory for the agent (default: current dir).")
     p.add_argument("--config", help="Path to a specific config file.")
     p.add_argument("--system", help="Extra system-prompt instructions to append.")
@@ -51,6 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-skills", action="store_true", help="Disable skill discovery for this run.")
     p.add_argument("--image", action="append", metavar="PATH",
                    help="Attach an image to the initial prompt (repeatable; needs a vision model).")
+    p.add_argument("--continue", dest="continue_session", action="store_true",
+                   help="Resume the most recent saved session for this directory.")
+    p.add_argument("--resume", metavar="ID", help="Resume a specific saved session by id.")
+    p.add_argument("--output-format", choices=["text", "json"], default="text",
+                   help="Output format for --print mode (json emits content + usage + cost).")
     p.add_argument("--version", action="version", version=f"coded {__version__}")
 
     # Ad-hoc model overrides (no config file needed).
@@ -75,6 +81,8 @@ def _apply_overrides(cfg: Config, args: argparse.Namespace) -> None:
         cfg.auto_approve = True
     if args.no_stream:
         cfg.stream = False
+    if args.no_compact:
+        cfg.auto_compact = False
     if args.max_turns:
         cfg.max_turns = args.max_turns
 
@@ -193,6 +201,72 @@ def _handle_index_command(argv: List[str]) -> int:
         return 1
 
 
+def _handle_commit_command(argv: List[str]) -> int:
+    """Generate a Conventional Commits message for the staged changes."""
+    p = argparse.ArgumentParser(prog="coded commit",
+                                description="Draft a commit message from staged changes.")
+    p.add_argument("-m", "--model", help="Model alias to use.")
+    p.add_argument("--config", help="Path to a specific config file.")
+    p.add_argument("--cwd", help="Repository directory.")
+    p.add_argument("--commit", action="store_true", help="Actually create the commit.")
+    p.add_argument("--base-url", help="Ad-hoc base URL.")
+    p.add_argument("--api-key", help="Ad-hoc API key.")
+    p.add_argument("--model-name", help="Ad-hoc model id.")
+    p.add_argument("--provider", help="Ad-hoc provider.")
+    args = p.parse_args(argv)
+
+    cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
+    try:
+        cfg = load_config(cwd=cwd, config_path=args.config)
+        if any([args.base_url, args.api_key, args.model_name, args.provider]):
+            cfg.add_model(model_from_overrides(
+                model_name=args.model_name, provider=args.provider,
+                base_url=args.base_url, api_key=args.api_key), make_default=True)
+            args.model = args.model or "cli"
+        model = cfg.get_model(args.model)
+    except ConfigError as exc:
+        ui.error(str(exc))
+        return 2
+
+    from coded.skills import discover_skills
+
+    # Allow git so the agent can read the diff (and commit if requested).
+    permissions = PermissionManager(auto_approve=True)
+    agent = create_agent(model=model, config=cfg, cwd=cwd, permissions=permissions,
+                         skills=discover_skills(cwd), stream=False, verbose=False)
+    action = ("Then create the commit using the git tool."
+              if args.commit else "Do NOT create the commit — only output the message.")
+    prompt = (
+        "Use the conventional-commit skill to draft a Conventional Commits message for the "
+        f"currently staged changes (inspect them with `git diff --cached`). {action} "
+        "If nothing is staged, say so."
+    )
+    result = agent.run(prompt)
+    if result:
+        ui.assistant_markdown(result)
+    return 0
+
+
+def _handle_sessions_command(argv: List[str]) -> int:
+    p = argparse.ArgumentParser(prog="coded sessions", description="List saved sessions.")
+    p.add_argument("--cwd", help="Only sessions for this directory.")
+    args = p.parse_args(argv)
+    from coded.sessions_store import SessionStore
+
+    metas = SessionStore().list()
+    if args.cwd:
+        cwd = os.path.abspath(args.cwd)
+        metas = [m for m in metas if m.cwd == cwd]
+    if not metas:
+        ui.info("No saved sessions.")
+        return 0
+    for m in metas:
+        when = _dt.datetime.fromtimestamp(m.updated).strftime("%Y-%m-%d %H:%M")
+        print(f"{m.id}  {when}  {m.model:<14} {m.messages:>3} msgs  {m.cwd}")
+    ui.info("Resume with: coded --resume <id>  (or --continue for the latest here)")
+    return 0
+
+
 def _handle_review_command(argv: List[str]) -> int:
     """Non-interactive review pipeline for CI: reviewer → qa → security → verdict."""
     p = argparse.ArgumentParser(
@@ -231,7 +305,7 @@ def _handle_review_command(argv: List[str]) -> int:
     from coded.review import NEEDS_CHANGES, UNKNOWN, run_review, synthesize_verdict
     from coded.skills import discover_skills
 
-    permissions = PermissionManager(auto_approve=args.auto_approve)
+    permissions = PermissionManager(auto_approve=args.auto_approve, rules=cfg.permissions)
     skills = discover_skills(cwd)
     agent = create_agent(
         model=model, config=cfg, cwd=cwd, permissions=permissions,
@@ -279,9 +353,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _handle_index_command(argv[1:])
     if argv and argv[0] == "review":
         return _handle_review_command(argv[1:])
+    if argv and argv[0] == "sessions":
+        return _handle_sessions_command(argv[1:])
+    if argv and argv[0] == "commit":
+        return _handle_commit_command(argv[1:])
 
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    # In JSON print mode, keep stdout clean — send all log output to stderr.
+    if args.print_mode and args.output_format == "json":
+        ui.set_quiet(True)
 
     cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
 
@@ -300,7 +382,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "--base-url/--api-key/--model-name for a one-off endpoint.")
         return 1
 
-    permissions = PermissionManager(auto_approve=cfg.auto_approve)
+    permissions = PermissionManager(auto_approve=cfg.auto_approve, rules=cfg.permissions)
     mcp_manager, extra_tools = _init_mcp(cfg, disabled=args.no_mcp)
 
     skills = {}
@@ -323,33 +405,75 @@ def main(argv: Optional[List[str]] = None) -> int:
         verbose=True,
     )
 
+    # Session persistence: resume a saved session, or start a fresh id.
+    from coded.sessions_store import SessionStore
+
+    store = SessionStore()
+    resume_id = args.resume or (store.latest(cwd) if args.continue_session else None)
+    if resume_id:
+        loaded = store.load(resume_id)
+        if loaded is not None:
+            agent.session = loaded
+            session_id = resume_id
+            ui.info(f"Resumed session {resume_id} ({len(loaded.messages)} messages).")
+        else:
+            ui.warn(f"No saved session '{resume_id}'; starting a new one.")
+            session_id = store.new_id()
+    else:
+        session_id = store.new_id()
+
     initial_prompt = " ".join(args.prompt) if args.prompt else None
     images = args.image or None
     if images and not model.supports_vision:
         ui.warn(f"Model '{model.name}' is not marked supports_vision; images may be ignored.")
 
+    def autosave():
+        try:
+            store.save(agent.session, session_id=session_id, cwd=cwd, model=model.name)
+        except OSError:
+            pass
+
     try:
         if args.print_mode:
-            return _run_print_mode(agent, initial_prompt, images)
+            return _run_print_mode(agent, initial_prompt, images,
+                                   output_format=args.output_format, on_done=autosave)
         from coded.repl import Repl
 
-        Repl(agent, cfg).run(initial=initial_prompt, images=images)
+        Repl(agent, cfg, on_turn=autosave).run(initial=initial_prompt, images=images)
+        autosave()
         return 0
     finally:
         if mcp_manager is not None:
             mcp_manager.stop()
 
 
-def _run_print_mode(agent, prompt: Optional[str], images=None) -> int:
+def _run_print_mode(agent, prompt: Optional[str], images=None, *,
+                    output_format: str = "text", on_done=None) -> int:
     if not prompt:
         # Read the prompt from stdin when piped.
         prompt = sys.stdin.read().strip()
     if not prompt:
         ui.error("No prompt provided for --print mode.")
         return 1
+    if output_format == "json":
+        # Keep stdout clean for machine parsing: no streaming/tool chatter.
+        agent.stream = False
+        agent.verbose = False
     # In print mode we auto-approve nothing by default; keep it non-interactive.
     result = agent.run(prompt, images=images)
-    if result and not agent.stream:
+    if on_done:
+        on_done()
+    if output_format == "json":
+        import json as _json
+
+        u = agent.session.total_usage
+        print(_json.dumps({
+            "content": result,
+            "model": agent.model.name,
+            "usage": {"input_tokens": u.prompt_tokens, "output_tokens": u.completion_tokens},
+            "cost": round(agent.session.estimated_cost(agent.model), 6),
+        }, indent=2))
+    elif result and not agent.stream:
         ui.assistant_markdown(result)
     return 0
 

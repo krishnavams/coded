@@ -33,6 +33,9 @@ interactive commands (they will hang) and destructive commands unless asked."""
     def permission_detail(self, args: Dict[str, Any]) -> str:
         return args.get("command", "")
 
+    def permission_target(self, args: Dict[str, Any]) -> str:
+        return args.get("command", "")
+
     def run(self, args: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         command = args["command"]
         timeout = int(args.get("timeout", _DEFAULT_TIMEOUT))

@@ -48,7 +48,14 @@ runtime.
   Ships with built-in `planner`, `reviewer`, `qa`, and `security` roles.
 - **MCP client** — connect Model Context Protocol servers and expose their tools
   to the agent (optional).
-- **Cost tracking** — `/cost` shows token usage and an estimated dollar cost.
+- **Context auto-compaction** — long sessions are summarized automatically as
+  they approach the model's context window (`/compact` to force it).
+- **Session save/resume** — conversations persist to disk; `--continue` /
+  `--resume <id>` pick up where you left off.
+- **Permission rules** — allow/deny tool actions by pattern in config, plus a
+  colored diff preview before every `write`/`edit`.
+- **Cost tracking** — `/cost` shows token usage and an estimated dollar cost;
+  `--print --output-format json` emits machine-readable results for scripts/CI.
 - **Project instructions** — a `CODED.md` / `CLAUDE.md` / `AGENTS.md` in the
   working directory is loaded into the system prompt automatically.
 
@@ -187,9 +194,14 @@ coded -p "run the tests"       # non-interactive: run once and print
 coded -m fast "..."            # pick a configured model alias
 coded --yolo "..."             # auto-approve all tool actions
 coded --no-mcp                 # disable MCP servers for this run
+coded --continue               # resume the most recent session here
+coded --resume <id>            # resume a specific session
+coded -p --output-format json "..."   # machine-readable result
 coded models                   # list configured models
 coded index                    # build the semantic search index
 coded review [target]          # non-interactive review pipeline (CI); exit 1 on NEEDS_CHANGES
+coded commit [--commit]        # draft a Conventional Commits message from staged changes
+coded sessions                 # list saved sessions
 ```
 
 ### Slash commands (in the REPL)
@@ -206,6 +218,8 @@ coded review [target]          # non-interactive review pipeline (CI); exit 1 on
 | `/image <path>... [prompt]` | Attach image(s) for a vision model |
 | `/undo` | Revert the last turn's file changes |
 | `/checkpoints` | List saved checkpoints |
+| `/compact` | Summarize the conversation to free context |
+| `/init` | Analyze the repo and write a `CODED.md` guide |
 | `/cost` | Token usage and estimated cost |
 | `/clear`, `/reset` | Clear the conversation |
 | `/config` | Show loaded config files / MCP servers |
@@ -213,11 +227,40 @@ coded review [target]          # non-interactive review pipeline (CI); exit 1 on
 
 ### Permissions
 
-Tools that change files (`write`, `edit`) or run commands (`bash`, MCP tools)
-ask before running. Answer `y` (once), `a` (always, for this session), or `n`
-(deny). Use `--yolo` / `--auto-approve` to skip prompts, or set
-`"auto_approve": true` in config. In non-interactive `--print` mode with no
-auto-approve, such actions are denied by default (safe).
+Tools that change files (`write`, `edit`, `move`, `delete`) or run commands
+(`bash`, `git` mutations, `github` writes, MCP tools) ask before running. Answer
+`y` (once), `a` (always, for this session), or `n` (deny). Before a `write`/`edit`
+you see a colored **diff preview** of the change. Use `--yolo` / `--auto-approve`
+to skip prompts, or set `"auto_approve": true` in config. In non-interactive
+`--print` mode with no auto-approve, such actions are denied by default (safe).
+
+**Allow/deny rules.** Cut prompt fatigue by pre-approving (or blocking) actions
+by pattern. Patterns are `tool` or `tool(glob)` matched against the command/path;
+**deny always wins**, even over `--yolo`:
+
+```json
+{
+  "permissions": {
+    "allow": ["bash(git *)", "bash(pytest*)", "read", "grep"],
+    "deny":  ["bash(rm -rf*)", "bash(curl*)"]
+  }
+}
+```
+
+### Context & sessions
+
+Long conversations are **auto-compacted**: as the estimated input nears the
+model's `context_window`, older messages are summarized into a briefing while a
+recent, consistent tail is kept verbatim. Force it with `/compact`; disable with
+`--no-compact` or `"auto_compact": false`.
+
+Sessions **persist to disk** (`~/.config/coded/sessions/`, autosaved each turn):
+
+```bash
+coded --continue        # resume the most recent session for this directory
+coded --resume <id>     # resume a specific one
+coded sessions          # list them
+```
 
 ### Semantic code search
 

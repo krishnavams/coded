@@ -248,7 +248,14 @@
     }
   },
 
+  "permissions": {
+    "allow": ["bash(git *)", "bash(pytest*)"],
+    "deny": ["bash(rm -rf*)"]
+  },
+
   "auto_approve": false,
+  "auto_compact": true,
+  "compact_ratio": 0.8,
   "max_turns": 100,
   "stream": true
 }

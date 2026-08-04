@@ -22,15 +22,27 @@ SLASH_COMMANDS = {
     "/skills": "List available skills.",
     "/skill": "Invoke a skill now: /skill <name> [task].",
     "/review": "Run reviewer→qa→security sub-agents on the changes: /review [target].",
+    "/init": "Analyze the repo and write a CODED.md project guide.",
     "/image": "Attach image(s) to your next message: /image <path>... [prompt].",
     "/undo": "Undo the last file changes (checkpoint).",
     "/checkpoints": "List saved checkpoints.",
+    "/compact": "Summarize the conversation now to free up context.",
     "/cost": "Show token usage and estimated cost this session.",
     "/clear": "Clear conversation history (keep the system prompt).",
     "/reset": "Alias for /clear.",
     "/config": "Show which config files are loaded.",
     "/exit": "Quit (also /quit).",
 }
+
+
+_INIT_PROMPT = (
+    "Analyze this repository and create a CODED.md file that documents it for future "
+    "AI assistants and contributors. First explore the layout with ls/glob and read the "
+    "key files (package manifests, entry points, config, tests). Then write CODED.md "
+    "covering: a one-paragraph project overview, the tech stack, how to install/build/"
+    "test/run it, the directory structure, and the important conventions. Verify that any "
+    "commands you list actually exist in the repo before documenting them. Keep it concise."
+)
 
 
 def _history_path() -> Path:
@@ -40,9 +52,10 @@ def _history_path() -> Path:
 
 
 class Repl:
-    def __init__(self, agent: Agent, config: Config):
+    def __init__(self, agent: Agent, config: Config, on_turn=None):
         self.agent = agent
         self.config = config
+        self._on_turn = on_turn  # called after each completed turn (autosave)
         self._pending_images: Optional[list] = None
         words = list(SLASH_COMMANDS) + list(config.models) + list(agent.skills)
         completer = WordCompleter(words, sentence=True)
@@ -93,6 +106,8 @@ class Repl:
                 ui.user_prefix()
                 self.agent.run(text, images=self._pending_images)
                 self._pending_images = None
+                if self._on_turn:
+                    self._on_turn()
             except KeyboardInterrupt:
                 ui.warn("Interrupted.")
             except ConfigError as exc:
@@ -123,12 +138,20 @@ class Repl:
             ui.info(self.agent.checkpoints.undo_last() if self.agent.checkpoints else "Checkpoints disabled.")
         elif cmd == "/checkpoints":
             self._cmd_checkpoints()
+        elif cmd == "/compact":
+            if self.agent._maybe_compact(force=True):
+                ui.success("Conversation compacted.")
+            else:
+                ui.info("Nothing to compact yet.")
         elif cmd == "/skills":
             self._cmd_skills()
         elif cmd == "/skill":
             self._cmd_skill(args)
         elif cmd == "/review":
             self._cmd_review(args)
+        elif cmd == "/init":
+            ui.user_prefix()
+            self.agent.run(_INIT_PROMPT)
         elif cmd == "/cost":
             self._cmd_cost()
         elif cmd in ("/clear", "/reset"):

@@ -43,6 +43,8 @@ coded/
 ├── skills.py           # skill discovery, frontmatter parsing, prompt section
 ├── review.py           # /review pipeline: reviewer→qa→security sub-agents
 ├── builtin_skills/     # bundled agent roles: planner, reviewer, qa, security
+├── compaction.py       # context auto-compaction (summarize old messages)
+├── sessions_store.py   # persist/restore sessions (--continue/--resume)
 ├── checkpoints.py      # CheckpointManager: per-turn file snapshots for /undo
 ├── embeddings.py       # EmbeddingClient + embedding-model resolution
 ├── index.py            # CodeIndex: chunk/embed/store + cosine search
@@ -65,7 +67,9 @@ coded/
 tests/
 ├── conftest.py         # FakeServer + EmbeddingsServer + RouteServer (all offline)
 ├── test_agent_e2e.py   # full agent loop (tool call, streaming, permission)
-├── test_review.py      # /review pipeline (reviewer→qa→security)
+├── test_review.py      # /review pipeline + coded review verdict/exit code
+├── test_compaction.py  # context compaction trigger + tail preservation
+├── test_permissions_sessions.py  # allow/deny rules, diff preview, sessions, json
 ├── test_checkpoints.py # checkpoint/undo + move/delete
 ├── test_git_tools.py   # git tool + github tool (fake API)
 ├── test_semantic_and_web.py  # index/search, web_fetch/search, image encoding
@@ -209,7 +213,14 @@ one (e.g. `ruff`, `black`), record the commands here.
   `finally`).
 - **Permission default is deny** when non-interactive and not `--yolo`. Don't
   change this to "allow" — it's the safe default that keeps `--print` mode from
-  running shell commands unattended.
+  running shell commands unattended. **Deny rules always win**, even over
+  `--yolo`; per-tool `permission_target()` supplies the string matched by rules.
+- **Compaction preserves tool pairing**: `compaction.py` only cuts the history
+  at a `user`-role boundary, so an assistant `tool_calls` message is never split
+  from its `tool` results (the API rejects that). Keep that invariant.
+- **JSON print mode** (`--output-format json`) must keep **stdout clean**:
+  `ui.set_quiet(True)` routes all log helpers to stderr, and the agent is forced
+  non-verbose/non-streaming. Only the final JSON goes to stdout.
 
 ## Git & branching
 

@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import difflib
 import os
 from pathlib import Path
 from typing import Any, Dict
 
 from coded.tools.base import Tool, ToolContext, ToolResult
+
+
+def _unified_diff(old: str, new: str, path: str) -> str:
+    diff = difflib.unified_diff(
+        old.splitlines(), new.splitlines(),
+        fromfile=f"a/{path}", tofile=f"b/{path}", lineterm="",
+    )
+    return "\n".join(diff)
 
 _MAX_READ_LINES = 2000
 _MAX_LINE_LEN = 2000
@@ -88,6 +97,19 @@ overwriting it entirely. For small edits to an existing file, prefer `edit`."""
         n = len(args.get("content", ""))
         return f"Write {n} bytes to {args.get('path')}"
 
+    def permission_target(self, args: Dict[str, Any]) -> str:
+        return args.get("path", "")
+
+    def preview(self, args: Dict[str, Any], ctx: ToolContext):
+        p = _resolve(ctx, args["path"])
+        old = ""
+        if p.is_file():
+            try:
+                old = p.read_text(encoding="utf-8")
+            except OSError:
+                return None
+        return _unified_diff(old, args.get("content", ""), args["path"])
+
     def run(self, args: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         p = _resolve(ctx, args["path"])
         try:
@@ -123,6 +145,23 @@ Read the file first so your match is accurate."""
 
     def permission_detail(self, args: Dict[str, Any]) -> str:
         return f"Edit {args.get('path')}"
+
+    def permission_target(self, args: Dict[str, Any]) -> str:
+        return args.get("path", "")
+
+    def preview(self, args: Dict[str, Any], ctx: ToolContext):
+        p = _resolve(ctx, args["path"])
+        if not p.is_file():
+            return None
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        old, new = args.get("old_string", ""), args.get("new_string", "")
+        if old not in text:
+            return None
+        updated = text.replace(old, new) if args.get("replace_all") else text.replace(old, new, 1)
+        return _unified_diff(text, updated, args["path"])
 
     def run(self, args: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         p = _resolve(ctx, args["path"])
@@ -201,6 +240,9 @@ class MoveTool(Tool):
     def permission_detail(self, args: Dict[str, Any]) -> str:
         return f"Move {args.get('source')} -> {args.get('destination')}"
 
+    def permission_target(self, args: Dict[str, Any]) -> str:
+        return args.get("source", "")
+
     def run(self, args: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         src = _resolve(ctx, args["source"])
         dst = _resolve(ctx, args["destination"])
@@ -231,6 +273,9 @@ class DeleteTool(Tool):
 
     def permission_detail(self, args: Dict[str, Any]) -> str:
         return f"Delete {args.get('path')}"
+
+    def permission_target(self, args: Dict[str, Any]) -> str:
+        return args.get("path", "")
 
     def run(self, args: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         p = _resolve(ctx, args["path"])

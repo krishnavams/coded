@@ -141,6 +141,9 @@ class Config:
     auto_approve: bool = False  # skip permission prompts (a.k.a. "yolo")
     max_turns: int = 100  # safety cap on agent tool-loop iterations
     stream: bool = True
+    auto_compact: bool = True  # summarize old messages near the context limit
+    compact_ratio: float = 0.8  # fraction of context_window that triggers it
+    permissions: Optional[Dict[str, Any]] = None  # {"allow": [...], "deny": [...]}
     source_paths: list = field(default_factory=list)  # config files that were loaded
 
     def get_model(self, name: Optional[str] = None) -> ModelConfig:
@@ -203,7 +206,9 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
         cfg.embedding_model = data["embedding_model"]
     if data.get("web_search"):
         cfg.web_search = data["web_search"]
-    for key in ("auto_approve", "max_turns", "stream"):
+    if data.get("permissions"):
+        cfg.permissions = data["permissions"]
+    for key in ("auto_approve", "max_turns", "stream", "auto_compact", "compact_ratio"):
         if key in data:
             setattr(cfg, key, data[key])
 
