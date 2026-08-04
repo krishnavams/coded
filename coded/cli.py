@@ -6,6 +6,7 @@ import argparse
 import datetime as _dt
 import os
 import sys
+from pathlib import Path
 from typing import List, Optional
 
 from coded import __version__, ui
@@ -192,6 +193,77 @@ def _handle_index_command(argv: List[str]) -> int:
         return 1
 
 
+def _handle_review_command(argv: List[str]) -> int:
+    """Non-interactive review pipeline for CI: reviewer → qa → security → verdict."""
+    p = argparse.ArgumentParser(
+        prog="coded review",
+        description="Run the reviewer→qa→security pipeline non-interactively (for CI).",
+    )
+    p.add_argument("target", nargs="*", help="Files/description to review (default: git diff).")
+    p.add_argument("-m", "--model", help="Model alias to use.")
+    p.add_argument("--config", help="Path to a specific config file.")
+    p.add_argument("--cwd", help="Project directory.")
+    p.add_argument("--yolo", "--auto-approve", action="store_true", dest="auto_approve",
+                   help="Auto-approve tool actions so qa/security can run tests and scanners.")
+    p.add_argument("--output", "-o", help="Write the aggregated report to this file.")
+    p.add_argument("--fail-on", choices=["needs-changes", "never"], default="needs-changes",
+                   help="Exit non-zero when the verdict is NEEDS_CHANGES (default) or never.")
+    p.add_argument("--no-verdict", action="store_true", help="Skip the pass/fail verdict step.")
+    p.add_argument("--base-url", help="Ad-hoc OpenAI-compatible base URL.")
+    p.add_argument("--api-key", help="Ad-hoc API key.")
+    p.add_argument("--model-name", help="Ad-hoc concrete model id.")
+    p.add_argument("--provider", help="Ad-hoc provider preset.")
+    args = p.parse_args(argv)
+
+    cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
+    try:
+        cfg = load_config(cwd=cwd, config_path=args.config)
+        if any([args.base_url, args.api_key, args.model_name, args.provider]):
+            cfg.add_model(model_from_overrides(
+                model_name=args.model_name, provider=args.provider,
+                base_url=args.base_url, api_key=args.api_key), make_default=True)
+            args.model = args.model or "cli"
+        model = cfg.get_model(args.model)
+    except ConfigError as exc:
+        ui.error(str(exc))
+        return 2
+
+    from coded.review import NEEDS_CHANGES, UNKNOWN, run_review, synthesize_verdict
+    from coded.skills import discover_skills
+
+    permissions = PermissionManager(auto_approve=args.auto_approve)
+    skills = discover_skills(cwd)
+    agent = create_agent(
+        model=model, config=cfg, cwd=cwd, permissions=permissions,
+        skills=skills, stream=False, verbose=False,
+    )
+
+    target = " ".join(args.target).strip() or None
+    ui.info("Running review pipeline (reviewer → qa → security)…")
+    report = run_review(agent, target, verbose=False)
+
+    verdict = None
+    if not args.no_verdict:
+        verdict, vtext = synthesize_verdict(agent, report)
+        report += f"\n\n## verdict\n\n{vtext}\n"
+
+    print(report)
+    if args.output:
+        try:
+            Path(args.output).write_text(report, encoding="utf-8")
+            ui.info(f"Wrote report to {args.output}")
+        except OSError as exc:
+            ui.error(f"Could not write {args.output}: {exc}")
+
+    if verdict:
+        ui.console.print(f"\n[bold]Verdict:[/bold] {verdict}")
+        if verdict == NEEDS_CHANGES and args.fail_on == "needs-changes":
+            return 1
+        if verdict == UNKNOWN:
+            ui.warn("Verdict indeterminate; not failing the build.")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     os.environ.setdefault("CODED_DATE", _dt.date.today().isoformat())
     if argv is None:
@@ -205,6 +277,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _handle_models_command(argv[1:])
     if argv and argv[0] == "index":
         return _handle_index_command(argv[1:])
+    if argv and argv[0] == "review":
+        return _handle_review_command(argv[1:])
 
     parser = build_parser()
     args = parser.parse_args(argv)

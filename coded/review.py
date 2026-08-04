@@ -68,3 +68,35 @@ def run_review(agent, target: Optional[str] = None,
     if verbose:
         ui.rule("review complete")
     return aggregated
+
+
+# Verdict tokens used for the CI gate.
+APPROVE = "APPROVE"
+NEEDS_CHANGES = "NEEDS_CHANGES"
+UNKNOWN = "UNKNOWN"
+
+
+def synthesize_verdict(agent, report: str) -> tuple:
+    """Have the model classify the aggregated findings. Returns (verdict, text)."""
+    messages = [
+        {"role": "system", "content":
+            "You are a release gate for a CI pipeline. Read the aggregated code-review "
+            "findings and decide whether the change is safe to merge."},
+        {"role": "user", "content":
+            report + "\n\nRespond with EXACTLY this format:\n"
+            "First line: 'VERDICT: APPROVE' or 'VERDICT: NEEDS_CHANGES'.\n"
+            "Then 2-4 sentences justifying it, listing any blocking issues."},
+    ]
+    try:
+        completion = agent.llm.complete(messages, tools=None, stream=False)
+    except Exception as exc:  # noqa: BLE001
+        return UNKNOWN, f"(verdict synthesis failed: {exc})"
+    text = (completion.content or "").strip()
+    head = text.upper()[:120]
+    if NEEDS_CHANGES in head:
+        verdict = NEEDS_CHANGES
+    elif APPROVE in head:
+        verdict = APPROVE
+    else:
+        verdict = UNKNOWN
+    return verdict, text

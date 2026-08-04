@@ -102,7 +102,10 @@ config.example.json     # sample configuration
 7. **Review pipeline** (`review.py`): `run_review(agent, target)` runs the
    `reviewer`, `qa`, and `security` role skills in sequence, each via
    `Agent.run_subagent` (isolated context), and aggregates their reports. Exposed
-   as the REPL `/review [target]` command; defaults to the current git diff.
+   two ways: the REPL `/review [target]` command, and the non-interactive
+   `coded review` subcommand for CI, which adds `synthesize_verdict()` (one
+   model call → APPROVE/NEEDS_CHANGES) and maps NEEDS_CHANGES to exit code 1
+   (`--fail-on`, `--yolo`, `--output`, `--no-verdict`).
 
 ## Key conventions
 

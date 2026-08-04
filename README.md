@@ -188,6 +188,8 @@ coded -m fast "..."            # pick a configured model alias
 coded --yolo "..."             # auto-approve all tool actions
 coded --no-mcp                 # disable MCP servers for this run
 coded models                   # list configured models
+coded index                    # build the semantic search index
+coded review [target]          # non-interactive review pipeline (CI); exit 1 on NEEDS_CHANGES
 ```
 
 ### Slash commands (in the REPL)
@@ -313,6 +315,26 @@ changes (via the `git` tool):
 ```
 /review                       # review the current git diff
 /review coded/agent.py        # review a specific file
+```
+
+**For CI**, the same pipeline is a non-interactive subcommand that ends with a
+synthesized pass/fail verdict and sets the exit code:
+
+```bash
+coded review --yolo                       # review the diff; exit 1 if NEEDS_CHANGES
+coded review src/ --output review.md      # review a target, save the report
+coded review --fail-on never              # always exit 0 (report only)
+coded review --no-verdict                 # skip the verdict/gate step
+```
+
+`--yolo` lets the qa/security phases run tests and scanners via `bash`
+(otherwise those actions are denied in non-interactive mode and the review is
+read-only). Example GitHub Actions step:
+
+```yaml
+- run: pip install -e . && coded review --yolo -o review.md
+  env:
+    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 ```
 
 Discovery locations (a later location overrides an earlier one on name clash, so
