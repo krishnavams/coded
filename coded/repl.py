@@ -6,13 +6,28 @@ from pathlib import Path
 from typing import Optional
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.styles import Style
 from rich.table import Table
 
 from coded import ui
 from coded.agent import Agent
 from coded.config import Config, ConfigError
+
+# prompt_toolkit color theme (matches ui.py accents).
+_PT_STYLE = Style.from_dict({
+    "prompt": "#7c9cff bold",
+    "bottom-toolbar": "#8a94a7 bg:#161922",
+    "bottom-toolbar.accent": "#5ad1a0 bg:#161922",
+    "completion-menu.completion": "bg:#161922 #c0c8d8",
+    "completion-menu.completion.current": "bg:#7c9cff #0b0e14 bold",
+    "completion-menu.meta.completion": "bg:#161922 #6b7488",
+    "completion-menu.meta.completion.current": "bg:#5f78c9 #0b0e14",
+    "auto-suggestion": "#4a5568",
+})
 
 SLASH_COMMANDS = {
     "/help": "Show this help.",
@@ -57,23 +72,50 @@ class Repl:
         self.config = config
         self._on_turn = on_turn  # called after each completed turn (autosave)
         self._pending_images: Optional[list] = None
+
         words = list(SLASH_COMMANDS) + list(config.models) + list(agent.skills)
-        completer = WordCompleter(words, sentence=True)
+        meta = dict(SLASH_COMMANDS)
+        meta.update({name: f"model · {mc.model}" for name, mc in config.models.items()})
+        meta.update({name: "skill" for name in agent.skills})
+        completer = WordCompleter(words, meta_dict=meta, sentence=True)
+
         self.prompt = PromptSession(
             history=FileHistory(str(_history_path())),
             completer=completer,
+            auto_suggest=AutoSuggestFromHistory(),
+            style=_PT_STYLE,
+            bottom_toolbar=self._bottom_toolbar,
+            complete_while_typing=True,
         )
         # Wire the permission prompt into the manager.
         self.agent.permissions.set_prompt(self._permission_prompt)
 
+    # -- status bar ---------------------------------------------------------
+    def _bottom_toolbar(self):
+        s = self.agent.session
+        u = s.total_usage
+        cost = s.estimated_cost(self.agent.model)
+        tok = u.prompt_tokens + u.completion_tokens
+        tok_str = f"{tok/1000:.1f}k" if tok >= 1000 else str(tok)
+        compact = "  ⟳ compacted" if getattr(s, "compactions", 0) else ""
+        return HTML(
+            f"  <b>{self.agent.model.name}</b>"
+            f"   turns {s.turns}"
+            f"   tokens {tok_str}"
+            f"   ~${cost:.4f}{compact}"
+            f"   <b>/help</b>"
+        )
+
     # -- permission prompt --------------------------------------------------
     def _permission_prompt(self, title: str, detail: str) -> str:
         ui.console.print()
-        ui.console.print(f"[yellow]▶ {title}[/yellow]")
-        for line in detail.splitlines() or [detail]:
-            ui.console.print(f"  [dim]{line}[/dim]")
+        ui.permission_panel(title, detail)
         try:
-            answer = self.prompt.prompt("  Allow? [y]es / [n]o / [a]lways: ")
+            answer = self.prompt.prompt(
+                HTML("  <b>Allow?</b> <ansigreen>y</ansigreen>es  "
+                     "<ansired>n</ansired>o  <ansicyan>a</ansicyan>lways "),
+                bottom_toolbar=None,
+            )
         except (EOFError, KeyboardInterrupt):
             return "no"
         return answer or "no"
@@ -87,10 +129,10 @@ class Repl:
             if pending is not None:
                 text = pending
                 pending = None
-                ui.console.print(f"[bold]›[/bold] {text}")
+                ui.echo_user(text)
             else:
                 try:
-                    text = self.prompt.prompt("› ")
+                    text = self.prompt.prompt(HTML("<prompt>❯</prompt> "))
                 except KeyboardInterrupt:
                     continue
                 except EOFError:

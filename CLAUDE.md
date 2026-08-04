@@ -159,7 +159,10 @@ config.example.json     # sample configuration
   verification warns. Route new endpoint clients through this helper.
 - **UI**: use the helpers in `coded/ui.py` and its single shared `console`.
   Displayed tool output is truncated for readability; the **model** always
-  receives the full tool result (truncation is display-only).
+  receives the full tool result (truncation is display-only). Colors come from
+  the palette constants (`ACCENT`, `MUTED`, …); `ui.thinking()` is the spinner
+  used by the streaming path. The REPL (`repl.py`) adds a prompt_toolkit
+  `bottom_toolbar` status bar, `AutoSuggestFromHistory`, and a shared `_PT_STYLE`.
 - **Streaming**: `LLMClient._stream` accumulates text and tool-call deltas.
   `stream_options={"include_usage": true}` is requested but retried without it
   if the endpoint rejects it — keep this graceful-degradation habit for

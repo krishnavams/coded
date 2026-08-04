@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from rich.console import Console
+from rich.box import ROUNDED
+from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
@@ -13,6 +14,13 @@ from rich.text import Text
 console = Console()
 _err_console = Console(stderr=True)
 _quiet = False
+
+# --- palette (works on dark and light terminals) ---------------------------
+ACCENT = "#7c9cff"     # primary accent (violet-blue)
+ACCENT2 = "#5ad1a0"    # success/green
+MUTED = "#8a94a7"      # dimmed text
+WARN = "#e0af68"       # amber
+ERR = "#f7768e"        # red
 
 
 def set_quiet(enabled: bool) -> None:
@@ -24,26 +32,82 @@ def set_quiet(enabled: bool) -> None:
 def _log() -> Console:
     return _err_console if _quiet else console
 
+
+class _NoStatus:
+    def start(self):
+        return self
+
+    def stop(self):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def thinking(text: str = "Thinking"):
+    """A spinner shown while waiting on the model. No-op in quiet mode."""
+    if _quiet:
+        return _NoStatus()
+    return console.status(f"[{MUTED}]{text}…[/]", spinner="dots", spinner_style=ACCENT)
+
+
 # Truncation limits for displaying tool activity (the model still sees full output).
 _MAX_ARG_LEN = 300
 _MAX_RESULT_LINES = 12
 _MAX_RESULT_CHARS = 1600
 
 
+def _short_path(cwd: str, width: int = 48) -> str:
+    if len(cwd) <= width:
+        return cwd
+    return "…" + cwd[-(width - 1):]
+
+
 def banner(model_name: str, cwd: str) -> None:
-    body = Text()
-    body.append("coded", style="bold cyan")
-    body.append("  — a coding agent for OpenAI-compatible models\n\n", style="dim")
-    body.append("model: ", style="dim")
-    body.append(f"{model_name}\n", style="green")
-    body.append("cwd:   ", style="dim")
-    body.append(f"{cwd}\n\n", style="white")
-    body.append("Type your request, or /help for commands. Ctrl-C to interrupt, /exit to quit.", style="dim")
-    console.print(Panel(body, border_style="cyan", expand=False))
+    from coded import __version__
+
+    title = Text()
+    title.append("◆ ", style=ACCENT)
+    title.append("coded ", style=f"bold {ACCENT}")
+    title.append(f"v{__version__}", style=MUTED)
+    title.append("   a coding agent for OpenAI-compatible models", style=MUTED)
+
+    meta = Text()
+    meta.append("  model ", style=MUTED)
+    meta.append(model_name, style=f"bold {ACCENT2}")
+    meta.append("     dir ", style=MUTED)
+    meta.append(_short_path(cwd), style="white")
+
+    hint = Text()
+    hint.append("  /help", style=ACCENT)
+    hint.append(" commands   ", style=MUTED)
+    hint.append("/model", style=ACCENT)
+    hint.append(" switch   ", style=MUTED)
+    hint.append("Ctrl-C", style=ACCENT)
+    hint.append(" interrupt   ", style=MUTED)
+    hint.append("/exit", style=ACCENT)
+    hint.append(" quit", style=MUTED)
+
+    panel = Panel(
+        Group(title, Text(""), meta, Text(""), hint),
+        box=ROUNDED, border_style=ACCENT, padding=(0, 1), expand=False,
+    )
+    console.print(panel)
 
 
 def user_prefix() -> None:
     console.print()
+
+
+def echo_user(text: str) -> None:
+    """Echo an auto-submitted user message (e.g. the initial prompt)."""
+    line = Text()
+    line.append("❯ ", style=f"bold {ACCENT}")
+    line.append(text, style="white")
+    console.print(line)
 
 
 def assistant_markdown(text: str) -> None:
@@ -63,10 +127,10 @@ def _short_args(args: dict) -> str:
 
 def tool_call(name: str, args: dict) -> None:
     label = Text()
-    label.append("⚙ ", style="yellow")
-    label.append(name, style="bold yellow")
+    label.append("● ", style=ACCENT)
+    label.append(name, style=f"bold {ACCENT}")
     label.append("  ")
-    label.append(_short_args(args), style="dim")
+    label.append(_short_args(args), style=MUTED)
     console.print(label)
 
 
@@ -77,33 +141,43 @@ def tool_result(content: str, is_error: bool = False) -> None:
     if len(text) > _MAX_RESULT_CHARS:
         text = text[:_MAX_RESULT_CHARS] + "…"
     extra = len(lines) - len(shown)
-    style = "red" if is_error else "dim"
-    prefix = "  ✗ " if is_error else "  ↳ "
+    style = ERR if is_error else MUTED
+    gutter_style = ERR if is_error else ACCENT
     if not text.strip():
         text = "(no output)"
     body = Text()
-    for i, line in enumerate(text.splitlines() or [text]):
-        body.append(prefix if i == 0 else "    ")
+    for line in text.splitlines() or [text]:
+        body.append("  │ ", style=gutter_style)
         body.append(line + "\n", style=style)
     if extra > 0:
-        body.append(f"    … (+{extra} more lines)\n", style="dim italic")
+        body.append("  │ ", style=gutter_style)
+        body.append(f"… (+{extra} more lines)\n", style=f"{MUTED} italic")
     console.print(body, end="")
 
 
 def info(msg: str) -> None:
-    _log().print(f"[dim]{msg}[/dim]")
+    _log().print(f"[{MUTED}]{msg}[/]")
 
 
 def warn(msg: str) -> None:
-    _log().print(f"[yellow]! {msg}[/yellow]")
+    _log().print(f"[{WARN}]![/] {msg}")
 
 
 def error(msg: str) -> None:
-    _log().print(f"[red]✗ {msg}[/red]")
+    _log().print(f"[{ERR}]✗[/] {msg}")
 
 
 def success(msg: str) -> None:
-    _log().print(f"[green]✓ {msg}[/green]")
+    _log().print(f"[{ACCENT2}]✓[/] {msg}")
+
+
+def permission_panel(title: str, detail: str) -> None:
+    """A framed prompt describing an action awaiting approval."""
+    body = Text()
+    for line in (detail.splitlines() or [detail]):
+        body.append(line + "\n", style="white")
+    console.print(Panel(body, title=f"[{WARN}]{title}[/]", title_align="left",
+                        box=ROUNDED, border_style=WARN, padding=(0, 1), expand=False))
 
 
 def rule(msg: str = "") -> None:

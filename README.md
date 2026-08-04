@@ -39,8 +39,10 @@ runtime.
   `/model <name>`.
 - **Permission layer** — file writes and shell commands ask for approval
   (once / always / deny), or run unattended with `--yolo`.
-- **Interactive REPL** — streaming Markdown output, slash commands, input
-  history, tab-completion.
+- **Modern interactive REPL** — streaming Markdown, a live status bar
+  (model · turns · tokens · cost), ghost-text history suggestions, rich
+  tab-completion with descriptions, a "thinking" spinner, and framed
+  permission/diff prompts.
 - **Sub-agents** — the `task` tool spawns a focused agent with its own context
   for large searches or multi-step subtasks.
 - **Skills & agent roles** — Claude Code-style `SKILL.md` instruction packs with

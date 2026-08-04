@@ -114,14 +114,21 @@ class Agent:
         return self.llm.complete(self.session.messages, tools, stream=self.stream)
 
     def _call_streaming(self, tools) -> Completion:
-        """Stream assistant text into a live-rendered Markdown block."""
+        """Stream assistant text into a live-rendered Markdown block.
+
+        A spinner shows while we wait for the first token, then hands off to the
+        live Markdown view.
+        """
         buffer: List[str] = []
         live = Live(console=ui.console, refresh_per_second=12, transient=False)
+        status = ui.thinking()
+        status.start()
         started = False
 
         def on_text(chunk: str) -> None:
             nonlocal started
             if not started:
+                status.stop()
                 live.start()
                 started = True
             buffer.append(chunk)
@@ -135,6 +142,8 @@ class Agent:
             if started:
                 live.update(Markdown("".join(buffer)))
                 live.stop()
+            else:
+                status.stop()
         return completion
 
     # -- tool execution -----------------------------------------------------
