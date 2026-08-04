@@ -33,10 +33,14 @@ class CheckpointManager:
         self.cwd = Path(cwd)
         self.root = self.cwd / ".coded" / "checkpoints"
         self.current: Optional[_Group] = None
+        # Monotonic sequence so group ids sort chronologically even within the
+        # same millisecond; continue from any groups already on disk.
+        self._seq = len(self._group_dirs())
 
     # -- recording ----------------------------------------------------------
     def begin(self, label: str) -> None:
-        gid = time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}"
+        self._seq += 1
+        gid = time.strftime("%Y%m%d-%H%M%S") + f"-{self._seq:06d}"
         self.current = _Group(id=gid, label=label, directory=self.root / gid)
 
     def record(self, path: Path) -> None:

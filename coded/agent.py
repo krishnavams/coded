@@ -184,6 +184,10 @@ class Agent:
         }.get(tool_name, f"Run {tool_name}")
 
     # -- sub-agents ---------------------------------------------------------
+    def run_subagent(self, prompt: str) -> str:
+        """Run a one-shot sub-agent (isolated context) and return its report."""
+        return self._make_subagent_runner()(prompt)
+
     def _make_subagent_runner(self) -> Callable[[str], str]:
         def runner(prompt: str) -> str:
             if self.verbose:

@@ -21,6 +21,7 @@ SLASH_COMMANDS = {
     "/tools": "List available tools.",
     "/skills": "List available skills.",
     "/skill": "Invoke a skill now: /skill <name> [task].",
+    "/review": "Run reviewer→qa→security sub-agents on the changes: /review [target].",
     "/image": "Attach image(s) to your next message: /image <path>... [prompt].",
     "/undo": "Undo the last file changes (checkpoint).",
     "/checkpoints": "List saved checkpoints.",
@@ -126,6 +127,8 @@ class Repl:
             self._cmd_skills()
         elif cmd == "/skill":
             self._cmd_skill(args)
+        elif cmd == "/review":
+            self._cmd_review(args)
         elif cmd == "/cost":
             self._cmd_cost()
         elif cmd in ("/clear", "/reset"):
@@ -209,6 +212,20 @@ class Repl:
             ui.user_prefix()
             self.agent.run(prompt, images=self._pending_images)
             self._pending_images = None
+
+    def _cmd_review(self, args) -> None:
+        from coded.review import REVIEW_PHASES, run_review
+
+        if not self.agent.skills or not any(p in self.agent.skills for p in REVIEW_PHASES):
+            ui.error("Review roles unavailable (skills disabled?). Expected: "
+                     + ", ".join(REVIEW_PHASES))
+            return
+        target = " ".join(args).strip() or None
+        ui.info("Running review pipeline: " + " → ".join(REVIEW_PHASES))
+        try:
+            run_review(self.agent, target, verbose=True)
+        except KeyboardInterrupt:
+            ui.warn("Review interrupted.")
 
     def _cmd_checkpoints(self) -> None:
         cp = self.agent.checkpoints

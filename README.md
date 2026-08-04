@@ -200,6 +200,7 @@ coded models                   # list configured models
 | `/tools` | List available tools |
 | `/skills` | List available skills |
 | `/skill <name> [task]` | Invoke a skill now |
+| `/review [target]` | Run reviewer→qa→security sub-agents and aggregate |
 | `/image <path>... [prompt]` | Attach image(s) for a vision model |
 | `/undo` | Revert the last turn's file changes |
 | `/checkpoints` | List saved checkpoints |
@@ -303,6 +304,16 @@ when a task matches, or you can run one directly:
 
 They're written to use the `task` sub-agent tool for isolated work, so a review
 or investigation doesn't clutter the main conversation.
+
+**`/review` pipeline.** The `/review [target]` command runs `reviewer`, then
+`qa`, then `security` as sequential, isolated sub-agents and aggregates their
+reports into one summary. With no target it reviews your current uncommitted
+changes (via the `git` tool):
+
+```
+/review                       # review the current git diff
+/review coded/agent.py        # review a specific file
+```
 
 Discovery locations (a later location overrides an earlier one on name clash, so
 your own `planner` shadows the built-in):

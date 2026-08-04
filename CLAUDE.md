@@ -41,6 +41,7 @@ coded/
 ├── repl.py             # interactive REPL and slash commands
 ├── ui.py               # rich-based rendering helpers (single Console)
 ├── skills.py           # skill discovery, frontmatter parsing, prompt section
+├── review.py           # /review pipeline: reviewer→qa→security sub-agents
 ├── builtin_skills/     # bundled agent roles: planner, reviewer, qa, security
 ├── checkpoints.py      # CheckpointManager: per-turn file snapshots for /undo
 ├── embeddings.py       # EmbeddingClient + embedding-model resolution
@@ -64,6 +65,7 @@ coded/
 tests/
 ├── conftest.py         # FakeServer + EmbeddingsServer + RouteServer (all offline)
 ├── test_agent_e2e.py   # full agent loop (tool call, streaming, permission)
+├── test_review.py      # /review pipeline (reviewer→qa→security)
 ├── test_checkpoints.py # checkpoint/undo + move/delete
 ├── test_git_tools.py   # git tool + github tool (fake API)
 ├── test_semantic_and_web.py  # index/search, web_fetch/search, image encoding
@@ -97,6 +99,10 @@ config.example.json     # sample configuration
    run without skills. Frontmatter is parsed by a tiny built-in YAML subset (no
    pyyaml dependency) — scalars, inline `[a, b]`, and block lists only. Built-in
    role skills (`builtin_skills/`) ship via `[tool.setuptools.package-data]`.
+7. **Review pipeline** (`review.py`): `run_review(agent, target)` runs the
+   `reviewer`, `qa`, and `security` role skills in sequence, each via
+   `Agent.run_subagent` (isolated context), and aggregates their reports. Exposed
+   as the REPL `/review [target]` command; defaults to the current git diff.
 
 ## Key conventions
 
