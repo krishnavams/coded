@@ -93,8 +93,7 @@ Config is layered (later overrides earlier):
 4. Command-line flags
 
 A model entry only needs a provider and a model id; the base URL and API-key
-environment variable are inherited from the provider preset. See
-[`config.example.json`](./config.example.json). Example:
+environment variable are inherited from the provider preset. Example:
 
 ```json
 {
@@ -107,12 +106,66 @@ environment variable are inherited from the provider preset. See
 }
 ```
 
+**Minimal — just a URL and a model name.** If your endpoint is
+OpenAI-compatible, an entry can be as short as a `base_url` and a `model`. No
+provider or API key is needed for self-hosted/keyless endpoints (coded falls
+back to a placeholder key); add `api_key`/`api_key_env` if yours requires one:
+
+```json
+{
+  "default_model": "my-model",
+  "models": {
+    "my-model":   { "base_url": "http://localhost:8000/v1", "model": "my-model-name" },
+    "remote":     { "base_url": "https://my-host/v1", "model": "another-model", "api_key_env": "MY_KEY" }
+  }
+}
+```
+
+Or add one for a single run without any config file:
+
+```bash
+coded --base-url http://localhost:8000/v1 --model-name my-model-name
+```
+
+**Have a lot of models?** [`config.example.json`](./config.example.json) is a
+ready-to-trim catalogue with ~25 models across every provider, each with its
+own context window, token limit, and pricing filled in. Copy it to your config
+path and delete the ones you don't use:
+
+```bash
+cp config.example.json ~/.config/coded/config.json
+```
+
+### Per-model configuration fields
+
+Each entry under `models` accepts:
+
+| Field | Required | Description |
+|---|---|---|
+| `provider` | yes* | Provider preset name (supplies `base_url` + key env). |
+| `model` | yes | Concrete API model id sent to the endpoint. Defaults to the alias. |
+| `base_url` | no | Override the provider's base URL (required for `openai-compatible`). |
+| `api_key` | no | Inline key (avoid committing real keys). |
+| `api_key_env` | no | Env var holding the key (overrides the provider default). |
+| `max_tokens` | no | Max output tokens per response. |
+| `temperature` | no | Sampling temperature. Omit for models that reject it (e.g. some reasoning models). |
+| `context_window` | no | Total context size (informational; default 128000). |
+| `input_cost` | no | USD per **million** input tokens (used by `/cost`). |
+| `output_cost` | no | USD per **million** output tokens. |
+| `supports_tools` | no | Set `false` for models without function-calling (e.g. search-only models); the agent then runs without tools. |
+| `extra_headers` | no | Extra HTTP headers (e.g. OpenRouter's `HTTP-Referer`/`X-Title`). |
+
+\* Instead of `provider`, you may set `base_url` + `api_key`/`api_key_env` directly.
+
 ### Built-in provider presets
 
-`openai`, `openrouter`, `groq`, `together`, `deepseek`, `mistral`, `xai`,
-`fireworks`, `ollama`, `lmstudio`, `llamacpp`, and `openai-compatible`
-(supply your own `base_url`). Each preset knows the default base URL and the
-environment variable that holds the API key (e.g. `GROQ_API_KEY`).
+`openai`, `anthropic`, `google` (Gemini), `openrouter`, `groq`, `together`,
+`deepseek`, `mistral`, `xai`, `fireworks`, `cerebras`, `perplexity`, `nvidia`,
+`deepinfra`, `moonshot`, `ollama`, `lmstudio`, `llamacpp`, `vllm`, `jan`, and
+`openai-compatible` (supply your own `base_url`). Each preset knows the default
+base URL and the environment variable that holds the API key (e.g. `GROQ_API_KEY`,
+`ANTHROPIC_API_KEY`). `anthropic` and `google` use those vendors'
+OpenAI-compatible endpoints.
 
 ## Usage
 

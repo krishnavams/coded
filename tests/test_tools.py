@@ -97,3 +97,31 @@ def test_config_default_from_env(monkeypatch, tmp_path):
     monkeypatch.setenv("CODED_CONFIG", str(tmp_path / "none.json"))
     cfg = load_config(cwd=str(tmp_path))
     assert cfg.default_model == "gpt-4o"
+
+
+def test_minimal_url_and_model_needs_no_key(monkeypatch):
+    """A model defined by just base_url + model works without an API key."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    mc = ModelConfig.from_dict("m", {"base_url": "http://localhost:8000/v1", "model": "x"})
+    assert mc.resolved_base_url() == "http://localhost:8000/v1"
+    assert mc.resolved_api_key() == "not-needed"
+
+
+def test_example_config_parses_and_resolves(monkeypatch, tmp_path):
+    """config.example.json must load and every model must resolve a base_url."""
+    import json
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parent.parent / "config.example.json"
+    monkeypatch.setenv("CODED_CONFIG", str(example))
+    # Provide keys so hosted providers resolve without raising.
+    for env in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY",
+                "DEEPSEEK_API_KEY", "XAI_API_KEY", "MISTRAL_API_KEY", "TOGETHER_API_KEY",
+                "FIREWORKS_API_KEY", "CEREBRAS_API_KEY", "PERPLEXITY_API_KEY",
+                "OPENROUTER_API_KEY", "MOONSHOT_API_KEY", "MY_API_KEY"):
+        monkeypatch.setenv(env, "test")
+    cfg = load_config(cwd=str(tmp_path))
+    assert cfg.default_model in cfg.models
+    for name, mc in cfg.models.items():
+        assert mc.resolved_base_url(), name
+        assert mc.resolved_api_key(), name

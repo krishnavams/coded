@@ -1,38 +1,235 @@
 {
   "default_model": "gpt-4o",
+
   "models": {
     "gpt-4o": {
       "provider": "openai",
       "model": "gpt-4o",
-      "max_tokens": 4096,
+      "context_window": 128000,
+      "max_tokens": 16384,
+      "temperature": 0.2,
       "input_cost": 2.5,
       "output_cost": 10.0
     },
     "gpt-4o-mini": {
       "provider": "openai",
       "model": "gpt-4o-mini",
+      "context_window": 128000,
+      "max_tokens": 16384,
       "input_cost": 0.15,
       "output_cost": 0.6
     },
+    "gpt-4.1": {
+      "provider": "openai",
+      "model": "gpt-4.1",
+      "context_window": 1000000,
+      "max_tokens": 32768,
+      "input_cost": 2.0,
+      "output_cost": 8.0
+    },
+    "o3-mini": {
+      "provider": "openai",
+      "model": "o3-mini",
+      "context_window": 200000,
+      "max_tokens": 100000,
+      "input_cost": 1.1,
+      "output_cost": 4.4
+    },
+
+    "claude-sonnet": {
+      "provider": "anthropic",
+      "model": "claude-3-7-sonnet-latest",
+      "context_window": 200000,
+      "max_tokens": 8192,
+      "temperature": 0.2,
+      "input_cost": 3.0,
+      "output_cost": 15.0
+    },
+    "claude-haiku": {
+      "provider": "anthropic",
+      "model": "claude-3-5-haiku-latest",
+      "context_window": 200000,
+      "max_tokens": 8192,
+      "input_cost": 0.8,
+      "output_cost": 4.0
+    },
+
+    "gemini-flash": {
+      "provider": "google",
+      "model": "gemini-2.0-flash",
+      "context_window": 1000000,
+      "max_tokens": 8192,
+      "input_cost": 0.1,
+      "output_cost": 0.4
+    },
+    "gemini-pro": {
+      "provider": "google",
+      "model": "gemini-1.5-pro",
+      "context_window": 2000000,
+      "max_tokens": 8192,
+      "input_cost": 1.25,
+      "output_cost": 5.0
+    },
+
+    "deepseek-chat": {
+      "provider": "deepseek",
+      "model": "deepseek-chat",
+      "context_window": 64000,
+      "max_tokens": 8192,
+      "temperature": 0.2,
+      "input_cost": 0.27,
+      "output_cost": 1.1
+    },
+    "deepseek-reasoner": {
+      "provider": "deepseek",
+      "model": "deepseek-reasoner",
+      "context_window": 64000,
+      "max_tokens": 8192,
+      "input_cost": 0.55,
+      "output_cost": 2.19
+    },
+
+    "grok": {
+      "provider": "xai",
+      "model": "grok-2-latest",
+      "context_window": 131072,
+      "max_tokens": 8192,
+      "input_cost": 2.0,
+      "output_cost": 10.0
+    },
+
+    "mistral-large": {
+      "provider": "mistral",
+      "model": "mistral-large-latest",
+      "context_window": 128000,
+      "max_tokens": 8192,
+      "input_cost": 2.0,
+      "output_cost": 6.0
+    },
+    "codestral": {
+      "provider": "mistral",
+      "model": "codestral-latest",
+      "context_window": 256000,
+      "max_tokens": 8192,
+      "temperature": 0.1,
+      "input_cost": 0.3,
+      "output_cost": 0.9
+    },
+
     "llama-groq": {
       "provider": "groq",
-      "model": "llama-3.3-70b-versatile"
+      "model": "llama-3.3-70b-versatile",
+      "context_window": 128000,
+      "max_tokens": 32768,
+      "input_cost": 0.59,
+      "output_cost": 0.79
     },
-    "deepseek": {
-      "provider": "deepseek",
-      "model": "deepseek-chat"
+    "llama-groq-fast": {
+      "provider": "groq",
+      "model": "llama-3.1-8b-instant",
+      "context_window": 128000,
+      "max_tokens": 8192,
+      "input_cost": 0.05,
+      "output_cost": 0.08
     },
+
+    "llama-cerebras": {
+      "provider": "cerebras",
+      "model": "llama-3.3-70b",
+      "context_window": 128000,
+      "max_tokens": 8192,
+      "input_cost": 0.85,
+      "output_cost": 1.2
+    },
+
+    "qwen-coder-together": {
+      "provider": "together",
+      "model": "Qwen/Qwen2.5-Coder-32B-Instruct",
+      "context_window": 32768,
+      "max_tokens": 8192,
+      "temperature": 0.1,
+      "input_cost": 0.8,
+      "output_cost": 0.8
+    },
+
+    "llama-fireworks": {
+      "provider": "fireworks",
+      "model": "accounts/fireworks/models/llama-v3p3-70b-instruct",
+      "context_window": 128000,
+      "max_tokens": 8192,
+      "input_cost": 0.9,
+      "output_cost": 0.9
+    },
+
+    "openrouter-sonnet": {
+      "provider": "openrouter",
+      "model": "anthropic/claude-3.7-sonnet",
+      "context_window": 200000,
+      "max_tokens": 8192,
+      "input_cost": 3.0,
+      "output_cost": 15.0,
+      "extra_headers": {
+        "HTTP-Referer": "https://github.com/krishnavams/coded",
+        "X-Title": "coded"
+      }
+    },
+
+    "sonar": {
+      "provider": "perplexity",
+      "model": "sonar-pro",
+      "context_window": 200000,
+      "max_tokens": 8192,
+      "supports_tools": false,
+      "input_cost": 3.0,
+      "output_cost": 15.0
+    },
+
+    "kimi": {
+      "provider": "moonshot",
+      "model": "kimi-k2-0711-preview",
+      "context_window": 128000,
+      "max_tokens": 8192,
+      "input_cost": 0.6,
+      "output_cost": 2.5
+    },
+
     "qwen-local": {
       "provider": "ollama",
-      "model": "qwen2.5-coder:7b"
+      "model": "qwen2.5-coder:7b",
+      "context_window": 32768,
+      "max_tokens": 8192,
+      "temperature": 0.2
     },
-    "custom-endpoint": {
+    "llama-local": {
+      "provider": "ollama",
+      "model": "llama3.1:8b",
+      "context_window": 128000,
+      "max_tokens": 8192
+    },
+    "lmstudio-local": {
+      "provider": "lmstudio",
+      "model": "your-loaded-model-id",
+      "context_window": 32768,
+      "max_tokens": 8192
+    },
+    "vllm-local": {
+      "provider": "vllm",
+      "model": "meta-llama/Llama-3.1-8B-Instruct",
+      "context_window": 128000,
+      "max_tokens": 8192
+    },
+
+    "custom": {
       "provider": "openai-compatible",
       "model": "my-model-id",
-      "base_url": "http://localhost:8000/v1",
-      "api_key_env": "MY_API_KEY"
+      "base_url": "http://localhost:9000/v1",
+      "api_key_env": "MY_API_KEY",
+      "context_window": 32768,
+      "max_tokens": 4096,
+      "supports_tools": true
     }
   },
+
   "mcp_servers": {
     "filesystem": {
       "command": "npx",
@@ -40,6 +237,7 @@
       "enabled": false
     }
   },
+
   "auto_approve": false,
   "max_turns": 100,
   "stream": true

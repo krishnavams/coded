@@ -84,7 +84,14 @@ config.example.json     # sample configuration
 - **Return text, not exceptions, to the model.** Error strings should tell the
   model what to do differently.
 - **Adding a provider**: add an entry to `PROVIDERS` in `config.py` (base URL +
-  API-key env var). Models reference it via `"provider": "<name>"`.
+  API-key env var). Models reference it via `"provider": "<name>"`. Add local /
+  keyless providers to `LOCAL_PROVIDERS` too. A model may instead be defined by
+  just `base_url` + `model` (custom endpoint); `resolved_api_key()` falls back to
+  a placeholder key so keyless endpoints work without config.
+- **Model config fields** live on `ModelConfig`: `context_window`, `max_tokens`,
+  `temperature`, `input_cost`/`output_cost` (per Mtok, used by `/cost`),
+  `supports_tools`, `extra_headers`. `config.example.json` is the catalogue and
+  is validated by a test — keep it parseable and every model resolvable.
 - **UI**: use the helpers in `coded/ui.py` and its single shared `console`.
   Displayed tool output is truncated for readability; the **model** always
   receives the full tool result (truncation is display-only).

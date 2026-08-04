@@ -29,6 +29,9 @@ from typing import Any, Dict, Optional
 # ---------------------------------------------------------------------------
 PROVIDERS: Dict[str, Dict[str, str]] = {
     "openai": {"base_url": "https://api.openai.com/v1", "api_key_env": "OPENAI_API_KEY"},
+    # Anthropic and Google both expose OpenAI-compatible endpoints.
+    "anthropic": {"base_url": "https://api.anthropic.com/v1", "api_key_env": "ANTHROPIC_API_KEY"},
+    "google": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai", "api_key_env": "GEMINI_API_KEY"},
     "openrouter": {"base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY"},
     "groq": {"base_url": "https://api.groq.com/openai/v1", "api_key_env": "GROQ_API_KEY"},
     "together": {"base_url": "https://api.together.xyz/v1", "api_key_env": "TOGETHER_API_KEY"},
@@ -36,13 +39,23 @@ PROVIDERS: Dict[str, Dict[str, str]] = {
     "mistral": {"base_url": "https://api.mistral.ai/v1", "api_key_env": "MISTRAL_API_KEY"},
     "xai": {"base_url": "https://api.x.ai/v1", "api_key_env": "XAI_API_KEY"},
     "fireworks": {"base_url": "https://api.fireworks.ai/inference/v1", "api_key_env": "FIREWORKS_API_KEY"},
+    "cerebras": {"base_url": "https://api.cerebras.ai/v1", "api_key_env": "CEREBRAS_API_KEY"},
+    "perplexity": {"base_url": "https://api.perplexity.ai", "api_key_env": "PERPLEXITY_API_KEY"},
+    "nvidia": {"base_url": "https://integrate.api.nvidia.com/v1", "api_key_env": "NVIDIA_API_KEY"},
+    "deepinfra": {"base_url": "https://api.deepinfra.com/v1/openai", "api_key_env": "DEEPINFRA_API_KEY"},
+    "moonshot": {"base_url": "https://api.moonshot.ai/v1", "api_key_env": "MOONSHOT_API_KEY"},
     # Local servers — key is usually unused, so a dummy is fine.
     "ollama": {"base_url": "http://localhost:11434/v1", "api_key_env": "OLLAMA_API_KEY"},
     "lmstudio": {"base_url": "http://localhost:1234/v1", "api_key_env": "LMSTUDIO_API_KEY"},
     "llamacpp": {"base_url": "http://localhost:8080/v1", "api_key_env": "LLAMACPP_API_KEY"},
+    "vllm": {"base_url": "http://localhost:8000/v1", "api_key_env": "VLLM_API_KEY"},
+    "jan": {"base_url": "http://localhost:1337/v1", "api_key_env": "JAN_API_KEY"},
     # Generic OpenAI-compatible endpoint; supply base_url yourself.
     "openai-compatible": {"base_url": "", "api_key_env": "OPENAI_API_KEY"},
 }
+
+# Providers whose local servers accept any API key string.
+LOCAL_PROVIDERS = {"ollama", "lmstudio", "llamacpp", "vllm", "jan"}
 
 
 @dataclass
@@ -86,8 +99,13 @@ class ModelConfig:
             if val:
                 return val
         # Local providers usually accept any string.
-        if self.provider in {"ollama", "lmstudio", "llamacpp"}:
+        if self.provider in LOCAL_PROVIDERS:
             return "local"
+        # A model defined by just a URL + model name (custom/self-hosted endpoint,
+        # or the generic openai-compatible provider) often needs no key. Fall back
+        # to a placeholder so `{ "base_url": ..., "model": ... }` works out of the box.
+        if self.base_url or self.provider == "openai-compatible":
+            return os.environ.get("OPENAI_API_KEY") or "not-needed"
         raise ConfigError(
             f"No API key for model '{self.name}'. Set the '{env_name}' environment "
             f"variable, or add 'api_key' to its config entry."
@@ -205,34 +223,57 @@ def load_config(cwd: Optional[str] = None, config_path: Optional[str] = None) ->
 
 
 def sample_config() -> Dict[str, Any]:
-    """A commented-by-example config users can start from."""
+    """A starter config demonstrating per-model configuration fields.
+
+    For a large, ready-to-trim catalogue of models across many providers, see
+    config.example.json in the repository.
+    """
     return {
         "default_model": "gpt-4o",
         "models": {
             "gpt-4o": {
                 "provider": "openai",
                 "model": "gpt-4o",
-                "max_tokens": 4096,
+                "context_window": 128000,
+                "max_tokens": 16384,
+                "temperature": 0.2,
                 "input_cost": 2.5,
                 "output_cost": 10.0,
             },
             "gpt-4o-mini": {
                 "provider": "openai",
                 "model": "gpt-4o-mini",
+                "context_window": 128000,
+                "max_tokens": 16384,
                 "input_cost": 0.15,
                 "output_cost": 0.6,
+            },
+            "claude-sonnet": {
+                "provider": "anthropic",
+                "model": "claude-3-7-sonnet-latest",
+                "context_window": 200000,
+                "max_tokens": 8192,
+                "input_cost": 3.0,
+                "output_cost": 15.0,
             },
             "llama-groq": {
                 "provider": "groq",
                 "model": "llama-3.3-70b-versatile",
+                "context_window": 128000,
+                "max_tokens": 32768,
             },
             "deepseek": {
                 "provider": "deepseek",
                 "model": "deepseek-chat",
+                "context_window": 64000,
+                "max_tokens": 8192,
             },
             "local": {
                 "provider": "ollama",
                 "model": "qwen2.5-coder:7b",
+                "context_window": 32768,
+                "max_tokens": 8192,
+                "temperature": 0.2,
             },
         },
         "mcp_servers": {
@@ -244,6 +285,7 @@ def sample_config() -> Dict[str, Any]:
         },
         "auto_approve": False,
         "max_turns": 100,
+        "stream": True,
     }
 
 
