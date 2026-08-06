@@ -21,7 +21,9 @@ dependencies = [
 [project.optional-dependencies]
 # MCP (Model Context Protocol) client support is optional; the app runs without it.
 mcp = ["mcp>=1.0"]
-dev = ["pytest>=7.0"]
+# Full-screen terminal UI (coded --tui).
+tui = ["textual>=0.60"]
+dev = ["pytest>=7.0", "textual>=0.60", "pytest-asyncio>=0.23"]
 
 [project.scripts]
 coded = "coded.cli:main"
@@ -38,3 +40,4 @@ coded = ["builtin_skills/*/SKILL.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"

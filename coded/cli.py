@@ -48,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--config", help="Path to a specific config file.")
     p.add_argument("--system", help="Extra system-prompt instructions to append.")
     p.add_argument("--max-turns", type=int, help="Cap on agent tool-loop iterations.")
+    p.add_argument("--tui", action="store_true",
+                   help="Launch the full-screen terminal UI (requires: pip install 'coded[tui]').")
     p.add_argument("--no-mcp", action="store_true", help="Disable MCP servers for this run.")
     p.add_argument("--no-skills", action="store_true", help="Disable skill discovery for this run.")
     p.add_argument("--image", action="append", metavar="PATH",
@@ -461,6 +463,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.print_mode:
             return _run_print_mode(agent, initial_prompt, images,
                                    output_format=args.output_format, on_done=autosave)
+        if args.tui:
+            try:
+                from coded.tui import run_tui
+            except ImportError:
+                ui.error("The TUI needs Textual. Install it with: pip install 'coded[tui]'")
+                return 1
+            run_tui(agent, on_turn=autosave)
+            autosave()
+            return 0
         from coded.repl import Repl
 
         Repl(agent, cfg, on_turn=autosave).run(initial=initial_prompt, images=images)

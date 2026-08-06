@@ -39,6 +39,7 @@ coded/
 ├── permissions.py      # PermissionManager: approve/deny/always gate
 ├── prompts.py          # system prompt construction (+ project CODED.md/CLAUDE.md)
 ├── repl.py             # interactive REPL and slash commands
+├── tui.py              # full-screen Textual app (coded --tui), optional
 ├── ui.py               # rich-based rendering helpers (single Console)
 ├── skills.py           # skill discovery, frontmatter parsing, prompt section
 ├── review.py           # /review pipeline: reviewer→qa→security sub-agents
@@ -67,6 +68,7 @@ coded/
 tests/
 ├── conftest.py         # FakeServer + EmbeddingsServer + RouteServer (all offline)
 ├── test_agent_e2e.py   # full agent loop (tool call, streaming, permission)
+├── test_tui.py         # Textual TUI via Pilot (turn, permission modal, clear)
 ├── test_review.py      # /review pipeline + coded review verdict/exit code
 ├── test_compaction.py  # context compaction trigger + tail preservation
 ├── test_permissions_sessions.py  # allow/deny rules, diff preview, sessions, json
@@ -163,6 +165,17 @@ config.example.json     # sample configuration
   the palette constants (`ACCENT`, `MUTED`, …); `ui.thinking()` is the spinner
   used by the streaming path. The REPL (`repl.py`) adds a prompt_toolkit
   `bottom_toolbar` status bar, `AutoSuggestFromHistory`, and a shared `_PT_STYLE`.
+- **Agent display is decoupled via events**: `Agent.on_event` (set by the TUI)
+  receives structured events — `assistant_start/_delta/_end`, `tool_call`,
+  `tool_result`, `diff`, `status`. When it's set, the agent emits instead of
+  printing via `ui` (see `_emit`, `_show_tool_*`, `_call_with_events`). New
+  display sites must route through these helpers, not call `ui` directly, so
+  both front-ends stay in sync.
+- **TUI** (`tui.py`, Textual, optional `[tui]` extra): the synchronous agent
+  runs in a `@work(thread=True)` worker; events are marshalled to the UI thread
+  with `call_from_thread`. The permission callback pushes a `PermissionModal`
+  and blocks the worker on a `threading.Event` until the user answers. Guard the
+  Textual import — the app must run fine without it installed.
 - **Streaming**: `LLMClient._stream` accumulates text and tool-call deltas.
   `stream_options={"include_usage": true}` is requested but retried without it
   if the endpoint rejects it — keep this graceful-degradation habit for

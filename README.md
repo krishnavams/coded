@@ -39,10 +39,10 @@ runtime.
   `/model <name>`.
 - **Permission layer** — file writes and shell commands ask for approval
   (once / always / deny), or run unattended with `--yolo`.
-- **Modern interactive REPL** — streaming Markdown, a live status bar
-  (model · turns · tokens · cost), ghost-text history suggestions, rich
-  tab-completion with descriptions, a "thinking" spinner, and framed
-  permission/diff prompts.
+- **Two front-ends** — a modern inline **REPL** (streaming Markdown, live status
+  bar, ghost-text history suggestions, rich completion, framed permission/diff
+  prompts) and an optional **full-screen TUI** (`coded --tui`) with a scrolling
+  transcript, session sidebar, tool/diff cards, and a permission modal.
 - **Sub-agents** — the `task` tool spawns a focused agent with its own context
   for large searches or multi-step subtasks.
 - **Skills & agent roles** — Claude Code-style `SKILL.md` instruction packs with
@@ -221,6 +221,7 @@ OpenAI-compatible endpoints.
 
 ```bash
 coded [PROMPT]                 # REPL, optionally seeded with a prompt
+coded --tui                    # full-screen terminal UI (pip install 'coded[tui]')
 coded -p "run the tests"       # non-interactive: run once and print
 coded -m fast "..."            # pick a configured model alias
 coded --yolo "..."             # auto-approve all tool actions
@@ -233,6 +234,19 @@ coded index                    # build the semantic search index
 coded review [target]          # non-interactive review pipeline (CI); exit 1 on NEEDS_CHANGES
 coded commit [--commit]        # draft a Conventional Commits message from staged changes
 coded sessions                 # list saved sessions
+```
+
+### Full-screen TUI
+
+`coded --tui` launches a Textual app: a scrolling transcript (user turns,
+streamed assistant Markdown, tool-call and result cards, syntax-highlighted
+diffs), a live **session sidebar** (model, turns, tokens, cost, tools, skills),
+an input box, and a **permission modal** for gated actions. Keys: `Enter` send,
+`Ctrl+L` clear, `Ctrl+U` undo edits, `Ctrl+C` quit. It reuses the same agent,
+tools, permissions, and session persistence as the REPL. Install the extra:
+
+```bash
+pip install -e '.[tui]'      # adds Textual
 ```
 
 ### Slash commands (in the REPL)

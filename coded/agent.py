@@ -45,7 +45,17 @@ class Agent:
         for t in extra_tools or []:
             self.registry.register(t)
         self.skills: dict = {}
+        # Optional structured-event sink. When set, the agent emits events
+        # (assistant deltas, tool calls/results, diffs, status) instead of
+        # printing via `ui` — used by the Textual TUI. See _emit().
+        self.on_event: Optional[Callable[[dict], None]] = None
         self._interrupted = False
+
+    def _emit(self, kind: str, **data) -> bool:
+        if self.on_event is not None:
+            self.on_event({"type": kind, **data})
+            return True
+        return False
 
     # -- public API ---------------------------------------------------------
     def run(self, user_message: Any, images: Optional[list] = None) -> str:
@@ -78,7 +88,7 @@ class Agent:
             if completion.usage.prompt_tokens:
                 self.session.last_prompt_tokens = completion.usage.prompt_tokens
 
-            if completion.content and self.verbose and not self.stream:
+            if completion.content and not self.stream and self.on_event is None and self.verbose:
                 ui.assistant_markdown(completion.content)
 
             self.session.add_assistant(completion.content, completion.tool_calls)
@@ -92,8 +102,9 @@ class Agent:
                 result = self._run_tool(tc)
                 self.session.add_tool_result(tc.id, result)
         else:
-            if self.verbose:
-                ui.warn(f"Reached max turns ({self.config.max_turns}); stopping.")
+            if not self._emit("status", text=f"Reached max turns ({self.config.max_turns})."):
+                if self.verbose:
+                    ui.warn(f"Reached max turns ({self.config.max_turns}); stopping.")
         return final_text
 
     def _maybe_compact(self, force: bool = False) -> bool:
@@ -103,15 +114,29 @@ class Agent:
 
         did = maybe_compact(self.session, self.model, self.llm,
                             ratio=self.config.compact_ratio, force=force)
-        if did and self.verbose:
-            ui.info("(summarized earlier conversation to stay within the context window)")
+        if did:
+            if not self._emit("status", text="Summarized earlier conversation to fit context."):
+                if self.verbose:
+                    ui.info("(summarized earlier conversation to stay within the context window)")
         return did
 
     def _call_model(self) -> Completion:
         tools = self.registry.openai_schema() if self.model.supports_tools else None
+        if self.on_event is not None:
+            return self._call_with_events(tools)
         if self.stream and self.verbose:
             return self._call_streaming(tools)
         return self.llm.complete(self.session.messages, tools, stream=self.stream)
+
+    def _call_with_events(self, tools) -> Completion:
+        """Stream assistant text to the event sink (TUI), delta by delta."""
+        self._emit("assistant_start")
+        completion = self.llm.complete(
+            self.session.messages, tools, stream=True,
+            on_text=lambda chunk: self._emit("assistant_delta", text=chunk),
+        )
+        self._emit("assistant_end", text=completion.content)
+        return completion
 
     def _call_streaming(self, tools) -> Completion:
         """Stream assistant text into a live-rendered Markdown block.
@@ -146,6 +171,19 @@ class Agent:
                 status.stop()
         return completion
 
+    # -- display routing (ui vs. event sink) --------------------------------
+    def _show_tool_call(self, name: str, args: dict) -> None:
+        if not self._emit("tool_call", name=name, args=args) and self.verbose:
+            ui.tool_call(name, args)
+
+    def _show_tool_result(self, content: str, is_error: bool) -> None:
+        if not self._emit("tool_result", content=content, is_error=is_error) and self.verbose:
+            ui.tool_result(content, is_error=is_error)
+
+    def _show_diff(self, diff: str) -> None:
+        if not self._emit("diff", diff=diff) and self.verbose:
+            ui.diff(diff)
+
     # -- tool execution -----------------------------------------------------
     def _run_tool(self, tc) -> str:
         tool = self.registry.get(tc.name)
@@ -154,31 +192,28 @@ class Agent:
             if not isinstance(args, dict):
                 raise ValueError("arguments must be a JSON object")
         except (json.JSONDecodeError, ValueError) as exc:
-            if self.verbose:
-                ui.tool_call(tc.name, {"_raw": tc.arguments})
-                ui.tool_result(f"Invalid arguments: {exc}", is_error=True)
+            self._show_tool_call(tc.name, {"_raw": tc.arguments})
+            self._show_tool_result(f"Invalid arguments: {exc}", True)
             return f"Error: could not parse tool arguments as JSON: {exc}"
 
         if tool is None:
-            if self.verbose:
-                ui.tool_call(tc.name, args)
-                ui.tool_result(f"Unknown tool '{tc.name}'.", is_error=True)
+            self._show_tool_call(tc.name, args)
+            self._show_tool_result(f"Unknown tool '{tc.name}'.", True)
             return f"Error: unknown tool '{tc.name}'."
 
-        if self.verbose:
-            ui.tool_call(tc.name, args)
+        self._show_tool_call(tc.name, args)
 
         preview_ctx = ToolContext(cwd=self.cwd, permissions=self.permissions,
                                   config=self.config, checkpoints=self.checkpoints)
 
         # Show a diff preview for mutating file tools before we prompt/apply.
-        if self.verbose and tool.requires_permission:
+        if tool.requires_permission:
             try:
                 diff = tool.preview(args, preview_ctx)
             except Exception:  # noqa: BLE001 - preview must never break the loop
                 diff = None
             if diff:
-                ui.diff(diff)
+                self._show_diff(diff)
 
         # Permission gate.
         if tool.requires_permission:
@@ -189,8 +224,7 @@ class Agent:
                 target=tool.permission_target(args),
             )
             if decision is Decision.DENY:
-                if self.verbose:
-                    ui.tool_result("Denied.", is_error=True)
+                self._show_tool_result("Denied.", True)
                 return "The user denied permission to run this action. Do not retry it; ask how to proceed or try another approach."
 
         ctx = ToolContext(
@@ -203,12 +237,10 @@ class Agent:
         try:
             result = tool.run(args, ctx)
         except Exception as exc:  # noqa: BLE001 - tools must never crash the loop
-            if self.verbose:
-                ui.tool_result(f"Tool raised: {exc}", is_error=True)
+            self._show_tool_result(f"Tool raised: {exc}", True)
             return f"Error: tool '{tc.name}' raised an exception: {exc}"
 
-        if self.verbose:
-            ui.tool_result(result.content, is_error=result.is_error)
+        self._show_tool_result(result.content, result.is_error)
         return result.content
 
     @staticmethod
