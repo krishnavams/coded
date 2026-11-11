@@ -75,7 +75,8 @@ def test_windows_falls_back_to_powershell_then_cmd():
     cmd = resolve_shell(windows=True, which=_which({"cmd": r"C:\Windows\System32\cmd.exe"}),
                         exists=_exists([]), env={})
     assert cmd.name == "cmd"
-    assert command_argv("dir", cmd)[:4] == [r"C:\Windows\System32\cmd.exe", "/d", "/s", "/c"]
+    # cmd goes through subprocess's own shell=True (%COMSPEC% /c), unquoted by us.
+    assert command_argv("dir /b", cmd) == "dir /b"
 
 
 def test_windows_shell_can_be_configured_and_set_by_env():

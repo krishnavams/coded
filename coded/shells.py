@@ -13,7 +13,7 @@ Windows has no POSIX shell, so a shell is resolved once per process:
    understands the POSIX syntax models write (``&&``, ``$(…)``, quoting);
 3. **PowerShell** (``pwsh``, then ``powershell``), driven with
    ``-EncodedCommand`` so quoting can't be mangled;
-4. ``cmd.exe``.
+4. ``cmd.exe`` (through ``subprocess``'s own ``shell=True``, i.e. ``%COMSPEC% /c``).
 
 ``bash.exe`` in ``System32`` is the WSL launcher, not a shell for the current
 directory, so it is skipped. The resolved shell is named in the system prompt
@@ -186,8 +186,10 @@ def command_argv(command: str, shell: Optional[Shell] = None) -> Union[str, List
     if shell.name in ("pwsh", "powershell"):
         encoded = base64.b64encode(_powershell_script(command).encode("utf-16-le")).decode()
         return [shell.path, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
-    # cmd /s /c keeps the command string intact after stripping its outer quotes.
-    return [shell.path or "cmd.exe", "/d", "/s", "/c", command]
+    # cmd.exe: hand the string to subprocess's own `shell=True` path, which builds
+    # `%COMSPEC% /c "…"` verbatim. Quoting it ourselves would use C-runtime rules
+    # (backslash-escaped quotes), which cmd does not understand.
+    return command
 
 
 def popen_kwargs(new_group: bool = False) -> Dict[str, Any]:
