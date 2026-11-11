@@ -45,7 +45,7 @@ def run_review(agent, target: Optional[str] = None,
             continue
         if verbose:
             ui.rule(f"{name} phase")
-        body = skill.load_body()
+        body = skill.load_body(agent.config.model_for_role("review", agent.model))
         framing = _PHASE_FRAMING.get(name, "")
         prompt = (
             "You are one phase of an automated code-review pipeline. Play the role "

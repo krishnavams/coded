@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import platform
 from pathlib import Path
-from typing import List
+from typing import Any, List
 
 from coded.config import user_config_path
 from coded.prompt_files import join_sections, load_prompt
@@ -60,11 +60,12 @@ def instruction_files(cwd: str) -> List[Path]:
     return files
 
 
-def read_instructions(paths: List[Path], cwd: str, budget: int = _MAX_TOTAL_CHARS) -> str:
+def read_instructions(paths: List[Path], cwd: str, budget: int = _MAX_TOTAL_CHARS,
+                      file_chars: int = _MAX_FILE_CHARS) -> str:
     parts = []
     for p in paths:
         try:
-            text = p.read_text(encoding="utf-8")[:_MAX_FILE_CHARS]
+            text = p.read_text(encoding="utf-8")[:file_chars]
         except OSError:
             continue
         if len(text) > budget:
@@ -83,29 +84,45 @@ def read_instructions(paths: List[Path], cwd: str, budget: int = _MAX_TOTAL_CHAR
     return "\n".join(parts)
 
 
-def _project_context(cwd: str) -> str:
+def _project_context(cwd: str, limits: Any = None) -> str:
     """Include AGENTS.md / CODED.md / CLAUDE.md files from ~/.config/coded and from
     the repo root down to cwd. Files in subdirectories are surfaced lazily, when
     the agent first reads a file there (see Agent._nested_instructions)."""
-    text = read_instructions(instruction_files(cwd), cwd)
+    if limits is not None:
+        text = read_instructions(instruction_files(cwd), cwd, budget=limits.instructions_total_chars,
+                                 file_chars=limits.instructions_file_chars)
+    else:
+        text = read_instructions(instruction_files(cwd), cwd)
     if not text:
         return ""
     return ("\n\n# Project instructions\nFollow these. Deeper (more specific) files take "
             "precedence over earlier ones.\n\n" + text)
 
 
-def _environment(cwd: str) -> str:
-    return (f"# Environment\n- Working directory: {cwd}\n"
-            f"- Platform: {platform.system()} ({platform.machine()})\n"
-            f"- Today: {os.environ.get('CODED_DATE', '')}\n")
+def _environment(cwd: str, model: Any = None) -> str:
+    lines = [f"# Environment\n- Working directory: {cwd}",
+             f"- Platform: {platform.system()} ({platform.machine()})",
+             f"- Today: {os.environ.get('CODED_DATE', '')}"]
+    if model is not None and getattr(model, "context_window", None):
+        lines.append(f"- Model: {model.name} (context window ~{model.context_window // 1000}k tokens)")
+    return "\n".join(lines) + "\n"
 
 
-def build_system_prompt(cwd: str, extra: str | None = None) -> str:
-    """system + coder + tools + security prompt files, environment, project
-    instructions, then extras (skills list, --system). See prompt_files.py."""
-    prompt = join_sections(*(load_prompt(n, cwd) for n in ("system", "coder", "tools", "security")),
-                           _environment(cwd))
-    prompt += _project_context(cwd)
+def build_system_prompt(cwd: str, extra: str | None = None, model: Any = None,
+                        limits: Any = None) -> str:
+    """system + coder + tools + security prompt files (for `model`'s prompt set),
+    environment, project instructions, repository overview (large-context models),
+    then extras (skills list, --system). See prompt_files.py."""
+    prompt = join_sections(*(load_prompt(n, cwd, model)
+                             for n in ("system", "coder", "tools", "security")),
+                           _environment(cwd, model))
+    prompt += _project_context(cwd, limits)
+    if limits is not None and limits.repo_overview_chars > 0:
+        from coded.repo_overview import build_repo_overview
+
+        overview = build_repo_overview(cwd, limits.repo_overview_chars)
+        if overview:
+            prompt += "\n\n" + overview
     if extra:
         prompt += f"\n\n# Additional instructions\n{extra}\n"
     return prompt
@@ -119,8 +136,9 @@ or did. You cannot ask the user questions — make reasonable assumptions and st
 You have no task or exit_plan_mode tool: do the work yourself instead of delegating."""
 
 
-def build_subagent_prompt(cwd: str) -> str:
-    """Sub-agents get the work, tool and safety rules but not the chat style."""
+def build_subagent_prompt(cwd: str, model: Any = None) -> str:
+    """Sub-agents get the work, tool and safety rules but not the chat style, and
+    no repository overview (they're given focused tasks)."""
     return join_sections(_SUBAGENT_HEAD,
-                         *(load_prompt(n, cwd) for n in ("coder", "tools", "security")),
-                         _environment(cwd))
+                         *(load_prompt(n, cwd, model) for n in ("coder", "tools", "security")),
+                         _environment(cwd, model))

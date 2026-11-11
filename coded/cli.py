@@ -108,7 +108,7 @@ def _apply_overrides(cfg: Config, args: argparse.Namespace) -> None:
     if args.no_compact:
         cfg.auto_compact = False
     if args.max_turns:
-        cfg.max_turns = args.max_turns
+        cfg.max_turns_override = args.max_turns
     if getattr(args, "sandbox", False):
         cfg.sandbox = dict(cfg.sandbox, enabled=True)
     if getattr(args, "sandbox_network", False):
@@ -221,6 +221,9 @@ def _handle_models_command(argv: List[str]) -> int:
         for name, mc in cfg.models.items():
             marker = "*" if name == cfg.default_model else " "
             extra = []
+            from coded.prompt_files import prompt_profile
+
+            extra.append(f"{mc.context_window // 1000}k ctx, {prompt_profile(mc)} prompts")
             if mc.fallback:
                 extra.append("fallback→" + ",".join(mc.fallback))
             if name in roles:
@@ -508,6 +511,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.reasoning_effort:
         model.reasoning_effort = args.reasoning_effort
     _warn_sandbox(cfg)
+    from coded.limits import LIMIT_KEYS, unknown_limit_keys
+
+    for mc in cfg.models.values():
+        bad = unknown_limit_keys(mc)
+        if bad:
+            ui.warn(f"Model '{mc.name}': unknown limits key(s) {', '.join(bad)} (ignored). "
+                    f"Valid keys: {', '.join(LIMIT_KEYS)}")
     for w in cfg.plugin_warnings:
         ui.warn(w)
     if cfg.plugins:

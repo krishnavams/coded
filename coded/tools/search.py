@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List
 
+from coded.limits import get_limits
 from coded.tools.base import Tool, ToolContext, ToolResult
 
 # Directories we never descend into during content/file search.
@@ -47,6 +48,7 @@ matching paths. Fast; use this to locate files by name."""
     }
 
     def run(self, args: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        max_matches = get_limits(ctx).grep_matches
         root = _resolve(ctx, args.get("path", "."))
         pattern = args["pattern"]
         matches: List[str] = []
@@ -55,14 +57,14 @@ matching paths. Fast; use this to locate files by name."""
                 rel = f.relative_to(root).as_posix()
                 if fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(f.name, pattern):
                     matches.append(str(f))
-                    if len(matches) >= _MAX_MATCHES:
+                    if len(matches) >= max_matches:
                         break
         except OSError as exc:
             return ToolResult.error(f"Search failed: {exc}")
         if not matches:
             return ToolResult.ok(f"No files matching '{pattern}' under {root}.")
         matches.sort()
-        capped = "" if len(matches) < _MAX_MATCHES else f"\n… (capped at {_MAX_MATCHES})"
+        capped = "" if len(matches) < max_matches else f"\n… (capped at {max_matches})"
         return ToolResult.ok("\n".join(matches) + capped)
 
 
@@ -84,6 +86,7 @@ shell grep."""
     }
 
     def run(self, args: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        max_matches = get_limits(ctx).grep_matches
         root = _resolve(ctx, args.get("path", "."))
         flags = re.IGNORECASE if args.get("ignore_case") else 0
         try:
@@ -112,16 +115,16 @@ shell grep."""
                         had_match = True
                         text = line if len(line) <= 300 else line[:300] + "…"
                         results.append(f"{f}:{lineno}: {text}")
-                        if len(results) >= _MAX_MATCHES:
+                        if len(results) >= max_matches:
                             break
                 if had_match:
                     files_with_matches += 1
-                if len(results) >= _MAX_MATCHES:
+                if len(results) >= max_matches:
                     break
         except OSError as exc:
             return ToolResult.error(f"Search failed: {exc}")
         if not results:
             return ToolResult.ok(f"No matches for /{args['pattern']}/ under {root}.")
-        capped = "" if len(results) < _MAX_MATCHES else f"\n… (capped at {_MAX_MATCHES} matches)"
+        capped = "" if len(results) < max_matches else f"\n… (capped at {max_matches} matches)"
         header = f"{len(results)} match(es) in {files_with_matches} file(s):\n"
         return ToolResult.ok(header + "\n".join(results) + capped)

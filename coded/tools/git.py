@@ -7,6 +7,7 @@ import subprocess
 from typing import Any, Dict
 
 from coded.permissions import Decision
+from coded.limits import get_limits
 from coded.tools.base import Tool, ToolContext, ToolResult
 
 # Subcommands that only read repository state — safe to run without prompting.
@@ -67,7 +68,8 @@ Pass the arguments after `git`, e.g. "status", "diff HEAD~1", "log --oneline -10
             return ToolResult.error("git command timed out.")
 
         out = (proc.stdout or "") + (proc.stderr or "")
-        if len(out) > _MAX_OUTPUT:
-            out = out[:_MAX_OUTPUT] + "\n… (truncated)"
+        limit = get_limits(ctx).git_output_chars
+        if len(out) > limit:
+            out = out[:limit] + "\n… (truncated)"
         body = out.strip() or "(no output)"
         return ToolResult(f"[git {sub} exit {proc.returncode}]\n{body}", is_error=proc.returncode != 0)

@@ -93,6 +93,16 @@ class ModelConfig:
     # Model aliases to fall back to (in order) when this endpoint keeps failing,
     # e.g. the same model on another provider/key, or a different model.
     fallback: list = field(default_factory=list)
+    # Per-model overrides of the context-scaled limits (see coded/limits.py).
+    limits: Dict[str, Any] = field(default_factory=dict)
+    # Max agent loop steps for this model (CLI --max-turns still wins).
+    max_turns: Optional[int] = None
+    # Prompt set: "auto" | "standard" | "compact" | "full" (see prompt_files.py),
+    # and an optional directory of this model's own prompt files.
+    prompt_profile: str = "auto"
+    prompts_dir: Optional[str] = None
+    # Repository overview in the system prompt: "auto" (on at >= 200k context) | true | false.
+    repo_overview: Any = "auto"
 
     def resolved_base_url(self) -> str:
         if self.base_url:
@@ -168,6 +178,7 @@ class Config:
     # Behaviour toggles.
     auto_approve: bool = False  # skip permission prompts (a.k.a. "yolo")
     max_turns: int = 100  # safety cap on agent tool-loop iterations
+    max_turns_override: Optional[int] = None  # --max-turns (beats per-model max_turns)
     stream: bool = True
     auto_compact: bool = True  # summarize old messages near the context limit
     compact_ratio: float = 0.8  # fraction of context_window that triggers it

@@ -16,6 +16,7 @@ from coded import ui
 from coded.background import BackgroundShells
 from coded.config import Config, ModelConfig
 from coded.hooks import HookRunner
+from coded.limits import Limits, cap_text, limits_for
 from coded.llm import Completion, LLMClient
 from coded.permissions import Decision, PermissionManager
 from coded.prompt_files import load_prompt
@@ -63,11 +64,13 @@ class Agent:
         self.hooks = HookRunner(config.hooks, cwd)
         self.todos = TodoStore(on_change=self._show_todos)
         self.mode = "default"
+        self.limits: Limits = limits_for(model)
         self.llm = self._make_llm(model)
         self._compact_llm: Optional[LLMClient] = None
         for t in extra_tools or []:
             self.registry.register(t)
         self.skills: dict = {}
+        self.system_extra: Optional[str] = None
         # Optional structured-event sink. When set, the agent emits events
         # (assistant/reasoning deltas, tool calls/results, diffs, todos, status)
         # instead of printing via `ui` — used by the TUI and ACP server. See _emit().
@@ -121,7 +124,7 @@ class Agent:
             if self.mode == "plan":
                 if not self._plan_intro_sent:
                     self._plan_intro_sent = True
-                    text += "\n\n" + load_prompt("planner", self.cwd)
+                    text += "\n\n" + load_prompt("planner", self.cwd, self.model)
                 text += "\n\n" + PLAN_MODE_REMINDER
         if self.checkpoints is not None:
             self.checkpoints.begin(str(user_message)[:60])
@@ -135,14 +138,40 @@ class Agent:
             attrs["turns"] = self.session.turns
         return result
 
+    @property
+    def max_turns(self) -> int:
+        """CLI --max-turns, else the model's max_turns, else config.max_turns."""
+        return (self.config.max_turns_override or self.model.max_turns
+                or self.config.max_turns)
+
     def interrupt(self) -> None:
         """Ask the running turn to stop at the next checkpoint (between steps)."""
         self._interrupted = True
 
     def switch_model(self, model: ModelConfig) -> None:
         self.model = model
+        self.limits = limits_for(model)
         self.llm = self._make_llm(model)
         self._compact_llm = None
+        self.refresh_system_prompt()
+
+    def build_system_prompt(self) -> str:
+        """The main system prompt for the current model (prompt set, limits,
+        repository overview, skills list, --system extras)."""
+        from coded.skills import skills_prompt_section
+
+        section = skills_prompt_section(self.skills, self.cwd, self.model) if self.skills else ""
+        combined = "\n\n".join(x for x in (self.system_extra, section) if x) or None
+        return build_system_prompt(self.cwd, extra=combined, model=self.model, limits=self.limits)
+
+    def refresh_system_prompt(self) -> None:
+        """Rebuild the system message (e.g. after /model) in place."""
+        if self.is_subagent:
+            return
+        prompt = self.build_system_prompt()
+        self.session.system_prompt = prompt
+        if self.session.messages and self.session.messages[0].get("role") == "system":
+            self.session.messages[0]["content"] = prompt
 
     def set_mode(self, mode: str) -> None:
         """"default" or "plan" (read-only research until a plan is approved)."""
@@ -156,13 +185,26 @@ class Agent:
     def _loop(self) -> str:
         final_text = ""
         stop_continuations = 0
-        for _ in range(self.config.max_turns):
+        context_retry = False
+        for _ in range(self.max_turns):
             if self._interrupted:
                 self._status_note("Interrupted.")
                 break
             self.session.turns += 1
             self._maybe_compact()
-            completion = self._call_model()
+            try:
+                completion = self._call_model()
+            except Exception as exc:  # noqa: BLE001
+                if context_retry or not _is_context_overflow(exc):
+                    raise
+                # The request no longer fits the window: shrink this turn's tool
+                # results, summarize older history, and retry once.
+                context_retry = True
+                self._status_note("Request exceeded the model's context window; "
+                                  "shrinking tool results and compacting, then retrying.")
+                self._shrink_recent_tool_results()
+                self._maybe_compact(force=True)
+                completion = self._call_model()
             self.session.record_usage(completion.usage)
             if completion.usage.prompt_tokens:
                 self.session.last_prompt_tokens = completion.usage.prompt_tokens
@@ -184,12 +226,18 @@ class Agent:
                         continue
                 break
 
+            budget = self.limits.step_result_chars
             for tc, content in self._run_tool_calls(completion.tool_calls):
+                if len(content) > budget:
+                    content = cap_text(content, max(budget, 500),
+                                       "this step's tool results hit the context budget; "
+                                       "request less at once")
+                budget = max(0, budget - len(content))
                 self.session.add_tool_result(tc.id, content)
         else:
-            if not self._emit("status", text=f"Reached max turns ({self.config.max_turns})."):
+            if not self._emit("status", text=f"Reached max turns ({self.max_turns})."):
                 if self.verbose:
-                    ui.warn(f"Reached max turns ({self.config.max_turns}); stopping.")
+                    ui.warn(f"Reached max turns ({self.max_turns}); stopping.")
         return final_text
 
     def _run_tool_calls(self, tool_calls) -> List[Tuple[Any, str]]:
@@ -245,7 +293,13 @@ class Agent:
             role_model = self.config.model_for_role("compact", self.model)
             self._compact_llm = self.llm if role_model is self.model else self._make_llm(role_model)
         did = maybe_compact(self.session, self.model, self._compact_llm,
-                            ratio=self.config.compact_ratio, force=force)
+                            ratio=self.config.compact_ratio, force=force,
+                            keep_recent=self.limits.compact_keep_recent)
+        if did and self.todos.items and len(self.session.messages) > 1:
+            # Keep the task list across summarization so long runs don't lose track.
+            summary = self.session.messages[1]
+            if isinstance(summary.get("content"), str):
+                summary["content"] += "\n\n[Current task list]\n" + self.todos.render()
         if did:
             if not self._emit("status", text="Summarized earlier conversation to fit context."):
                 if self.verbose:
@@ -368,6 +422,8 @@ class Agent:
                 "shells": self.shells,
                 "get_mode": lambda: self.mode,
                 "set_mode": self.set_mode,
+                "limits": self.limits,
+                "model": self.model,
             },
         )
 
@@ -448,7 +504,9 @@ class Agent:
                 return done(f"Error: tool '{tc.name}' raised an exception: {exc}", True, args)
             attrs["is_error"] = result.is_error
 
-        content = result.content
+        content = cap_text(result.content, self.limits.tool_result_chars,
+                           "result exceeds this model's per-result budget; ask for a narrower "
+                           "range, filter, or offset")
         if tool.untrusted_output and self.config.injection_guard != "off":
             self.permissions.tainted = True
             content = (f'<untrusted-content source="{tc.name}">\n{content}\n</untrusted-content>\n'
@@ -462,6 +520,15 @@ class Agent:
         if post.blocked:
             content += f"\n\n[PostToolUse hook feedback]\n{post.message}"
         return done(content, result.is_error, args)
+
+    def _shrink_recent_tool_results(self) -> None:
+        """Cut tool results since the last user message to a quarter of the cap."""
+        msgs = self.session.messages
+        last_user = max((i for i, m in enumerate(msgs) if m.get("role") == "user"), default=0)
+        cap = max(2000, self.limits.tool_result_chars // 4)
+        for m in msgs[last_user:]:
+            if m.get("role") == "tool" and isinstance(m.get("content"), str):
+                m["content"] = cap_text(m["content"], cap, "shrunk to fit the context window")
 
     def _nested_instructions(self, path: str) -> str:
         """Surface AGENTS.md/CODED.md files in subdirectories the first time the
@@ -482,7 +549,8 @@ class Agent:
             found += _dir_instruction_files(d)
         if not found:
             return ""
-        text = read_instructions(found, self.cwd, budget=12_000)
+        text = read_instructions(found, self.cwd, budget=self.limits.nested_instructions_chars,
+                                 file_chars=self.limits.instructions_file_chars)
         return ("\n\n<system-reminder>Directory instructions that apply to files here "
                 f"(follow them):\n{text}</system-reminder>")
 
@@ -516,7 +584,7 @@ class Agent:
             if self.verbose and self.on_event is None:
                 where = f" in {sub_cwd}" if cwd else ""
                 ui.info(f"  ↳ spawning sub-agent ({sub_model.name}){where}…")
-            sub_system = build_subagent_prompt(sub_cwd)
+            sub_system = build_subagent_prompt(sub_cwd, sub_model)
             sub_session = Session(system_prompt=sub_system)
             sub_registry = build_registry(include_task=False)
             sub_agent = Agent(
@@ -542,6 +610,17 @@ class Agent:
         return runner
 
 
+def _is_context_overflow(exc: Exception) -> bool:
+    """A 400 complaining that the request is too long for the model."""
+    status = getattr(exc, "status_code", None)
+    if status not in (400, 413):
+        return False
+    msg = str(exc).lower()
+    return any(k in msg for k in ("context length", "context_length", "maximum context",
+                                  "context window", "too many tokens", "prompt is too long",
+                                  "request too large", "reduce the length"))
+
+
 def create_agent(
     *,
     model: ModelConfig,
@@ -559,16 +638,11 @@ def create_agent(
     """Convenience constructor wiring together a fresh top-level agent."""
     from coded.checkpoints import CheckpointManager
     from coded.external_agents import resolve_external_agents
-    from coded.skills import skills_prompt_section
     from coded.tools.external_agent import ExternalAgentTool
     from coded.tools.skill import SkillTool
 
     skills = skills or {}
-    section = skills_prompt_section(skills, cwd)
-    combined = "\n\n".join(x for x in (system_extra, section) if x) or None
-
-    system_prompt = build_system_prompt(cwd, extra=combined)
-    session = Session(system_prompt=system_prompt)
+    session = Session(system_prompt="")  # filled by refresh_system_prompt below
     registry = build_registry(include_task=True)
     if skills:
         registry.register(SkillTool(skills))
@@ -595,4 +669,6 @@ def create_agent(
         tracer=tracer,
     )
     agent.skills = skills
+    agent.system_extra = system_extra
+    agent.refresh_system_prompt()
     return agent

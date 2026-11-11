@@ -38,8 +38,11 @@ coded/
 ├── session.py          # Session: message history + usage/cost tracking
 ├── permissions.py      # PermissionManager: approve/deny/always gate
 ├── prompts.py          # assembles main/sub-agent prompts + AGENTS.md/CODED.md/CLAUDE.md hierarchy
-├── prompt_files.py     # prompt-file loading/overrides + `coded prompts` CLI
-├── builtin_prompts/    # system, coder, tools, security, skills, planner, reviewer, debugger (.md)
+├── prompt_files.py     # prompt-file loading/overrides/profiles + `coded prompts` CLI
+├── limits.py           # per-model limits scaled by context_window; result/step caps
+├── repo_overview.py    # repository overview for large-context models
+├── builtin_prompts/    # system, coder, tools, security, skills, planner, reviewer, debugger (.md);
+│                       # compact/ and full/ hold per-profile variants
 ├── repl.py             # interactive REPL and slash commands
 ├── tui.py              # full-screen Textual app (coded --tui), optional
 ├── ui.py               # rich-based rendering helpers (single Console)
@@ -95,6 +98,7 @@ tests/
 ├── test_semantic_and_web.py  # index/search, web_fetch/search, image encoding
 ├── test_skills.py      # skill discovery, frontmatter, skill tool
 ├── test_tools.py       # tool + config unit tests
+├── test_big_models.py  # scaled limits, caps, overflow retry, max_turns, profiles, repo overview
 ├── test_prompts.py     # prompt files: placement, override order, empty=remove, CLI
 ├── test_plugins.py     # sources, zip safety, skill/plugin install/update/remove,
 │                       # Claude-format plugins, marketplaces, CLI
@@ -167,6 +171,16 @@ config.example.json     # sample configuration
     `security`. A skill whose body is `<!-- coded:prompt NAME -->` loads prompt
     file NAME (planner/reviewer/debugger), so there is one source of truth.
 
+12. **Per-model scaling** (`limits.py`): `limits_for(model)` scales the base
+    (128k) limits by `context_window`, adds the per-result/per-step caps and the
+    repo-overview budget, then applies the model's `limits` overrides. Each
+    Agent (sub-agents too) computes its own and exposes them to tools as
+    `ctx.extra["limits"]` (read with `get_limits(ctx)`), alongside
+    `ctx.extra["model"]`. Prompt loading takes the model (`load_prompt(name,
+    cwd, model)`): precedence built-in < built-in profile < user < project <
+    model `prompts_dir`. `Agent.refresh_system_prompt()` rebuilds messages[0]
+    (called by `create_agent` and `switch_model`).
+
 ## Key conventions
 
 - **Adding a tool**: subclass `Tool` in `coded/tools/`, set `name`,
@@ -194,6 +208,10 @@ config.example.json     # sample configuration
   dynamic values in code-built sections. New prompt files must be added to
   `PROMPT_NAMES`, and stay covered by the `builtin_prompts/*.md` package-data
   glob. Watch the size: coded targets small local models too.
+- **A 128k model must behave exactly as before.** New size-dependent behaviour
+  goes through `limits_for`; `test_128k_limits_equal_the_historical_constants`
+  pins the base values. Tools never hard-code output sizes: use `get_limits(ctx)`.
+  Every prompt profile must keep the untrusted-content and secrets rules (tested).
 - **No install tool for the model.** Installing skills/plugins grants code
   execution (hooks run unprompted), so it stays a user-run CLI action. Never
   write plugin contributions into the user's config.json; they're merged at load

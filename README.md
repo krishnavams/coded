@@ -624,6 +624,81 @@ top of that:
   optional parameter that an endpoint rejects is dropped automatically and
   remembered.
 
+### Large and small models
+
+coded adapts to each model's `context_window`. Set it accurately: it's the main
+knob, and the default is 128k.
+
+- **Limits scale with the window.** These all grow or shrink in proportion
+  (×window/128k, clamped to ⅛×–8×, with floors for small models), so a 300k
+  model reads ~4,700 lines per call and keeps ~70k characters of command
+  output, while a 16k model gets 250 lines and 4k characters:
+  - lines per `read`
+  - bash, git and outside-agent output kept
+  - `web_fetch` page size
+  - grep matches
+  - instruction-file budgets
+  - messages kept verbatim when compacting
+
+  At 128k everything is exactly as before.
+- **Safety caps.** No single tool result may exceed ~9% of the window, and all
+  results of one step together ~25%. Larger limits can't overflow the model, and
+  the model is told to narrow its request when a cap hits. If an endpoint still
+  rejects a request as too long, coded shrinks that step's tool results,
+  compacts, and retries once.
+- **Tune per model** with `limits`. Unknown keys are reported at startup:
+
+  ```json
+  "limits": {"read_lines": 10000, "shell_output_chars": 200000, "tool_result_chars": 150000}
+  ```
+
+  Keys: `read_lines`, `shell_output_chars`, `git_output_chars`, `web_fetch_chars`,
+  `grep_matches`, `external_output_chars`, `instructions_file_chars`,
+  `instructions_total_chars`, `nested_instructions_chars`, `compact_keep_recent`,
+  `tool_result_chars`, `step_result_chars`, `repo_overview_chars`.
+- **Prompt sets** (`prompt_profile`):
+
+  | Value | Meaning |
+  |---|---|
+  | `standard` | The default set |
+  | `compact` | Terse, for small or local models; still includes the safety rules |
+  | `full` | More thorough `coder`, `planner`, `reviewer` and `debugger` instructions, for large models |
+  | `auto` (default) | Picks by context window: ≤32k → compact, ≥200k → full |
+
+  coded can't see parameter counts, so set `prompt_profile` explicitly for a
+  700B model with a modest window, or a small model with a huge one.
+- **Per-model prompt files.** `prompts_dir` points at a folder of that model's own
+  prompt files, which win over everything else. A relative path is resolved
+  against the project directory.
+- **Longer runs.** `max_turns` per model raises or lowers the step limit; the CLI
+  `--max-turns` still wins.
+- **Repository overview** (`repo_overview`: `auto`, `true` or `false`; auto means
+  on for windows ≥200k). Large-context models get a map of the repository in the
+  system prompt: file paths (or directories with counts for big repos), key
+  manifests and recent commit subjects, but no file contents. Sub-agents don't
+  get it.
+- **Switching models** with `/model` rebuilds the system prompt for the new
+  model's prompt set and limits. Each sub-agent uses its own model's limits and
+  prompt set.
+- **Checking the result:**
+  - `coded models` shows each model's context size and prompt set.
+  - `coded prompts list -m big` shows which file each prompt comes from for that model.
+  - `coded prompts show -m big` prints the exact system prompt it gets.
+
+```json
+{
+  "models": {
+    "big":   {"base_url": "https://llm.internal/v1", "model": "my-700b", "api_key_env": "INTERNAL_KEY",
+              "context_window": 300000, "max_tokens": 32000, "max_turns": 400,
+              "prompt_profile": "full", "limits": {"read_lines": 8000}},
+    "local": {"provider": "ollama", "model": "qwen2.5-coder:7b", "context_window": 32768,
+              "prompt_profile": "compact"}
+  },
+  "default_model": "big",
+  "model_roles": {"subagent": "local", "compact": "local", "review": "big", "verdict": "big"}
+}
+```
+
 ### Outside agents
 
 If other agent CLIs are installed, the model can hand work to them with the

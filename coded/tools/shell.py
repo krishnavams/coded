@@ -6,6 +6,7 @@ import re
 import subprocess
 from typing import Any, Dict
 
+from coded.limits import get_limits
 from coded.sandbox import sandbox_state, wrap_command
 from coded.tools.base import Tool, ToolContext, ToolResult
 
@@ -13,9 +14,9 @@ _DEFAULT_TIMEOUT = 120
 _MAX_OUTPUT = 30_000
 
 
-def _truncate(out: str) -> str:
-    if len(out) > _MAX_OUTPUT:
-        return out[:_MAX_OUTPUT] + f"\n… (output truncated at {_MAX_OUTPUT} chars)"
+def _truncate(out: str, limit: int = _MAX_OUTPUT) -> str:
+    if len(out) > limit:
+        return out[:limit] + f"\n… (output truncated at {limit} chars)"
     return out
 
 
@@ -113,7 +114,7 @@ them (the user will be asked)."""
         except OSError as exc:
             return ToolResult.error(f"Failed to run command: {exc}")
 
-        out = _truncate((proc.stdout or "") + (proc.stderr or ""))
+        out = _truncate((proc.stdout or "") + (proc.stderr or ""), get_limits(ctx).shell_output_chars)
         status = f"[exit {proc.returncode}]{note}"
         body = out.strip() if out.strip() else "(no output)"
         return ToolResult(f"{status}\n{body}", is_error=proc.returncode != 0)
@@ -146,7 +147,7 @@ the last read is returned. Optional `filter` keeps only lines matching a regex."
             except re.error as exc:
                 return ToolResult.error(f"Invalid filter regex: {exc}")
             output = "\n".join(ln for ln in output.splitlines() if rx.search(ln))
-        body = _truncate(output).strip() or "(no new output)"
+        body = _truncate(output, get_limits(ctx).shell_output_chars).strip() or "(no new output)"
         return ToolResult.ok(f"[{status}]\n{body}")
 
 

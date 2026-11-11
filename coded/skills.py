@@ -100,7 +100,7 @@ class Skill:
     metadata: Dict[str, Any] = field(default_factory=dict)
     cwd: Optional[str] = None  # for resolving prompt-file overrides
 
-    def load_body(self) -> str:
+    def load_body(self, model: Any = None) -> str:
         """The skill's instructions. A body that is just ``<!-- coded:prompt NAME -->``
         is read from the prompt file NAME (so overriding e.g. reviewer.md changes
         the reviewer skill too)."""
@@ -109,7 +109,7 @@ class Skill:
         if m:
             from coded.prompt_files import load_prompt
 
-            return load_prompt(m.group(1), self.cwd)
+            return load_prompt(m.group(1), self.cwd, model)
         return body
 
 
@@ -162,13 +162,14 @@ def discover_skills(cwd: str) -> Dict[str, Skill]:
     return skills
 
 
-def skills_prompt_section(skills: Dict[str, Skill], cwd: Optional[str] = None) -> str:
+def skills_prompt_section(skills: Dict[str, Skill], cwd: Optional[str] = None,
+                          model: Any = None) -> str:
     """Level-1 disclosure: the skills.md intro, then names + descriptions."""
     if not skills:
         return ""
     from coded.prompt_files import load_prompt
 
-    intro = load_prompt("skills", cwd)
+    intro = load_prompt("skills", cwd, model)
     out = [intro, ""] if intro else ["# Available skills", ""]
     for s in skills.values():
         out.append(f"- **{s.name}**: {s.description}")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from coded.limits import get_limits
 from coded.tools.base import Tool, ToolContext, ToolResult
 
 
@@ -58,7 +59,7 @@ Use for reading documentation pages or search results."""
         if not url.startswith(("http://", "https://")):
             return ToolResult.error("URL must start with http:// or https://")
         try:
-            text = fetch_url(url)
+            text = fetch_url(url, max_chars=get_limits(ctx).web_fetch_chars)
         except Exception as exc:  # noqa: BLE001
             return ToolResult.error(f"Could not fetch {url}: {exc}")
         return ToolResult.ok(text)

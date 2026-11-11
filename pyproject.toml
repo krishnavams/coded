@@ -39,7 +39,7 @@ where = ["."]
 include = ["coded*"]
 
 [tool.setuptools.package-data]
-coded = ["builtin_skills/*/SKILL.md", "builtin_prompts/*.md"]
+coded = ["builtin_skills/*/SKILL.md", "builtin_prompts/*.md", "builtin_prompts/*/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
+from coded.limits import get_limits
 from coded.tools.base import Tool, ToolContext, ToolResult
 
 
@@ -65,7 +66,8 @@ Prefer this over `cat`/`head` via the shell."""
         text = data.decode("utf-8", errors="replace")
         lines = text.splitlines()
         offset = max(1, int(args.get("offset", 1)))
-        limit = int(args.get("limit", _MAX_READ_LINES))
+        cap = get_limits(ctx).read_lines
+        limit = max(1, min(int(args.get("limit", cap)), cap))
         chunk = lines[offset - 1 : offset - 1 + limit]
         if not chunk:
             return ToolResult.ok(f"(file has {len(lines)} lines; offset {offset} is past the end)")

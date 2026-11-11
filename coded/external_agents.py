@@ -62,7 +62,7 @@ class ExternalAgent:
     def uses_stdin(self) -> bool:
         return self.stdin or not any("{prompt}" in p for p in self.command)
 
-    def run(self, prompt: str, cwd: str) -> tuple:
+    def run(self, prompt: str, cwd: str, max_output: int = _MAX_OUTPUT) -> tuple:
         """Run to completion. Returns (exit_code, combined output)."""
         env = dict(os.environ, **{k: str(v) for k, v in self.env.items()})
         proc = subprocess.run(
@@ -75,8 +75,8 @@ class ExternalAgent:
         err = (proc.stderr or "").strip()
         if proc.returncode != 0 and err:
             out = f"{out}\n\n[stderr]\n{err}".strip()
-        if len(out) > _MAX_OUTPUT:
-            out = out[-_MAX_OUTPUT:] + "\n… (output truncated to the last part)"
+        if len(out) > max_output:
+            out = out[-max_output:] + "\n… (output truncated to the last part)"
         return proc.returncode, out
 
 

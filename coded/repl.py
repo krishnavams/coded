@@ -446,7 +446,7 @@ class Repl:
             return
         skill = self.agent.skills[name]
         try:
-            body = skill.load_body()
+            body = skill.load_body(self.agent.model)
         except OSError as exc:
             ui.error(f"Could not read skill: {exc}")
             return

@@ -6,6 +6,7 @@ import subprocess
 from typing import Any, Dict
 
 from coded.external_agents import ExternalAgent, describe
+from coded.limits import get_limits
 from coded.tools.base import Tool, ToolContext, ToolResult
 
 
@@ -65,7 +66,7 @@ class ExternalAgentTool(Tool):
                 return ToolResult.error(f"Could not create worktree: {exc}")
             cwd = wt[0]
         try:
-            code, out = agent.run(prompt, cwd)
+            code, out = agent.run(prompt, cwd, max_output=get_limits(ctx).external_output_chars)
         except FileNotFoundError:
             return ToolResult.error(f"'{agent.command[0]}' is not installed or not on PATH.")
         except subprocess.TimeoutExpired:
