@@ -58,7 +58,9 @@ coded/
 ├── images.py           # image → base64 data URL for vision models
 ├── mcp_client.py       # optional MCP stdio client (background asyncio loop)
 ├── hooks.py            # HookRunner: PreToolUse/PostToolUse/UserPromptSubmit/SessionStart/Stop
-├── sandbox.py          # bwrap / sandbox-exec wrapping for bash
+├── sandbox.py          # bwrap / sandbox-exec wrapping for bash (no Windows backend)
+├── shells.py           # shell resolution (Git Bash/PowerShell/cmd), tree kill, UTF-8, rmtree
+├── textio.py           # read/write text files preserving their line endings
 ├── background.py       # BackgroundShells: run_in_background processes
 ├── commands.py         # custom slash commands (.coded/commands/*.md)
 ├── telemetry.py        # Tracer: JSONL spans + optional OpenTelemetry
@@ -101,6 +103,7 @@ tests/
 ├── test_model_chain.py # failover cooldown, sizing for a smaller fallback, stream retry,
 │                       # per-model timeout, unknown-alias warnings
 ├── test_big_models.py  # scaled limits, caps, overflow retry, max_turns, profiles, repo overview
+├── test_windows.py     # shell resolution, line endings, UTF-8, shims (runs everywhere)
 ├── test_prompts.py     # prompt files: placement, override order, empty=remove, CLI
 ├── test_plugins.py     # sources, zip safety, skill/plugin install/update/remove,
 │                       # Claude-format plugins, marketplaces, CLI
@@ -299,6 +302,14 @@ config.example.json     # sample configuration
   compaction follow it via `_sized_model`, shrinking history when it is
   smaller. Use `_sized_model`, not `self.model`, for anything window-dependent
   in the loop. `Config.model_warnings()` reports unknown aliases.
+- **Cross-platform**: anything that runs a command goes through `shells.run` /
+  `command_argv` (POSIX keeps the historical `shell=True` string path; Windows
+  gets an argv list for the resolved shell) and `popen_kwargs`/`kill_tree` for
+  process groups. Capture output with `**text_kwargs()`, never bare `text=True`
+  (Windows would decode with the ANSI code page). Editing a file goes through
+  `textio.read_text`/`write_text` so line endings survive; never `Path.write_text`
+  for user files. Platform logic takes `which`/`exists`/`env` arguments so it is
+  testable on any OS (`tests/test_windows.py`).
 - **Config is layered**: presets → user file → project file → CLI flags. Don't
   hard-code paths or keys; go through `config.py`. Dict-valued settings
   (`hooks`, `sandbox`, `telemetry`, `external_agents`, `model_roles`) merge

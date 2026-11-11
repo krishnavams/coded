@@ -104,7 +104,8 @@ pip install -e .            # core
 pip install -e '.[mcp]'     # + Model Context Protocol support
 ```
 
-Requires Python 3.10+.
+Requires Python 3.10+. Runs on Linux, macOS and Windows (see
+[Windows](#windows) for what differs there).
 
 ## Quick start
 
@@ -579,6 +580,45 @@ rules, plan mode and the strict injection guard still apply. The model can ask
 to run one command unsandboxed (`dangerously_disable_sandbox`), which always
 needs your approval. If no backend is installed, bash falls back to normal
 prompting (or refuses, with `fail_if_unavailable`).
+
+### Windows
+
+coded runs natively on Windows; everything works except the OS sandbox, which
+has no Windows backend (`--sandbox` refuses to run rather than pretending).
+
+The `bash` tool needs a shell. coded picks one at startup:
+
+1. `"shell"` in config.json, `$CODED_SHELL`, or `--shell`;
+2. **Git Bash** (installed with [Git for Windows](https://git-scm.com/download/win))
+   — recommended, because it understands the POSIX syntax models write;
+3. PowerShell (`pwsh`, then `powershell`), driven with `-EncodedCommand` so
+   quoting is never mangled;
+4. `cmd.exe`.
+
+```json
+{"shell": "pwsh"}
+```
+
+```bash
+coded --shell "C:/Program Files/Git/bin/bash.exe"
+```
+
+The chosen shell is named in the system prompt, and when it isn't POSIX the
+model is told to write that shell's syntax. `bash.exe` in `System32` is the WSL
+launcher, not a shell for the current directory, so it is skipped.
+
+Other Windows specifics, all automatic:
+
+- **Line endings are preserved.** Editing one line of an LF file leaves the rest
+  of the file alone (no silent CRLF rewrite), and CRLF files stay CRLF.
+- **Output is decoded as UTF-8** from commands, hooks, git and outside agents,
+  and the console is switched to UTF-8 so the UI renders.
+- **Stopping a command kills its children** (`taskkill /T`), for timeouts,
+  `kill_shell` and shutdown.
+- **Outside agent CLIs** installed as `.cmd`/`.bat` shims (claude, codex, …) are
+  resolved to their real path.
+
+WSL also works and gives you the Linux behaviour, sandbox included.
 
 ### Background processes
 

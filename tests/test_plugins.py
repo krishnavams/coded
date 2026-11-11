@@ -27,6 +27,7 @@ from coded.plugins import (
     update_skills,
 )
 from coded.skills import discover_skills
+from coded.shells import shell_path
 from coded.sources import SourceError, parse_source, safe_extract_zip
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
@@ -219,7 +220,9 @@ def test_plugin_install_contributes_everything_and_disable_removes_it(home, tmp_
     cfg = load_config(cwd=str(project))
     post = cfg.hooks["PostToolUse"]
     assert post[0]["command"] == "echo user"  # user hook kept, plugin hook appended
-    assert post[1]["command"] == f"{root}/hooks/check.sh"
+    # Hook commands run through a shell, so the root is written the way that
+    # shell reads paths (forward slashes under Git Bash on Windows).
+    assert post[1]["command"] == f"{shell_path(root)}/hooks/check.sh"
     assert post[1]["env"]["CODED_PLUGIN_ROOT"] == str(root)
     assert cfg.mcp_servers["toolkit-db"]["command"] == f"{root}/bin/db-mcp"
     assert "helper" in cfg.external_agents and cfg.plugins == ["toolkit"]
