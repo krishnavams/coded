@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -217,6 +218,26 @@ def child_env(env: Optional[Dict[str, str]] = None) -> Optional[Dict[str, str]]:
     return base
 
 
+_CLIXML_HEAD = "#< CLIXML"
+_CLIXML_S = re.compile(r"<S S=\"[^\"]*\">(.*?)</S>", re.S)
+_ANSI = re.compile(r"(?:_x001B_|\x1b)\[[0-9;]*m")
+
+
+def clean_clixml(text: str) -> str:
+    """PowerShell serializes its own error stream as CLIXML when it is redirected.
+
+    Turn that back into the plain text the model (and the user) should read; any
+    other text is returned unchanged.
+    """
+    if _CLIXML_HEAD not in text:
+        return text
+    head, _, rest = text.partition(_CLIXML_HEAD)
+    parts = [_ANSI.sub("", m.group(1)) for m in _CLIXML_S.finditer(rest)]
+    body = "".join(parts).replace("_x000D_", "").replace("_x000A_", "\n")
+    body = body.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+    return (head + body).strip("\n")
+
+
 def kill_tree(proc: subprocess.Popen, timeout: float = 5.0) -> None:
     """Stop a process and its children, on any platform."""
     if proc.poll() is not None:
@@ -290,6 +311,8 @@ def run(command: Union[str, Sequence[str]], *, cwd: Optional[str] = None,
         if isinstance(exc, subprocess.TimeoutExpired):
             raise subprocess.TimeoutExpired(argv, timeout or 0, output=out, stderr=err) from None
         raise
+    if (shell or active_shell()).name in ("pwsh", "powershell"):
+        out, err = clean_clixml(out or ""), clean_clixml(err or "")
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
 

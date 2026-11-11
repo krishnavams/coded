@@ -107,9 +107,18 @@ def _environment(cwd: str, model: Any = None) -> str:
              f"- Platform: {platform.system()} ({platform.machine()})",
              f"- Shell for the bash tool: {label}"]
     if not posix:
-        lines.append("  Write commands in that shell's syntax, not POSIX sh: no `&&` chains "
-                     "that assume sh, no `$(…)`, no single-quote escaping. Prefer the "
-                     "read/write/edit/grep/glob tools over shell equivalents.")
+        from coded.shells import active_shell
+
+        if active_shell().name in ("pwsh", "powershell"):
+            lines.append("  Write PowerShell, not POSIX sh: `;` to chain, `$(…)` is "
+                         "`$( )` only around PowerShell expressions, and run an "
+                         "executable whose path is quoted with the call operator, "
+                         "e.g. `& \"C:/Program Files/tool/x.exe\" --flag`. Environment "
+                         "variables are `$env:NAME`.")
+        else:
+            lines.append("  Write Windows command-prompt syntax, not POSIX sh: `&&` works, "
+                         "`%VAR%` for variables, no `$(…)`, no single quotes.")
+        lines.append("  Prefer the read/write/edit/grep/glob tools over shell equivalents.")
     lines.append(f"- Today: {os.environ.get('CODED_DATE', '')}")
     if model is not None and getattr(model, "context_window", None):
         lines.append(f"- Model: {model.name} (context window ~{model.context_window // 1000}k tokens)")

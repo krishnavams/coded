@@ -606,7 +606,9 @@ coded --shell "C:/Program Files/Git/bin/bash.exe"
 ```
 
 The chosen shell is named in the system prompt, and when it isn't POSIX the
-model is told to write that shell's syntax. `bash.exe` in `System32` is the WSL
+model is told to write that shell's syntax (PowerShell needs `&` to run a
+quoted executable, `;` to chain, `$env:NAME` for variables). PowerShell's
+serialized CLIXML error output is turned back into plain text. `bash.exe` in `System32` is the WSL
 launcher, not a shell for the current directory, so it is skipped.
 
 Other Windows specifics, all automatic:

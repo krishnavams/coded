@@ -260,11 +260,16 @@ def test_real_windows_shell_exit_codes_and_output(name, tmp_path):
     bad = shells.run("this-command-does-not-exist-xyz", cwd=str(tmp_path), timeout=120,
                      shell=shell)
     assert bad.returncode != 0
+    # PowerShell's error stream is readable text, not serialized CLIXML.
+    assert "CLIXML" not in bad.stdout + bad.stderr
 
     # Non-ASCII output decodes, and quoted arguments with spaces survive.
+    # Each shell gets its own syntax for running a quoted executable — exactly
+    # what the system prompt tells the model to write.
     script = tmp_path / "say.py"
     script.write_text("import sys; print('héllo ✓', sys.argv[1])", encoding="utf-8")
-    out = shells.run(f'"{sys.executable}" "{script}" "two words"', cwd=str(tmp_path),
+    call = "& " if name in ("pwsh", "powershell") else ""
+    out = shells.run(f'{call}"{sys.executable}" "{script}" "two words"', cwd=str(tmp_path),
                      timeout=120, shell=shell)
     assert out.returncode == 0, out.stdout + out.stderr
     assert "héllo ✓" in out.stdout and "two words" in out.stdout
@@ -321,3 +326,13 @@ def test_config_shell_setting_applies_before_anything_uses_it(tmp_path, monkeypa
         assert shells.active_shell().name == "cmd"
     finally:
         shells.set_active_shell(None)
+
+
+def test_clixml_error_output_is_turned_back_into_text():
+    raw = ('#< CLIXML\n<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell'
+           '/2004/04"><S S="Error">_x001B_[31;1mParserError: _x001B_[0m_x000D__x000A_</S>'
+           '<S S="Error">Unexpected token &lt;x&gt;_x000D__x000A_</S></Objs>')
+    out = shells.clean_clixml(raw)
+    assert "CLIXML" not in out and "_x000D_" not in out and "[31;1m" not in out
+    assert "ParserError:" in out and "Unexpected token <x>" in out
+    assert shells.clean_clixml("ordinary stderr\n") == "ordinary stderr\n"
