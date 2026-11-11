@@ -49,6 +49,7 @@ coded/
 │                       # compact/ and full/ hold per-profile variants
 ├── repl.py             # interactive REPL and slash commands
 ├── tui.py              # full-screen Textual app (coded --tui), optional
+├── sidebar.py          # the TUI's right panel: session, tasks, changed files, queue, shells
 ├── ui.py               # rich-based rendering helpers (single Console)
 ├── skills.py           # skill discovery, frontmatter parsing, prompt section
 ├── review.py           # /review pipeline: reviewer→qa→security sub-agents
@@ -99,6 +100,7 @@ tests/
 ├── conftest.py         # FakeServer + EmbeddingsServer + RouteServer (all offline)
 ├── test_agent_e2e.py   # full agent loop (tool call, streaming, permission)
 ├── test_tui.py         # Textual TUI via Pilot (turn, permission modal, clear)
+├── test_sidebar.py     # the side panel: file counts, sections, width, Ctrl+B
 ├── test_review.py      # /review pipeline + coded review verdict/exit code
 ├── test_compaction.py  # context compaction trigger + tail preservation
 ├── test_permissions_sessions.py  # allow/deny rules, diff preview, sessions, json
@@ -312,6 +314,10 @@ config.example.json     # sample configuration
   with `call_from_thread`. The permission callback pushes a `PermissionModal`
   and blocks the worker on a `threading.Event` until the user answers. Guard the
   Textual import — the app must run fine without it installed.
+  The right-hand panel is drawn by `sidebar.render` (no Textual import, so it is
+  testable alone) from agent state; changed-file counts come from the current
+  checkpoint group (`sidebar.file_changes`) and read disk, so they are
+  recomputed only after a tool result, a turn or `/undo` — never per token.
 - **Streaming**: `LLMClient._consume_stream` accumulates text, reasoning
   (`reasoning_content`/`reasoning`) and tool-call deltas. Optional params
   (`stream_options`, `reasoning_effort`, …) that an endpoint rejects with a 400

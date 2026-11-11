@@ -356,7 +356,16 @@ coded sessions                 # list saved sessions
 streamed assistant Markdown, tool calls shown as `● Edit(app.py)` with their
 results, line-numbered diffs), the task list while the agent has one, an input
 box with a **status line** under it (model, mode, turns, tokens, cost), and a **permission modal** for gated actions. Keys: `Enter` send,
-`Ctrl+L` clear, `Ctrl+U` undo edits, `Ctrl+C` quit. It reuses the same agent,
+`Ctrl+B` side panel, `Ctrl+L` clear, `Ctrl+U` undo edits, `Ctrl+C` quit.
+
+A **side panel** on the right shows, each part only when it has something:
+the session (model, plan mode, how full the context window is and where it
+compacts, turns/tokens/cost), the task list with its progress bar, the files
+changed this turn with `+added −removed` line counts, messages queued while the
+agent works, and background shells with their state. It opens by itself when
+the terminal is at least 110 columns wide; `Ctrl+B` opens or closes it at any
+width. Files changed by `bash` commands are not listed (they are not tracked
+for `/undo` either). It reuses the same agent,
 tools, permissions, and session persistence as the REPL. Install the extra:
 
 ```bash

@@ -1,11 +1,16 @@
 """A full-screen terminal UI (Textual) for coded.
 
-Layout (single column):
-  welcome card (logo, model, directory)
-  conversation transcript (scrollable): requests, tool calls, diffs, answers
-  task list (only while the agent has one)
+Layout:
+  ┌ transcript (scrollable) ──────────────┬ side panel (Ctrl+B) ─┐
+  │ welcome card, requests, tool calls,   │ session · context    │
+  │ diffs, answers                        │ tasks · files changed│
+  │ task list (when the panel is shut)    │ queued · shells      │
+  └───────────────────────────────────────┴──────────────────────┘
   ╭ input ─────────────────────────────────────────────╮
   status line: model · mode · turns · tokens · cost · key hints
+
+The side panel opens by itself on a wide terminal and is drawn by
+`coded.sidebar`, which needs no Textual.
 
 The synchronous agent runs in a worker thread; it emits structured events
 (via Agent.on_event) that are marshalled onto the UI thread to build widgets.
@@ -22,7 +27,7 @@ from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import (
@@ -33,7 +38,7 @@ from textual.widgets import (
     Static,
 )
 
-from coded import ui
+from coded import sidebar, ui
 from coded.agent import Agent
 from coded.llm import explain_failure
 
@@ -124,6 +129,12 @@ class CodedTUI(App):
     .toolresult {{ color: {ui.MUTED}; }}
     .toolresult.error {{ color: {ui.ERR}; }}
     .statusnote {{ margin: 1 0 0 0; }}
+    #main {{ height: 1fr; }}
+    #left {{ width: 1fr; }}
+    #sidebar {{ width: {sidebar.PANEL_WIDTH}; display: none; padding: 1 1;
+                border-left: tall #2a2342; background: #120f1f;
+                scrollbar-color: {ui.ACCENT_DEEP}; }}
+    #sidebar.open {{ display: block; }}
     #tasks {{ height: auto; max-height: 10; padding: 0 2; margin: 1 0 0 0; display: none; }}
     #tasks.shown {{ display: block; }}
     #prompt {{ border: round #3b3260; background: #100d1a; margin: 0 1; }}
@@ -139,6 +150,7 @@ class CodedTUI(App):
         Binding("ctrl+l", "clear", "Clear"),
         Binding("ctrl+u", "undo", "Undo edits"),
         Binding("shift+tab", "toggle_plan", "Plan mode", priority=True),
+        Binding("ctrl+b", "toggle_sidebar", "Side panel", priority=True),
     ]
 
     busy = reactive(False)
@@ -154,14 +166,20 @@ class CodedTUI(App):
         self._thought: Optional[Static] = None
         self._thought_buf = ""
         self._queued: list = []  # messages typed while a turn was running
+        self._panel_choice: Optional[bool] = None  # None: follow the terminal width
+        self._changes: list = []  # sidebar.FileChange, recomputed after tool results
         from coded.commands import discover_commands
 
         self.commands = discover_commands(agent.cwd)
 
     # -- layout -------------------------------------------------------------
     def compose(self) -> ComposeResult:
-        yield VerticalScroll(id="transcript")
-        yield Static("", id="tasks")
+        with Horizontal(id="main"):
+            with Vertical(id="left"):
+                yield VerticalScroll(id="transcript")
+                yield Static("", id="tasks")
+            with VerticalScroll(id="sidebar"):
+                yield Static("", id="side-body")
         yield Input(placeholder="Ask coded to build, fix, explain…", id="prompt")
         yield Static(self._status_text(), id="statusline")
 
@@ -180,6 +198,9 @@ class CodedTUI(App):
         self.sub_title = f"{self.agent.model.name}  ·  {self.agent.cwd}"
         self.query_one("#prompt", Input).focus()
         self._mount(Welcome(self.agent.model.name, self.agent.cwd))
+        self._apply_panel()
+        # Shells finish on their own, with no event to say so.
+        self.set_interval(2.0, self._tick)
 
     def watch_busy(self, busy: bool) -> None:
         self._refresh_sidebar()
@@ -206,7 +227,7 @@ class CodedTUI(App):
                  f"~${s.estimated_cost(self.agent.model):.4f}")
         if getattr(s, "compactions", 0):
             t.append(f"  ·  compacted {s.compactions}×")
-        t.append("  ·  shift+tab plan  ^C quit  ^L clear  ^U undo")
+        t.append("  ·  shift+tab plan  ^B panel  ^C quit  ^L clear  ^U undo")
         return t
 
     def _tasks_text(self) -> Text:
@@ -223,15 +244,51 @@ class CodedTUI(App):
         t.rstrip()
         return t
 
-    def _refresh_sidebar(self) -> None:
-        """Refresh the status line and the task list."""
+    def _refresh_sidebar(self, files: bool = False) -> None:
+        """Refresh the status line, the task list and the side panel.
+
+        `files` recomputes the changed-file counts, which reads files from
+        disk, so it is done after a tool result or a turn, not per token."""
         try:
             self.query_one("#statusline", Static).update(self._status_text())
+            panel_open = self.panel_open
             tasks = self.query_one("#tasks", Static)
             tasks.update(self._tasks_text())
-            tasks.set_class(bool(self.agent.todos.items), "shown")
-        except Exception:  # noqa: BLE001
+            # With the panel open, the tasks live there instead.
+            tasks.set_class(bool(self.agent.todos.items) and not panel_open, "shown")
+            if not panel_open:
+                return
+            if files:
+                self._changes = sidebar.file_changes(self.agent.checkpoints, self.agent.cwd)
+            self.query_one("#side-body", Static).update(sidebar.render(
+                self.agent, busy=self.busy, queued=self._queued, changes=self._changes))
+        except Exception:  # noqa: BLE001 - the panel must never break a turn
             pass
+
+    # -- side panel -----------------------------------------------------------
+    @property
+    def panel_open(self) -> bool:
+        if self._panel_choice is not None:
+            return self._panel_choice
+        return self.size.width >= sidebar.AUTO_OPEN_WIDTH
+
+    def _apply_panel(self) -> None:
+        try:
+            self.query_one("#sidebar").set_class(self.panel_open, "open")
+        except Exception:  # noqa: BLE001 - not mounted yet
+            return
+        self._refresh_sidebar(files=True)
+
+    def on_resize(self, event) -> None:
+        self._apply_panel()
+
+    def action_toggle_sidebar(self) -> None:
+        self._panel_choice = not self.panel_open
+        self._apply_panel()
+
+    def _tick(self) -> None:
+        if self.panel_open and self.agent.shells.list():
+            self._refresh_sidebar()
 
     # -- transcript helpers -------------------------------------------------
     def _mount(self, widget) -> None:
@@ -255,6 +312,7 @@ class CodedTUI(App):
             # Don't swallow a question asked mid-turn: queue it and run it next.
             self._queued.append(text)
             self._mount(StatusNote(f"queued ({len(self._queued)}): {text}"))
+            self._refresh_sidebar()
             return
         self._submit(text)
 
@@ -298,7 +356,7 @@ class CodedTUI(App):
     def _turn_done(self) -> None:
         self.busy = False
         self._finalize_assistant()
-        self._refresh_sidebar()
+        self._refresh_sidebar(files=True)
         self.query_one("#prompt", Input).focus()
         # Queued text takes the same path as typed text, so a slash command
         # typed mid-turn still acts as a command, not as a prompt — and a
@@ -351,7 +409,14 @@ class CodedTUI(App):
             self._mount(DiffView(ev.get("diff", "")))
         elif kind == "status":
             self._mount(StatusNote(ev.get("text", "")))
-        self._refresh_sidebar()
+        if kind in ("assistant_delta", "reasoning_delta"):
+            # Per token: only the cheap status line, not the panel.
+            try:
+                self.query_one("#statusline", Static).update(self._status_text())
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        self._refresh_sidebar(files=kind == "tool_result")
 
     # -- permission prompt (blocks the worker thread) -----------------------
     def _permission_prompt(self, title: str, detail: str) -> str:
@@ -388,6 +453,7 @@ class CodedTUI(App):
         else:
             msg = "Checkpoints disabled."
         self._mount(StatusNote(msg))
+        self._refresh_sidebar(files=True)
 
 
 def run_tui(agent: Agent, on_turn=None) -> None:
