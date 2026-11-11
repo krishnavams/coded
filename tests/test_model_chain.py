@@ -195,6 +195,7 @@ def test_stream_broken_after_text_is_not_replayed(monkeypatch):
     except openai.APIConnectionError:
         pass
     assert shown == ["partial"] and len(calls) == 1
+    assert client._primary.down_until == 0
 
 
 def test_per_model_timeout_reaches_the_client():
@@ -215,3 +216,97 @@ def test_unknown_aliases_are_reported():
     cfg.model_roles = {}
     cfg.models["large"].fallback = ["large-2"]
     assert cfg.model_warnings() == []
+
+
+def _failover_agent(tmp_path, primary, backup, small_window, **big_kw):
+    cfg = Config()
+    big = _model(primary.base + "/v1", "big", context_window=300_000, max_retries=0,
+                 fallback=["small"], prompt_profile="compact", repo_overview=False, **big_kw)
+    small = _model(backup.base + "/v1", "small", context_window=small_window)
+    cfg.add_model(big, make_default=True)
+    cfg.add_model(small)
+    agent = create_agent(model=big, config=cfg, cwd=str(tmp_path),
+                         permissions=PermissionManager(auto_approve=True), stream=False,
+                         verbose=False)
+    return agent, small
+
+
+def test_failover_leaves_a_history_that_fits_untouched(tmp_path, route_server):
+    with route_server(_down) as primary, route_server(lambda *a: _ok("ok")) as backup:
+        agent, small = _failover_agent(tmp_path, primary, backup, 128_000)
+        big_result = "line\n" * 12_000  # 60k chars: fine for 128k
+        agent.session.messages += [
+            {"role": "user", "content": "read it"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "read", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": big_result},
+            {"role": "assistant", "content": "read."},
+        ]
+        before = json.dumps(agent.session.messages)
+        assert agent.run("go") == "ok" and agent.run("more") == "ok"
+        assert json.dumps(agent.session.messages[:len(json.loads(before))]) == before
+        assert getattr(agent.session, "compactions", 0) == 0
+        # Tools now get the fallback's limits.
+        from coded.limits import get_limits
+        assert agent._sized_model is small and get_limits(agent._ctx()).read_lines == 2000
+
+
+def test_smaller_fallback_overflow_is_handled_without_cooldown(tmp_path, route_server):
+    small_window = 8000
+
+    def backup_route(method, path, body):
+        req = json.loads(body)
+        if sum(len(m.get("content") or "") for m in req["messages"]) > small_window * 4:
+            return 400, "application/json", json.dumps(
+                {"error": {"message": "maximum context length is 8000 tokens"}})
+        if req["messages"][0]["content"].startswith("You compress"):
+            return _ok("- summary")
+        return _ok("done")
+
+    with route_server(_down) as primary, route_server(backup_route) as backup:
+        agent, small = _failover_agent(tmp_path, primary, backup, small_window,
+                                       fallback_cooldown=0)
+        for i in range(12):
+            agent.session.messages.append({"role": "user", "content": f"q{i} " + "x" * 5000})
+            agent.session.messages.append({"role": "assistant", "content": "a" * 5000})
+        assert agent.run("go") == "done"
+        assert agent.run("again") == "done"  # the overflow retry is available again
+
+
+def test_compacting_with_keep_recent_zero_keeps_the_current_request():
+    from coded.compaction import maybe_compact
+
+    class _LLM:
+        model = ModelConfig(name="m", model="m")
+
+        def complete(self, messages, tools=None, stream=False):
+            return type("C", (), {"content": "summary"})()
+
+    class _Session:
+        compactions = 0
+        last_prompt_tokens = 0
+
+    s = _Session()
+    s.messages = [{"role": "system", "content": "sys"},
+                  {"role": "user", "content": "old"}, {"role": "assistant", "content": "old a"},
+                  {"role": "user", "content": "current"},
+                  {"role": "assistant", "content": "", "tool_calls": [
+                      {"id": "c", "type": "function", "function": {"name": "ls", "arguments": "{}"}}]},
+                  {"role": "tool", "tool_call_id": "c", "content": "files"}]
+    assert maybe_compact(s, _LLM.model, _LLM(), force=True, keep_recent=0)
+    assert [m["role"] for m in s.messages] == ["system", "user", "user", "assistant", "tool"]
+    assert s.messages[2]["content"] == "current"
+    assert maybe_compact(s, _LLM.model, _LLM(), force=True, keep_recent=-1)
+    assert [m["role"] for m in s.messages] == ["system", "user"]
+
+
+def test_new_model_fields_load_from_a_config_file(tmp_path):
+    from coded.config import load_config
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"models": {
+        "large": {"base_url": "http://x/v1", "model": "l", "timeout": 900,
+                  "fallback_cooldown": 30, "fallback": ["nope"]}}}))
+    cfg = load_config(cwd=str(tmp_path), config_path=str(path), plugins=False)
+    assert cfg.models["large"].timeout == 900 and cfg.models["large"].fallback_cooldown == 30
+    assert any("'nope'" in w for w in cfg.model_warnings())

@@ -65,10 +65,12 @@ _SUMMARY_SYSTEM = (
 
 
 def _summarizer_budget_chars(llm) -> int:
-    """How much transcript one summarization request may carry (half the
-    summarizer's window, ~4 chars/token)."""
-    model = llm.next_model() if hasattr(llm, "next_model") else getattr(llm, "model", None)
-    window = getattr(model, "context_window", 0) or 128_000
+    """How much transcript one summarization request may carry: half the smallest
+    window in the summarizer's fallback chain (~4 chars/token)."""
+    if hasattr(llm, "min_context_window"):
+        window = llm.min_context_window()
+    else:
+        window = getattr(getattr(llm, "model", None), "context_window", 0) or 128_000
     return max(8000, window * 2)
 
 
@@ -106,17 +108,25 @@ def maybe_compact(session, model: ModelConfig, llm, *, ratio: float = 0.8,
 
     system = messages[0]
     body = messages[1:]
-    if len(body) <= keep_recent:
+    if len(body) <= max(keep_recent, 0):
         return False
 
     # Choose a cut point: keep the last `keep_recent`, then move the boundary
     # forward until it lands on a 'user' message so the tail is self-consistent
     # (no assistant tool_calls without their tool results, no orphan tool msgs).
-    cut = len(body) - keep_recent
-    while cut < len(body) and body[cut].get("role") != "user":
-        cut += 1
-    if cut >= len(body):
-        cut = len(body)  # summarize everything; keep nothing partial
+    # keep_recent=0 keeps only the current request (from the last user message);
+    # a negative value summarizes everything.
+    if keep_recent < 0:
+        cut = len(body)
+    elif keep_recent == 0:
+        users = [i for i, m in enumerate(body) if m.get("role") == "user"]
+        cut = users[-1] if users and users[-1] > 0 else len(body)
+    else:
+        cut = len(body) - keep_recent
+        while cut < len(body) and body[cut].get("role") != "user":
+            cut += 1
+        if cut >= len(body):
+            cut = len(body)  # summarize everything; keep nothing partial
     head, tail = body[:cut], body[cut:]
     if not head:
         return False

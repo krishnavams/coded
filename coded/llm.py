@@ -153,6 +153,10 @@ class LLMClient:
         ep = self._fallbacks.get(model.name)
         return ep.down_until if ep else 0.0
 
+    def min_context_window(self) -> int:
+        """Smallest window in the chain: a request this size fits whichever answers."""
+        return min((m.context_window or 128_000) for m in [self.model, *self._fallback_models])
+
     def next_model(self) -> ModelConfig:
         """The model the next request goes to first (a fallback while the primary
         is cooling down). Callers size the request for this model's window."""
@@ -194,7 +198,7 @@ class LLMClient:
                         pass
                     raise
                 cooldown = float(model.fallback_cooldown or 0)
-                if cooldown > 0 and i + 1 < len(chain):
+                if cooldown > 0 and i + 1 < len(chain) and not getattr(exc, "coded_partial", False):
                     endpoint.down_until = self._clock() + cooldown
                     self._status(f"Model '{model.name}' is unavailable; skipping it for "
                                  f"{cooldown:.0f}s.")
@@ -256,6 +260,11 @@ class LLMClient:
             except Exception as exc:  # noqa: BLE001
                 # A stream that broke before showing anything can be retried safely;
                 # once text has been displayed a retry would print it twice.
+                if emitted[0]:
+                    try:
+                        exc.coded_partial = True  # endpoint was up; don't cool it down
+                    except Exception:  # noqa: BLE001
+                        pass
                 if emitted[0] or not _is_retryable(exc) or attempt >= model.max_retries:
                     raise
                 delay = min(_MAX_RETRY_DELAY,
