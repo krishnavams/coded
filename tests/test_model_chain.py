@@ -664,3 +664,34 @@ def test_a_dead_gateway_is_swept_once_not_per_model(route_server):
     # Only the primary retried; the rest of that host was skipped after the
     # first connection error.
     assert len(attempts) == 1
+
+
+def test_a_cooling_primary_does_not_hand_sizing_to_a_small_model(route_server):
+    """next_model() drives _sync_sizing. If it ignored the conversation size, a
+    cooling primary would point sizing at a small last-resort model and the
+    session would be summarized to fit a model nobody asked for."""
+    def route(method, path, body):
+        if json.loads(body)["model"] == "big":
+            return _down(method, path, body)
+        return _ok("small answered")
+
+    with route_server(route) as srv:
+        big = _model(srv.base + "/v1", "big", context_window=400_000, max_retries=0,
+                     fallback_cooldown=60)
+        small = _model(srv.base + "/v1", "small", context_window=8_000)
+        cfg = _cfg(big, small)
+        agent = create_agent(model=big, config=cfg, cwd=".",
+                             permissions=PermissionManager(auto_approve=True),
+                             stream=False, verbose=False)
+        # A conversation far too large for the small model.
+        for i in range(20):
+            agent.session.messages.append({"role": "user", "content": f"q{i} " + "x" * 20_000})
+            agent.session.messages.append({"role": "assistant", "content": "a" * 20_000})
+        before = len(agent.session.messages)
+        try:
+            agent.llm.complete([{"role": "user", "content": "x" * 400_000}], stream=False)
+        except openai.APIStatusError:
+            pass  # the primary is now cooling down
+        agent._sync_sizing()
+        assert agent._sized_model.name == "big"      # not the 8k model
+        assert len(agent.session.messages) == before  # nothing was summarized

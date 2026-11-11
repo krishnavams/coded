@@ -93,7 +93,9 @@ def test_a_check_that_never_passes_stops_at_max_rounds_and_says_so(tmp_path, fak
         out = agent.run("add app.py")
 
     assert out == "Done."  # the answer is still delivered…
-    assert int(counter.read_text()) == 2  # …after exactly max_rounds attempts
+    # …after max_rounds attempts plus one final check, so a fix made in the last
+    # round is not reported as unverified.
+    assert int(counter.read_text()) == 3
     assert any("did not pass after 2 round" in n and "unverified" in n for n in notes)
 
 
@@ -258,3 +260,21 @@ def test_settings_survive_nonsense_values():
     assert s.timeout == 300.0 and s.max_rounds == 2 and s.command is None
     assert s.runs_checks() is False
     assert VerifySettings.from_config({"max_rounds": -1}).max_rounds == 0
+
+
+def test_a_fix_made_in_the_last_round_is_not_reported_unverified(tmp_path, fake_server):
+    """With max_rounds: 1 the final fix had never been checked before being
+    called unverified."""
+    command, counter = _checker(tmp_path, passes_after=1)  # fails once, then passes
+    notes = []
+
+    with fake_server(_write_then_answer("app.py", "x = 1")) as srv:
+        agent = _agent(tmp_path, srv.base_url,
+                       verify={"command": command, "max_rounds": 1})
+        agent.on_event = lambda ev: notes.append(ev.get("text", "")) \
+            if ev.get("type") == "status" else None
+        assert agent.run("add app.py") == "Done."
+
+    assert int(counter.read_text()) == 2
+    assert not any("unverified" in n for n in notes)
+    assert any("Checks passed" in n for n in notes)

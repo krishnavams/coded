@@ -227,10 +227,15 @@ class LLMClient:
         shrinks the history if one of them actually takes over."""
         return min((m.context_window or 128_000) for m in [self.model, *self._fallback_models])
 
-    def next_model(self) -> ModelConfig:
+    def next_model(self, size: int = 0) -> ModelConfig:
         """The model the next request goes to first (a fallback while the primary
-        is cooling down). Callers size the request for this model's window."""
-        return self._chain()[0]
+        is cooling down). Callers size the request for this model's window.
+
+        `size` is the conversation's estimated tokens: without it a cooling
+        primary can hand sizing over to a small last-resort model, and the
+        caller would summarize the session to fit a model nobody asked for.
+        """
+        return self._chain(size=size)[0]
 
     def complete(
         self,

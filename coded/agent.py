@@ -330,6 +330,15 @@ class Agent:
         if not (settings.runs_checks() or settings.runs_review(has_reviewer)):
             return None
         if self._verify_rounds >= settings.max_rounds:
+            # The last round's fix has not been checked yet: run the checks once
+            # more so a change that did pass is not reported as unverified.
+            if settings.runs_checks():
+                final = run_checks(settings.command, self.cwd, settings.timeout,
+                                   limit=self.limits.tool_result_chars)
+                if final.ok:
+                    self._status_note("Checks passed.")
+                    self._verify_rounds = 0
+                    return None
             self._status_note(exhausted_note(settings.max_rounds, self._verify_last or "unresolved"))
             return None
         self._verify_rounds += 1
@@ -532,7 +541,11 @@ class Agent:
         fallback while the main model is cooling down, the main model otherwise
         (or `target`, the model that just refused a request as too long).
         Returns True if the conversation had to be shrunk to fit."""
-        target = target or self.llm.next_model()
+        if target is None:
+            from coded.compaction import current_input_tokens, estimate_tokens
+
+            now = max(current_input_tokens(self.session), estimate_tokens(self.session.messages))
+            target = self.llm.next_model(size=int(now * 1.25))
         if target is self._sized_model:
             return False
         smaller = target.context_window < self._sized_model.context_window
