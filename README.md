@@ -583,8 +583,10 @@ prompting (or refuses, with `fail_if_unavailable`).
 
 ### Windows
 
-coded runs natively on Windows; everything works except the OS sandbox, which
-has no Windows backend (`--sandbox` refuses to run rather than pretending).
+coded runs natively on Windows. Everything works except the OS sandbox: there
+is no Windows backend, so `--sandbox` falls back to the normal approval prompt
+for every command (set `"fail_if_unavailable": true` in the `sandbox` config to
+refuse to run instead). WSL gives you the sandbox along with Linux behaviour.
 
 The `bash` tool needs a shell. coded picks one at startup:
 
@@ -618,7 +620,8 @@ Other Windows specifics, all automatic:
 - **Outside agent CLIs** installed as `.cmd`/`.bat` shims (claude, codex, …) are
   resolved to their real path.
 
-WSL also works and gives you the Linux behaviour, sandbox included.
+Needs Python 3.11.9+ or 3.12.4+ if you use outside agent CLIs installed as
+`.cmd` shims (those releases fixed argument escaping for them).
 
 ### Background processes
 

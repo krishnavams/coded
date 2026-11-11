@@ -26,6 +26,8 @@ Installing is always user-initiated from the CLI; the model has no install tool.
 
 from __future__ import annotations
 
+from functools import reduce
+
 import json
 import os
 import re
@@ -456,7 +458,8 @@ class Plugin:
                          + (" …" if len(files) > 15 else ""))
         for w in self.warnings:
             lines.append(f"  ⚠ {w}")
-        lines = [ln.replace(str(self.root), "${PLUGIN_ROOT}") for ln in lines]
+        roots = {str(self.root), shell_path(self.root)}
+        lines = [reduce(lambda ln, r: ln.replace(r, "${PLUGIN_ROOT}"), roots, ln) for ln in lines]
         if hooks or mcp:
             lines.append("Installing this plugin lets it run the commands above on your machine.")
         return "\n".join(lines)

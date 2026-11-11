@@ -31,9 +31,13 @@ def detect_newline(data: Union[bytes, str], default: str = LF) -> str:
 
 
 def decode(data: bytes) -> Tuple[str, str]:
-    """(text with \\n endings, the file's original ending)."""
+    """(text with \\n endings, the file's original ending).
+
+    Decoding is strict: a file coded cannot decode must not be rewritten from a
+    lossy reading of it, so callers report the error and leave it alone.
+    """
     newline = detect_newline(data)
-    text = data.decode("utf-8", errors="replace")
+    text = data.decode("utf-8")  # raises UnicodeDecodeError
     return text.replace(CRLF, LF), newline
 
 
@@ -45,8 +49,15 @@ def encode(text: str, newline: str = LF) -> bytes:
     return out.encode("utf-8")
 
 
+NOT_UTF8 = ("is not valid UTF-8 text; coded will not rewrite it (that would "
+            "corrupt the file). Convert it to UTF-8 first.")
+
+
 def read_text(path: Union[str, Path]) -> Tuple[str, str]:
-    """(contents with \\n endings, the file's ending). Raises OSError like open()."""
+    """(contents with \\n endings, the file's ending).
+
+    Raises OSError like open(), or UnicodeDecodeError for non-UTF-8 files.
+    """
     return decode(Path(path).read_bytes())
 
 

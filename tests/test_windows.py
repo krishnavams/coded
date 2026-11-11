@@ -201,3 +201,122 @@ def test_run_captures_utf8_and_times_out(tmp_path):
 def test_configure_stdio_is_safe_to_call():
     shells.configure_stdio()
     assert sys.stdout is not None
+
+
+def test_non_utf8_files_are_refused_not_corrupted(tmp_path):
+    from coded.tools.base import ToolContext
+    from coded.tools.files import EditTool
+    from coded.tools.patch import ApplyPatchTool, MultiEditTool
+
+    ctx = ToolContext(cwd=str(tmp_path), permissions=None, config=None)
+    raw = "café\r\nsecond\r\n".encode("cp1252")
+    for name, tool, args in (
+        ("a.txt", EditTool(), {"old_string": "second", "new_string": "2"}),
+        ("b.txt", MultiEditTool(), {"edits": [{"old_string": "second", "new_string": "2"}]}),
+    ):
+        (tmp_path / name).write_bytes(raw)
+        result = tool.run({"path": name, **args}, ctx)
+        assert result.is_error and "not valid UTF-8" in result.content
+        assert (tmp_path / name).read_bytes() == raw  # untouched
+        assert tool.preview({"path": name, **args}, ctx) is None
+
+    (tmp_path / "c.txt").write_bytes(raw)
+    patch = "*** Begin Patch\n*** Update File: c.txt\n@@\n-second\n+2\n*** End Patch"
+    result = ApplyPatchTool().run({"patch": patch}, ctx)
+    assert result.is_error and "not valid UTF-8" in result.content
+    assert (tmp_path / "c.txt").read_bytes() == raw
+
+
+# ---------------------------------------------------------------------------
+# Real shells. These only run on Windows (CI matrix); elsewhere they skip.
+# ---------------------------------------------------------------------------
+windows_only = pytest.mark.skipif(os.name != "nt", reason="needs a Windows shell")
+
+
+def _available(name):
+    import shutil as _shutil
+
+    path = _shutil.which(name)
+    if not path:
+        pytest.skip(f"{name} is not installed")
+    return path
+
+
+@windows_only
+@pytest.mark.parametrize("name", ["pwsh", "powershell", "cmd"])
+def test_real_windows_shell_exit_codes_and_output(name, tmp_path):
+    shell = resolve_shell(_available(name), windows=True)
+    assert shell.name == name
+
+    ok = shells.run("echo hello", cwd=str(tmp_path), timeout=120, shell=shell)
+    assert ok.returncode == 0 and "hello" in ok.stdout
+
+    # An explicit exit code survives the shell wrapper.
+    code = "exit 3" if name == "cmd" else "exit 3"
+    assert shells.run(code, cwd=str(tmp_path), timeout=120, shell=shell).returncode == 3
+
+    # A failing command reports failure, not success.
+    bad = shells.run("this-command-does-not-exist-xyz", cwd=str(tmp_path), timeout=120,
+                     shell=shell)
+    assert bad.returncode != 0
+
+    # Non-ASCII output decodes, and quoted arguments with spaces survive.
+    script = tmp_path / "say.py"
+    script.write_text("import sys; print('héllo ✓', sys.argv[1])", encoding="utf-8")
+    out = shells.run(f'"{sys.executable}" "{script}" "two words"', cwd=str(tmp_path),
+                     timeout=120, shell=shell)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "héllo ✓" in out.stdout and "two words" in out.stdout
+
+
+@windows_only
+def test_timeout_kills_the_whole_process_tree(tmp_path):
+    """The shell's grandchildren must die too, or the pipes stay open."""
+    import time
+
+    child = tmp_path / "sleeper.py"
+    child.write_text("import time; time.sleep(120)", encoding="utf-8")
+    start = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        shells.run(f'"{sys.executable}" "{child}"', cwd=str(tmp_path), timeout=3)
+    assert time.monotonic() - start < 30  # returns promptly, not after 120s
+
+
+@windows_only
+def test_cmd_shim_receives_arguments_intact(tmp_path):
+    """Outside agent CLIs are .cmd shims; cmd.exe re-parses their arguments."""
+    from coded.external_agents import ExternalAgent
+
+    script = tmp_path / "echo_arg.py"
+    script.write_text("import sys; print('GOT:' + sys.argv[1])", encoding="utf-8")
+    shim = tmp_path / "agent.cmd"
+    shim.write_text(f'@echo off\r\n"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
+
+    agent = ExternalAgent(name="shim", command=[str(shim), "{prompt}"], stdin=False)
+    prompt = 'fix "quotes" & echo pwned'
+    code, out = agent.run(prompt, str(tmp_path))
+    assert "pwned" not in out.replace("GOT:" + prompt, "")  # the tail was not executed
+    assert prompt in out
+
+
+def test_config_shell_setting_applies_before_anything_uses_it(tmp_path, monkeypatch):
+    """`"shell": …` must be in force before plugin hooks and the prompt resolve."""
+    from coded.config import load_config
+
+    monkeypatch.setattr(shells, "IS_WINDOWS", True)
+    monkeypatch.setattr(shells, "resolve_shell",
+                        lambda configured=None, **kw: Shell(name=str(configured), path="x.exe",
+                                                            posix_syntax=False))
+    (tmp_path / "config.json").write_text('{"shell": "pwsh"}')
+    try:
+        shells.set_active_shell(None)
+        cfg = load_config(cwd=str(tmp_path), config_path=str(tmp_path / "config.json"))
+        assert cfg.shell == "pwsh"
+        assert shells.active_shell().name == "pwsh"
+        # --shell pins: config.json must not overwrite it.
+        shells.set_active_shell(Shell(name="cmd", path="cmd.exe", posix_syntax=False),
+                                pinned=True)
+        load_config(cwd=str(tmp_path), config_path=str(tmp_path / "config.json"))
+        assert shells.active_shell().name == "cmd"
+    finally:
+        shells.set_active_shell(None)

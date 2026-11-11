@@ -18,6 +18,8 @@ import json
 import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+
+from coded.shells import ensure_shell
 from typing import Any, Dict, Optional
 
 # ---------------------------------------------------------------------------
@@ -313,7 +315,7 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
             setattr(cfg, key, merged)
     for key in ("auto_approve", "max_turns", "stream", "auto_compact", "compact_ratio",
                 "show_reasoning", "parallel_tools", "injection_guard",
-                "detect_external_agents"):
+                "detect_external_agents", "shell"):
         if key in data:
             setattr(cfg, key, data[key])
 
@@ -329,6 +331,10 @@ def load_config(cwd: Optional[str] = None, config_path: Optional[str] = None,
     else:
         _merge_into(cfg, _load_json(user_config_path()), user_config_path())
         _merge_into(cfg, _load_json(project_config_path(cwd)), project_config_path(cwd))
+
+    # Settle the shell before anything that depends on it (plugin hook paths,
+    # the system prompt, the bash tool).
+    ensure_shell(cfg.shell)
 
     if plugins:
         from coded.plugins import apply_plugins_to_config

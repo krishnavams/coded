@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from coded.textio import newline_of, read_text, write_text
+from coded.textio import NOT_UTF8, newline_of, read_text, write_text
 from coded.tools.base import Tool, ToolContext, ToolResult
 from coded.tools.files import _checkpoint, _resolve, _unified_diff
 
@@ -81,7 +81,7 @@ same file."""
         try:
             text = read_text(p)[0]
             new, _ = apply_edits(text, args.get("edits") or [])
-        except (OSError, PatchError):
+        except (OSError, PatchError, UnicodeDecodeError):
             return None
         return _unified_diff(text, new, args["path"])
 
@@ -97,6 +97,8 @@ same file."""
             new, n = apply_edits(text, edits)
         except PatchError as exc:
             return ToolResult.error(f"{exc} No changes were made.")
+        except UnicodeDecodeError:
+            return ToolResult.error(f"{p} {NOT_UTF8}")
         except OSError as exc:
             return ToolResult.error(f"Could not read {p}: {exc}")
         try:
@@ -241,13 +243,20 @@ def plan_patch(patch: str, ctx: ToolContext) -> List[Tuple[FileOp, Path, Optiona
         elif op.kind == "delete":
             if not p.is_file():
                 raise PatchError(f"Cannot delete {op.path}: file not found.")
-            planned.append((op, p, read_text(p)[0], None))
+            planned.append((op, p, _text(p), None))
         else:
             if not p.is_file():
                 raise PatchError(f"Cannot update {op.path}: file not found.")
-            old = read_text(p)[0]
+            old = _text(p)
             planned.append((op, p, old, apply_update(old, op.lines, op.path)))
     return planned
+
+
+def _text(p) -> str:
+    try:
+        return read_text(p)[0]
+    except UnicodeDecodeError:
+        raise PatchError(f"{p} {NOT_UTF8}") from None
 
 
 class ApplyPatchTool(Tool):

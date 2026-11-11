@@ -107,7 +107,6 @@ def build_config_parser() -> argparse.ArgumentParser:
 def _apply_overrides(cfg: Config, args: argparse.Namespace) -> None:
     if getattr(args, "shell", None):
         cfg.shell = args.shell
-        set_active_shell(resolve_shell(args.shell))
     if args.auto_approve:
         cfg.auto_approve = True
     if args.no_stream:
@@ -149,7 +148,8 @@ def _warn_sandbox(cfg: Config) -> None:
         how = "refusing to run bash" if settings.fail_if_unavailable else \
             "bash will run unsandboxed and ask for permission"
         ui.warn("Sandbox enabled but no backend found (install bubblewrap on Linux; "
-                f"macOS has sandbox-exec built in) — {how}.")
+                "macOS has sandbox-exec built in; Windows has no backend — use WSL) "
+                f"— {how}.")
 
 
 def _apply_tls_overrides(model: ModelConfig, args: argparse.Namespace) -> None:
@@ -499,6 +499,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     # In JSON print mode, keep stdout clean — send all log output to stderr.
     if args.print_mode and args.output_format == "json":
         ui.set_quiet(True)
+
+    if args.shell:  # before load_config: plugin hooks and prompts need the shell
+        set_active_shell(resolve_shell(args.shell), pinned=True)
 
     cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
 

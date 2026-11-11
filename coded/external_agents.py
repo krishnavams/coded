@@ -23,7 +23,7 @@ import os
 import shutil
 import subprocess
 
-from coded.shells import text_kwargs
+from coded.shells import run as run_command
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -76,12 +76,9 @@ class ExternalAgent:
     def run(self, prompt: str, cwd: str, max_output: int = _MAX_OUTPUT) -> tuple:
         """Run to completion. Returns (exit_code, combined output)."""
         env = dict(os.environ, **{k: str(v) for k, v in self.env.items()})
-        proc = subprocess.run(
-            resolve_argv(self.argv(prompt, cwd)), cwd=cwd, env=env, capture_output=True,
-            **text_kwargs(),
-            input=prompt if self.uses_stdin() else None,
-            stdin=None if self.uses_stdin() else subprocess.DEVNULL,
-            timeout=self.timeout,
+        proc = run_command(
+            resolve_argv(self.argv(prompt, cwd)), cwd=cwd, env=env,
+            input=prompt if self.uses_stdin() else None, timeout=self.timeout,
         )
         out = (proc.stdout or "").strip()
         err = (proc.stderr or "").strip()

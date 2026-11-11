@@ -32,6 +32,24 @@ _PT_STYLE = Style.from_dict({
     "auto-suggestion": "#5b5475",
 })
 
+def _prompt_session(**kwargs) -> PromptSession:
+    """A PromptSession, with a readable error where there is no console.
+
+    On Windows, prompt_toolkit cannot build its output when stdout is not a
+    console (a redirected or embedded terminal); the interactive REPL needs one.
+    """
+    try:
+        return PromptSession(**kwargs)
+    except Exception as exc:  # noqa: BLE001 - NoConsoleScreenBufferError and friends
+        if type(exc).__name__ != "NoConsoleScreenBufferError":
+            raise
+        raise ConfigError(
+            "coded's interactive prompt needs a real console. Run it in Windows "
+            "Terminal, PowerShell or the Git Bash console (not a redirected or "
+            "embedded one), or use one-shot mode: coded -p \"…\"."
+        ) from exc
+
+
 SLASH_COMMANDS = {
     "/help": "Show this help.",
     "/model": "Show or switch the active model: /model [name].",
@@ -102,7 +120,7 @@ class Repl:
                                 announce=False)
             event.app.invalidate()  # redraw the status bar
 
-        self.prompt = PromptSession(
+        self.prompt = _prompt_session(
             key_bindings=bindings,
             history=FileHistory(str(_history_path())),
             completer=completer,

@@ -309,7 +309,11 @@ config.example.json     # sample configuration
   (Windows would decode with the ANSI code page). Editing a file goes through
   `textio.read_text`/`write_text` so line endings survive; never `Path.write_text`
   for user files. Platform logic takes `which`/`exists`/`env` arguments so it is
-  testable on any OS (`tests/test_windows.py`).
+  testable on any OS (`tests/test_windows.py`). The shell is settled once, by
+  `load_config` → `shells.ensure_shell` (or `--shell`, which pins it), before
+  plugin hook paths or the system prompt are built. Decoding a file is strict:
+  edits refuse non-UTF-8 files (`textio.NOT_UTF8`) rather than rewriting them
+  from a lossy read.
 - **Config is layered**: presets → user file → project file → CLI flags. Don't
   hard-code paths or keys; go through `config.py`. Dict-valued settings
   (`hooks`, `sandbox`, `telemetry`, `external_agents`, `model_roles`) merge

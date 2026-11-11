@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from coded.limits import get_limits
-from coded.textio import newline_of, read_text, write_text
+from coded.textio import NOT_UTF8, newline_of, read_text, write_text
 from coded.tools.base import Tool, ToolContext, ToolResult
 
 
@@ -118,7 +118,7 @@ overwriting it entirely. For small edits to an existing file, prefer `edit`."""
         if p.is_file():
             try:
                 old = read_text(p)[0]
-            except OSError:
+            except (OSError, UnicodeDecodeError):
                 return None
         return _unified_diff(old, args.get("content", ""), args["path"])
 
@@ -167,7 +167,7 @@ Read the file first so your match is accurate."""
             return None
         try:
             text = read_text(p)[0]
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             return None
         old, new = args.get("old_string", ""), args.get("new_string", "")
         if old not in text:
@@ -185,6 +185,8 @@ Read the file first so your match is accurate."""
             return ToolResult.error("old_string and new_string are identical.")
         try:
             text, newline = read_text(p)
+        except UnicodeDecodeError:
+            return ToolResult.error(f"{p} {NOT_UTF8}")
         except OSError as exc:
             return ToolResult.error(f"Could not read {p}: {exc}")
         count = text.count(old)

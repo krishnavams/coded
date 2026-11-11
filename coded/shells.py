@@ -123,6 +123,7 @@ def resolve_shell(configured: Optional[str] = None, *, windows: bool = IS_WINDOW
 
 
 _shell: Optional[Shell] = None
+_pinned = False
 
 
 def active_shell(config: Any = None) -> Shell:
@@ -133,10 +134,24 @@ def active_shell(config: Any = None) -> Shell:
     return _shell
 
 
-def set_active_shell(shell: Optional[Shell]) -> None:
-    """Override the resolved shell (tests, and `--shell`)."""
-    global _shell
+def set_active_shell(shell: Optional[Shell], pinned: bool = False) -> None:
+    """Set the shell for this process. `pinned` (used by --shell) means a later
+    `ensure_shell` from config.json must not replace it."""
+    global _shell, _pinned
     _shell = shell
+    _pinned = pinned and shell is not None
+
+
+def ensure_shell(configured: Optional[str]) -> Shell:
+    """Apply the `shell` setting from config.json, unless --shell pinned one.
+
+    Called by `load_config`, so the setting is in force before anything that
+    depends on it (plugin hook paths, the system prompt, the bash tool).
+    """
+    global _shell
+    if not _pinned and configured:
+        _shell = resolve_shell(configured)
+    return active_shell()
 
 
 def _powershell_script(command: str) -> str:
@@ -242,22 +257,30 @@ def run(command: Union[str, Sequence[str]], *, cwd: Optional[str] = None,
     else:
         argv = list(command)
     use_shell = isinstance(argv, str)
+    # A child never reads the user's terminal: it would fight the REPL for input
+    # and an interactive command would hang until the timeout.
+    stdin = subprocess.PIPE if input is not None else subprocess.DEVNULL
     if not IS_WINDOWS:
-        return subprocess.run(argv, shell=use_shell, cwd=cwd, env=env, input=input,
+        if input is not None:
+            return subprocess.run(argv, shell=use_shell, cwd=cwd, env=env, input=input,
+                                  capture_output=True, timeout=timeout, **text_kwargs())
+        return subprocess.run(argv, shell=use_shell, cwd=cwd, env=env, stdin=stdin,
                               capture_output=True, timeout=timeout, **text_kwargs())
     proc = subprocess.Popen(
-        argv, shell=use_shell, cwd=cwd, env=child_env(env), stdin=subprocess.PIPE,
+        argv, shell=use_shell, cwd=cwd, env=child_env(env), stdin=stdin,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         **text_kwargs(), **popen_kwargs(new_group=True))
     try:
         out, err = proc.communicate(input=input, timeout=timeout)
-    except subprocess.TimeoutExpired:
+    except BaseException as exc:  # timeout, Ctrl-C, anything: never leave a tree behind
         kill_tree(proc)
         try:
             out, err = proc.communicate(timeout=_TREE_KILL_TIMEOUT)
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, ValueError, OSError):
             out = err = ""
-        raise subprocess.TimeoutExpired(argv, timeout or 0, output=out, stderr=err)
+        if isinstance(exc, subprocess.TimeoutExpired):
+            raise subprocess.TimeoutExpired(argv, timeout or 0, output=out, stderr=err) from None
+        raise
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
 
@@ -285,7 +308,7 @@ def configure_stdio() -> None:
     Windows consoles and redirected pipes often default to a legacy code page,
     where printing the UI raises UnicodeEncodeError.
     """
-    for stream_name in ("stdout", "stderr"):
+    for stream_name in ("stdin", "stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is None:
@@ -299,7 +322,7 @@ def configure_stdio() -> None:
 
 
 def shell_path(path: Union[str, Path], shell: Optional[Shell] = None) -> str:
-    """A path as it should appear inside a command string for the active shell.
+    r"""A path as it should appear inside a command string for the active shell.
 
     Git Bash treats ``\`` as an escape, so Windows paths are written with
     forward slashes (``C:/Users/...``), which Git Bash and Windows both accept.
