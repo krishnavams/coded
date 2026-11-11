@@ -17,6 +17,8 @@ import re
 import shutil
 import stat
 import subprocess
+
+from coded.shells import rmtree as _rmtree, text_kwargs
 import tempfile
 import zipfile
 from dataclasses import asdict, dataclass
@@ -126,7 +128,7 @@ def _single_top_dir(path: Path) -> Path:
 def _git(*args: str, cwd: Optional[str] = None) -> str:
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
     try:
-        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, env=env,
+        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, env=env, **text_kwargs(),
                               timeout=600)
     except FileNotFoundError as exc:
         raise SourceError("git is not installed.") from exc
@@ -143,7 +145,7 @@ def _clone(url: str, ref: Optional[str], dest: Path) -> str:
             _git("clone", "--quiet", "--depth", "1", "--branch", ref, "--", url, str(dest))
         except SourceError:
             # Not a branch/tag (probably a commit): full clone, then check it out.
-            shutil.rmtree(dest, ignore_errors=True)
+            _rmtree(dest)
             _git("clone", "--quiet", "--", url, str(dest))
             _git("checkout", "--quiet", ref, cwd=str(dest))
     else:
@@ -191,7 +193,7 @@ class Fetched:
         self.cleanup()
 
     def cleanup(self) -> None:
-        shutil.rmtree(self._tmp, ignore_errors=True)
+        _rmtree(self._tmp)
 
     def _fetch(self) -> None:
         info = self.info
@@ -215,7 +217,7 @@ class Fetched:
         elif info.type in ("git", "github"):
             dest = self._tmp / "src"
             info.commit = _clone(info.location, info.ref, dest)
-            shutil.rmtree(dest / ".git", ignore_errors=True)
+            _rmtree(dest / ".git")
             self.root = dest
         else:
             raise SourceError(f"Unknown source type {info.type!r}.")
@@ -245,8 +247,8 @@ def install_tree(src: Path, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     staging = dest.with_name(f".{dest.name}.new")
     backup = dest.with_name(f".{dest.name}.old")
-    shutil.rmtree(staging, ignore_errors=True)
-    shutil.rmtree(backup, ignore_errors=True)
+    _rmtree(staging)
+    _rmtree(backup)
     shutil.copytree(src, staging, symlinks=True, ignore=shutil.ignore_patterns(".git"))
     if dest.exists():
         dest.rename(backup)
@@ -256,4 +258,4 @@ def install_tree(src: Path, dest: Path) -> None:
         if backup.exists():
             backup.rename(dest)
         raise
-    shutil.rmtree(backup, ignore_errors=True)
+    _rmtree(backup)

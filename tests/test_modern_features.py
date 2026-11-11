@@ -131,7 +131,7 @@ def test_pre_tool_use_hook_payload_and_allow_decision(tmp_path, fake_server):
     cfg = Config()
     cfg.hooks = {"PreToolUse": [{"matcher": "write|edit",
                                  "hooks": [{"type": "command",
-                                            "command": f"cat > {log}; echo '{{\"decision\": \"allow\"}}'"}]}]}
+                                            "command": f"cat > {log.as_posix()}; echo '{{\"decision\": \"allow\"}}'"}]}]}
     script = _scripted([_call("write", {"path": "b.txt", "content": "b"})], "done")
     with fake_server(script) as srv:
         # Not auto-approved and no prompt: only the hook's "allow" lets it run.
@@ -146,7 +146,7 @@ def test_pre_tool_use_hook_payload_and_allow_decision(tmp_path, fake_server):
 
 def test_user_prompt_submit_context_and_block(tmp_path, fake_server):
     cfg = Config()
-    cfg.hooks = {"UserPromptSubmit": [{"command": "python3 -c \"import json,sys; p=json.load(sys.stdin)['prompt']; "
+    cfg.hooks = {"UserPromptSubmit": [{"command": f"{sys.executable} -c \"import json,sys; p=json.load(sys.stdin)['prompt']; "
                                                   "sys.exit(2) if 'forbidden' in p else print('ctx: sprint 42')\""}]}
     script = _scripted("ok")
     with fake_server(script) as srv:
@@ -161,7 +161,8 @@ def test_user_prompt_submit_context_and_block(tmp_path, fake_server):
 def test_stop_hook_makes_agent_continue(tmp_path, fake_server):
     flag = tmp_path / "once"
     cfg = Config()
-    cfg.hooks = {"Stop": [{"command": f"test -e {flag} || (touch {flag}; echo 'tests fail' >&2; exit 2)"}]}
+    cfg.hooks = {"Stop": [{"command": f"test -e {flag.as_posix()} || (touch {flag.as_posix()}; "
+                                 f"echo 'tests fail' >&2; exit 2)"}]}
     script = _scripted("first answer", "fixed it")
     with fake_server(script) as srv:
         agent = _agent(tmp_path, srv.base_url, cfg=cfg)

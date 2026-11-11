@@ -20,6 +20,7 @@ from coded.config import (
     write_sample_config,
 )
 from coded.permissions import PermissionManager
+from coded.shells import configure_stdio, resolve_shell, set_active_shell
 from coded.telemetry import tracer_from_config
 
 
@@ -66,6 +67,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Output format for --print mode (json emits content + usage + cost).")
     p.add_argument("--plan", action="store_true",
                    help="Start in plan mode (read-only research until you approve a plan).")
+    p.add_argument("--shell", metavar="NAME",
+                   help="Windows only: shell for the bash tool (bash, pwsh, powershell, cmd, "
+                        "or a path). Default: Git Bash if installed, else PowerShell.")
     p.add_argument("--sandbox", action="store_true",
                    help="Run bash in an OS sandbox (bwrap/sandbox-exec): writes limited to cwd, no network.")
     p.add_argument("--sandbox-network", action="store_true",
@@ -101,6 +105,9 @@ def build_config_parser() -> argparse.ArgumentParser:
 
 
 def _apply_overrides(cfg: Config, args: argparse.Namespace) -> None:
+    if getattr(args, "shell", None):
+        cfg.shell = args.shell
+        set_active_shell(resolve_shell(args.shell))
     if args.auto_approve:
         cfg.auto_approve = True
     if args.no_stream:
@@ -447,6 +454,7 @@ def _handle_review_command(argv: List[str]) -> int:
 
 def main(argv: Optional[List[str]] = None) -> int:
     os.environ.setdefault("CODED_DATE", _dt.date.today().isoformat())
+    configure_stdio()  # legacy Windows code pages can't print the UI
     if argv is None:
         argv = sys.argv[1:]
 

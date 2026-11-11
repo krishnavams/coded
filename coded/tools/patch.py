@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from coded.textio import newline_of, read_text, write_text
 from coded.tools.base import Tool, ToolContext, ToolResult
 from coded.tools.files import _checkpoint, _resolve, _unified_diff
 
@@ -78,7 +79,7 @@ same file."""
     def preview(self, args: Dict[str, Any], ctx: ToolContext):
         p = _resolve(ctx, args["path"])
         try:
-            text = p.read_text(encoding="utf-8")
+            text = read_text(p)[0]
             new, _ = apply_edits(text, args.get("edits") or [])
         except (OSError, PatchError):
             return None
@@ -92,7 +93,7 @@ same file."""
         if not isinstance(edits, list) or not edits:
             return ToolResult.error("`edits` must be a non-empty array.")
         try:
-            text = p.read_text(encoding="utf-8")
+            text, newline = read_text(p)
             new, n = apply_edits(text, edits)
         except PatchError as exc:
             return ToolResult.error(f"{exc} No changes were made.")
@@ -100,7 +101,7 @@ same file."""
             return ToolResult.error(f"Could not read {p}: {exc}")
         try:
             _checkpoint(ctx, p)
-            p.write_text(new, encoding="utf-8")
+            write_text(p, new, newline)
         except OSError as exc:
             return ToolResult.error(f"Could not write {p}: {exc}")
         return ToolResult.ok(f"Edited {p} ({n} replacement(s) from {len(edits)} edit(s)).")
@@ -240,11 +241,11 @@ def plan_patch(patch: str, ctx: ToolContext) -> List[Tuple[FileOp, Path, Optiona
         elif op.kind == "delete":
             if not p.is_file():
                 raise PatchError(f"Cannot delete {op.path}: file not found.")
-            planned.append((op, p, p.read_text(encoding="utf-8"), None))
+            planned.append((op, p, read_text(p)[0], None))
         else:
             if not p.is_file():
                 raise PatchError(f"Cannot update {op.path}: file not found.")
-            old = p.read_text(encoding="utf-8")
+            old = read_text(p)[0]
             planned.append((op, p, old, apply_update(old, op.lines, op.path)))
     return planned
 
@@ -314,7 +315,7 @@ Include ~3 lines of unchanged context around each change so the location is uniq
                     summary.append(f"D {op.path}")
                     continue
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_text(new or "", encoding="utf-8")
+                write_text(dest, new or "", newline_of(p if p.exists() else dest))
                 if dest != p:
                     p.unlink()
                     summary.append(f"R {op.path} -> {op.move_to}")

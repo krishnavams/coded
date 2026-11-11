@@ -22,6 +22,8 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+
+from coded.shells import text_kwargs
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -47,6 +49,15 @@ _DEFAULT_TIMEOUT = 1800
 _MAX_OUTPUT = 40_000
 
 
+def resolve_argv(argv: list) -> list:
+    """argv[0] as a full path. On Windows many CLIs (claude, codex, npm wrappers)
+    are .cmd/.bat shims that a bare name in an argv list will not launch."""
+    if not argv:
+        return argv
+    found = shutil.which(argv[0])
+    return [found, *argv[1:]] if found else argv
+
+
 @dataclass
 class ExternalAgent:
     name: str
@@ -66,7 +77,8 @@ class ExternalAgent:
         """Run to completion. Returns (exit_code, combined output)."""
         env = dict(os.environ, **{k: str(v) for k, v in self.env.items()})
         proc = subprocess.run(
-            self.argv(prompt, cwd), cwd=cwd, env=env, capture_output=True, text=True,
+            resolve_argv(self.argv(prompt, cwd)), cwd=cwd, env=env, capture_output=True,
+            **text_kwargs(),
             input=prompt if self.uses_stdin() else None,
             stdin=None if self.uses_stdin() else subprocess.DEVNULL,
             timeout=self.timeout,

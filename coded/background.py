@@ -2,7 +2,8 @@
 
 Output goes to a temp file so the agent can poll it incrementally with
 ``bash_output`` and stop the process with ``kill_shell``. Every process runs in
-its own process group so killing it also kills its children.
+its own process group (POSIX) or new process group (Windows) so killing it also
+kills its children — see ``shells.kill_tree``.
 """
 
 from __future__ import annotations
@@ -10,12 +11,13 @@ from __future__ import annotations
 import atexit
 import itertools
 import os
-import signal
 import subprocess
 import tempfile
 import threading
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Union
+
+from coded.shells import command_argv, kill_tree, popen_kwargs
 
 
 @dataclass
@@ -36,11 +38,12 @@ class BackgroundShells:
 
     def start(self, argv: Union[str, List[str]], cwd: str, label: str) -> str:
         fd, log_path = tempfile.mkstemp(prefix="coded-bg-", suffix=".log")
+        spec = command_argv(argv) if isinstance(argv, str) else argv
         with os.fdopen(fd, "wb") as log:
             proc = subprocess.Popen(
-                argv, shell=isinstance(argv, str), cwd=cwd, stdout=log,
+                spec, shell=isinstance(spec, str), cwd=cwd, stdout=log,
                 stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                start_new_session=True,
+                **popen_kwargs(new_group=True),
             )
         with self._lock:
             shell_id = f"bg{next(self._ids)}"
@@ -70,14 +73,7 @@ class BackgroundShells:
         sh = self._shells.get(shell_id)
         if sh is None:
             return False
-        if sh.proc.poll() is None:
-            try:
-                os.killpg(sh.proc.pid, signal.SIGTERM)
-                sh.proc.wait(timeout=5)
-            except (ProcessLookupError, PermissionError):
-                pass
-            except subprocess.TimeoutExpired:
-                os.killpg(sh.proc.pid, signal.SIGKILL)
+        kill_tree(sh.proc)
         return True
 
     def list(self) -> List[tuple]:
@@ -91,6 +87,10 @@ class BackgroundShells:
         for shell_id in list(self._shells):
             self.kill(shell_id)
         for sh in self._shells.values():
+            try:
+                sh.proc.wait(timeout=5)  # Windows keeps the log file locked until it exits
+            except (subprocess.TimeoutExpired, OSError):
+                pass
             try:
                 os.unlink(sh.log_path)
             except OSError:

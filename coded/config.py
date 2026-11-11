@@ -184,6 +184,10 @@ class Config:
     # Behaviour toggles.
     auto_approve: bool = False  # skip permission prompts (a.k.a. "yolo")
     max_turns: int = 100  # safety cap on agent tool-loop iterations
+    # Windows only: which shell runs bash-tool commands — "bash" (Git Bash),
+    # "pwsh", "powershell", "cmd", or a full path. Default: the best available
+    # (shells.resolve_shell). Ignored on Linux/macOS, which always use sh.
+    shell: Optional[str] = None
     max_turns_override: Optional[int] = None  # --max-turns (beats per-model max_turns)
     stream: bool = True
     auto_compact: bool = True  # summarize old messages near the context limit

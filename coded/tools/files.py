@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from coded.limits import get_limits
+from coded.textio import newline_of, read_text, write_text
 from coded.tools.base import Tool, ToolContext, ToolResult
 
 
@@ -116,7 +117,7 @@ overwriting it entirely. For small edits to an existing file, prefer `edit`."""
         old = ""
         if p.is_file():
             try:
-                old = p.read_text(encoding="utf-8")
+                old = read_text(p)[0]
             except OSError:
                 return None
         return _unified_diff(old, args.get("content", ""), args["path"])
@@ -127,7 +128,7 @@ overwriting it entirely. For small edits to an existing file, prefer `edit`."""
             _checkpoint(ctx, p)
             p.parent.mkdir(parents=True, exist_ok=True)
             existed = p.exists()
-            p.write_text(args["content"], encoding="utf-8")
+            write_text(p, args["content"], newline_of(p))
         except OSError as exc:
             return ToolResult.error(f"Could not write {p}: {exc}")
         verb = "Updated" if existed else "Created"
@@ -165,7 +166,7 @@ Read the file first so your match is accurate."""
         if not p.is_file():
             return None
         try:
-            text = p.read_text(encoding="utf-8")
+            text = read_text(p)[0]
         except OSError:
             return None
         old, new = args.get("old_string", ""), args.get("new_string", "")
@@ -183,7 +184,7 @@ Read the file first so your match is accurate."""
         if old == new:
             return ToolResult.error("old_string and new_string are identical.")
         try:
-            text = p.read_text(encoding="utf-8")
+            text, newline = read_text(p)
         except OSError as exc:
             return ToolResult.error(f"Could not read {p}: {exc}")
         count = text.count(old)
@@ -199,7 +200,7 @@ Read the file first so your match is accurate."""
         new_text = text.replace(old, new) if args.get("replace_all") else text.replace(old, new, 1)
         try:
             _checkpoint(ctx, p)
-            p.write_text(new_text, encoding="utf-8")
+            write_text(p, new_text, newline)
         except OSError as exc:
             return ToolResult.error(f"Could not write {p}: {exc}")
         return ToolResult.ok(f"Edited {p} ({count if args.get('replace_all') else 1} replacement(s)).")

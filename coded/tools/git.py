@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import shlex
 import subprocess
+
+from coded.shells import text_kwargs
 from typing import Any, Dict
 
 from coded.permissions import Decision
@@ -60,7 +62,8 @@ Pass the arguments after `git`, e.g. "status", "diff HEAD~1", "log --oneline -10
 
         try:
             proc = subprocess.run(
-                ["git", *tokens], cwd=ctx.cwd, capture_output=True, text=True, timeout=60,
+                ["git", *tokens], cwd=ctx.cwd, capture_output=True, timeout=60,
+                **text_kwargs(),
             )
         except FileNotFoundError:
             return ToolResult.error("git is not installed or not on PATH.")

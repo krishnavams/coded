@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+
+from coded.shells import text_kwargs
 from typing import Any, Dict, Optional
 
 import httpx
@@ -25,7 +27,7 @@ def _detect_repo(cwd: str) -> Optional[str]:
     try:
         out = subprocess.run(
             ["git", "remote", "get-url", "origin"], cwd=cwd,
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, timeout=10, **text_kwargs(),
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return None

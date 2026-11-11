@@ -8,6 +8,7 @@ from typing import Any, Dict
 
 from coded.limits import get_limits
 from coded.sandbox import sandbox_state, wrap_command
+from coded.shells import active_shell, run as run_command
 from coded.tools.base import Tool, ToolContext, ToolResult
 
 _DEFAULT_TIMEOUT = 120
@@ -82,7 +83,7 @@ them (the user will be asked)."""
             elif settings.fail_if_unavailable:
                 return ToolResult.error(
                     "Sandbox is enabled but no backend (bwrap on Linux, sandbox-exec on "
-                    "macOS) is installed; refusing to run unsandboxed.")
+                    "macOS; Windows has none) is installed; refusing to run unsandboxed.")
 
         if args.get("run_in_background"):
             shells = ctx.extra.get("shells")
@@ -99,14 +100,8 @@ them (the user will be asked)."""
 
         timeout = int(args.get("timeout", _DEFAULT_TIMEOUT))
         try:
-            proc = subprocess.run(
-                argv,
-                shell=isinstance(argv, str),
-                cwd=ctx.cwd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
+            proc = run_command(argv, cwd=ctx.cwd, timeout=timeout,
+                               shell=active_shell(ctx.config))
         except subprocess.TimeoutExpired:
             return ToolResult.error(
                 f"Command timed out after {timeout}s: {command}. "

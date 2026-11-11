@@ -32,6 +32,8 @@ import json
 import os
 import re
 import subprocess
+
+from coded.shells import run as run_command
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -100,10 +102,9 @@ class HookRunner:
                    CLAUDE_PROJECT_DIR=self.cwd, **{k: str(v) for k, v in (hook.get("env") or {}).items()})
         timeout = float(hook.get("timeout", _DEFAULT_TIMEOUT))
         try:
-            proc = subprocess.run(
-                hook["command"], shell=True, cwd=self.cwd, env=env,
-                input=json.dumps(data, default=str), capture_output=True, text=True,
-                timeout=timeout,
+            proc = run_command(
+                hook["command"], cwd=self.cwd, env=env,
+                input=json.dumps(data, default=str), timeout=timeout,
             )
         except subprocess.TimeoutExpired:
             outcome.warnings.append(f"{event} hook timed out after {timeout:g}s: {hook['command']}")

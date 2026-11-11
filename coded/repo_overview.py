@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+
+from coded.shells import text_kwargs
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -29,7 +31,7 @@ _WALK_MAX_SECONDS = 2.0
 
 def _git(cwd: str, *args: str) -> Optional[str]:
     try:
-        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=10)
+        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, timeout=10, **text_kwargs())
     except (OSError, subprocess.TimeoutExpired):
         return None
     return proc.stdout if proc.returncode == 0 else None

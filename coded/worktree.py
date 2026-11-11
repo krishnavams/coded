@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+
+from coded.shells import text_kwargs
 import uuid
 from pathlib import Path
 from typing import Tuple
@@ -21,7 +23,7 @@ class WorktreeError(Exception):
 
 
 def _git(cwd: str, *args: str) -> str:
-    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, **text_kwargs())
     if proc.returncode != 0:
         raise WorktreeError((proc.stderr or proc.stdout).strip() or f"git {args[0]} failed")
     return proc.stdout.strip()

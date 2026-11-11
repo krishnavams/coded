@@ -37,6 +37,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from coded.config import user_config_path
 from coded.skills import parse_frontmatter
+from coded.shells import rmtree, shell_path
 from coded.sources import Fetched, SourceError, SourceInfo, install_tree, parse_source
 
 MANIFEST_DIRS = (".coded-plugin", ".claude-plugin")
@@ -214,7 +215,7 @@ def remove_skill(name: str, *, scope: str = "user", cwd: Optional[str] = None) -
     reg = Registry(home)
     if not path.exists() and name not in reg.section("skills"):
         raise InstallError(f"No skill '{name}' in {home / 'skills'}.")
-    shutil.rmtree(path, ignore_errors=True)
+    rmtree(path)
     reg.section("skills").pop(name, None)
     reg.save()
 
@@ -310,9 +311,13 @@ class Plugin:
                 names.append(f"{self.name}:" + ":".join(md.relative_to(d).with_suffix("").parts))
         return names
 
-    def _expand(self, text: str) -> str:
+    def _expand(self, text: str, for_shell: bool = False) -> str:
+        """Substitute ${CODED_PLUGIN_ROOT}/${CLAUDE_PLUGIN_ROOT}. In a command
+        string run by a shell, the path is written the way that shell reads it
+        (forward slashes under Git Bash, which escapes with backslashes)."""
+        root = shell_path(self.root) if for_shell else str(self.root)
         for var in _ROOT_VARS:
-            text = text.replace(var, str(self.root))
+            text = text.replace(var, root)
         return text
 
     def hooks(self) -> Dict[str, List[Dict[str, Any]]]:
@@ -341,7 +346,7 @@ class Plugin:
                         matcher = None  # coded doesn't match session/prompt sources
                     out.setdefault(event, []).append({
                         "matcher": matcher,
-                        "command": self._expand(hook["command"]),
+                        "command": self._expand(hook["command"], for_shell=True),
                         "timeout": hook.get("timeout", 60),
                         "env": {"CODED_PLUGIN_ROOT": str(self.root),
                                 "CLAUDE_PLUGIN_ROOT": str(self.root)},
@@ -560,7 +565,7 @@ def remove_plugin(name: str, *, scope: str = "user", cwd: Optional[str] = None) 
     reg = Registry(home)
     if name not in reg.section("plugins") and not (home / "plugins" / name).exists():
         raise InstallError(f"No plugin '{name}' installed in {scope} scope.")
-    shutil.rmtree(home / "plugins" / name, ignore_errors=True)
+    rmtree(home / "plugins" / name)
     reg.section("plugins").pop(name, None)
     reg.save()
 
@@ -699,7 +704,7 @@ def remove_marketplace(name: str, *, scope: str = "user", cwd: Optional[str] = N
     reg = Registry(home)
     if name not in reg.section("marketplaces"):
         raise InstallError(f"No marketplace '{name}'.")
-    shutil.rmtree(home / "marketplaces" / name, ignore_errors=True)
+    rmtree(home / "marketplaces" / name)
     reg.section("marketplaces").pop(name)
     reg.save()
 

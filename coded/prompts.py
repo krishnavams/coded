@@ -100,9 +100,17 @@ def _project_context(cwd: str, limits: Any = None) -> str:
 
 
 def _environment(cwd: str, model: Any = None) -> str:
+    from coded.shells import shell_summary
+
+    label, posix = shell_summary()
     lines = [f"# Environment\n- Working directory: {cwd}",
              f"- Platform: {platform.system()} ({platform.machine()})",
-             f"- Today: {os.environ.get('CODED_DATE', '')}"]
+             f"- Shell for the bash tool: {label}"]
+    if not posix:
+        lines.append("  Write commands in that shell's syntax, not POSIX sh: no `&&` chains "
+                     "that assume sh, no `$(…)`, no single-quote escaping. Prefer the "
+                     "read/write/edit/grep/glob tools over shell equivalents.")
+    lines.append(f"- Today: {os.environ.get('CODED_DATE', '')}")
     if model is not None and getattr(model, "context_window", None):
         lines.append(f"- Model: {model.name} (context window ~{model.context_window // 1000}k tokens)")
     return "\n".join(lines) + "\n"
