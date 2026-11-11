@@ -38,7 +38,8 @@ class GitTool(Tool):
 Mutating subcommands (commit, checkout, reset, push, merge, add, ...) ask first. \
 Pass the arguments after `git`, e.g. "status", "diff HEAD~1", "log --oneline -10"."""
     # Permission is decided per-subcommand inside run().
-    requires_permission = False
+    requires_permission = False  # read-only subcommands are free; see run()
+    mutates = True  # a push/commit changes things, so the turn gets verified
     parameters = {
         "type": "object",
         "properties": {

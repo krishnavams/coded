@@ -83,6 +83,14 @@ class Agent:
         # (assistant/reasoning deltas, tool calls/results, diffs, todos, status)
         # instead of printing via `ui` — used by the TUI and ACP server. See _emit().
         self.on_event: Optional[Callable[[dict], None]] = None
+        # Verification state (see _verify_turn): whether this turn touched
+        # anything, whether it did so through the shell, and how many times it
+        # has been sent back.
+        self._turn_changed_things = False
+        self._turn_ran_shell = False
+        self._verify_rounds = 0
+        self._verify_last = ""
+        self._last_request = ""
         self._interrupted = False
         self._session_started = False
         self._instruction_dirs: set = set()
@@ -141,6 +149,10 @@ class Agent:
                     self._plan_intro_sent = True
                     text += "\n\n" + load_prompt("planner", self.cwd, self.model)
                 text += "\n\n" + PLAN_MODE_REMINDER
+        self._turn_changed_things = False
+        self._turn_ran_shell = False
+        self._verify_rounds = 0
+        self._last_request = str(user_message)
         if self.checkpoints is not None:
             self.checkpoints.begin(str(user_message)[:60])
         if images:
@@ -272,6 +284,10 @@ class Agent:
 
             if not completion.tool_calls:
                 final_text = completion.content
+                feedback = self._verify_turn(final_text)
+                if feedback:
+                    self.session.add_user(feedback)
+                    continue
                 if not self.is_subagent and stop_continuations < _MAX_STOP_CONTINUATIONS:
                     stop = self.hooks.run("Stop", {"last_message": final_text})
                     self._hook_warnings(stop)
@@ -295,6 +311,54 @@ class Agent:
                 if self.verbose:
                     ui.warn(f"Reached max turns ({self.max_turns}); stopping.")
         return final_text
+
+    def _verify_turn(self, final_text: Optional[str]) -> Optional[str]:
+        """Run the project's checks and/or a second model over this turn's change.
+
+        Returns feedback to send the agent back to work, or None to let the
+        answer through. Never runs for sub-agents, in plan mode, or for a turn
+        that changed nothing: an unconfigured session behaves exactly as before.
+        """
+        from coded.verify import (VerifySettings, checks_feedback, exhausted_note,
+                                  review_feedback, run_checks, second_opinion, turn_diff,
+                                  NEEDS_CHANGES)
+
+        if self.is_subagent or self.mode == "plan" or not self._turn_changed_things:
+            return None
+        settings = VerifySettings.from_config(self.config.verify)
+        has_reviewer = bool(self.config.model_roles.get("verify"))
+        if not (settings.runs_checks() or settings.runs_review(has_reviewer)):
+            return None
+        if self._verify_rounds >= settings.max_rounds:
+            self._status_note(exhausted_note(settings.max_rounds, self._verify_last or "unresolved"))
+            return None
+        self._verify_rounds += 1
+
+        checks = None
+        if settings.runs_checks():
+            self._status_note(f"Verifying: {settings.command}")
+            checks = run_checks(settings.command, self.cwd, settings.timeout,
+                                limit=self.limits.tool_result_chars)
+            if not checks.ok:
+                self._verify_last = f"`{settings.command}` failed"
+                self._status_note(f"Checks failed; sending the turn back "
+                                  f"(round {self._verify_rounds}/{settings.max_rounds}).")
+                return checks_feedback(checks)
+            self._status_note("Checks passed.")
+
+        if settings.runs_review(has_reviewer):
+            diff, paths = turn_diff(self.checkpoints, self.cwd)
+            self._status_note("Asking the verify model for a second opinion…")
+            verdict, notes = second_opinion(self, self._last_request, diff, paths,
+                                            self._turn_ran_shell, checks)
+            if verdict == NEEDS_CHANGES:
+                self._verify_last = "the second opinion asked for changes"
+                self._status_note(f"Second opinion: changes requested "
+                                  f"(round {self._verify_rounds}/{settings.max_rounds}).")
+                return review_feedback(notes)
+            self._status_note(f"Second opinion: {verdict.lower()}.")
+        self._verify_rounds = 0  # this turn is clean; a later one starts fresh
+        return None
 
     def _run_tool_calls(self, tool_calls) -> List[Tuple[Any, str]]:
         """Run the model's tool calls, batching consecutive parallel-safe ones."""
@@ -695,6 +759,14 @@ class Agent:
                     self._show_tool_result("Denied.", True, tc.id, tc.name)
                 return ("The user denied permission to run this action. Do not retry it; ask "
                         "how to proceed or try another approach.", True, args)
+
+        if tool.requires_permission or getattr(tool, "mutates", False):
+            # Something outside the conversation may have changed, so this turn
+            # has to be verified before it can claim success. Checkpoints are not
+            # the signal: `bash` edits are deliberately not checkpointed.
+            self._turn_changed_things = True
+            if tc.name == "bash":
+                self._turn_ran_shell = True
 
         with self.tracer.span("tool", tool=tc.name) as attrs:
             try:

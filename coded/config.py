@@ -208,6 +208,9 @@ class Config:
     # When a model's own fallbacks are exhausted (or it has none), try the other
     # configured models rather than ending the turn with an error.
     auto_fallback: bool = True
+    # Verification gates for a turn that changed something (see verify.py):
+    # {"command": "pytest -q", "second_opinion": true, "max_rounds": 2}
+    verify: Dict[str, Any] = field(default_factory=dict)
     compact_ratio: float = 0.8  # fraction of context_window that triggers it
     permissions: Optional[Dict[str, Any]] = None  # {"allow": [...], "deny": [...]}
     # Lifecycle hooks: {"PreToolUse": [{"matcher": "bash", "command": "..."}], ...}.
@@ -428,7 +431,7 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
     if data.get("permissions"):
         cfg.permissions = data["permissions"]
     for key in ("hooks", "sandbox", "telemetry", "external_agents", "model_roles",
-                "pools", "routing"):
+                "pools", "routing", "verify"):
         if data.get(key):
             merged = dict(getattr(cfg, key))
             merged.update(data[key])

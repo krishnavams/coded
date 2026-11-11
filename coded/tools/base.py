@@ -44,6 +44,10 @@ class Tool:
     # JSON Schema for the tool's arguments.
     parameters: Dict[str, Any] = {"type": "object", "properties": {}}
     requires_permission: bool = False
+    # True for a tool that changes things outside the conversation but gates
+    # itself per call (git). It makes the turn eligible for verification; a
+    # tool with requires_permission already is.
+    mutates: bool = False
     # Read-only tools that may run concurrently with each other.
     parallel_safe: bool = False
     # Output comes from outside the user's control (web pages, PR bodies, MCP).

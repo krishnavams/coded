@@ -347,6 +347,13 @@
   },
 
   "auto_approve": false,
+  "// verify": "After a turn that changed something, run the project's own checks and, with model_roles.verify set, have a second model review the diff. Either complaint goes back to the agent, up to max_rounds times. Both halves are off until configured.",
+  "verify": {
+    "command": null,
+    "second_opinion": false,
+    "max_rounds": 2,
+    "timeout": 300
+  },
   "auto_compact": true,
   "// auto_fallback": "When a model fails and its own fallbacks are exhausted (or it has none), try the other configured models before giving up. This can send a request to a different provider than the one you selected.",
   "auto_fallback": true,

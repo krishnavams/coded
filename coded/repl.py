@@ -78,6 +78,7 @@ SLASH_COMMANDS = {
     "/reset": "Alias for /clear.",
     "/config": "Show which config files are loaded.",
     "/setup": "Configure models interactively (adds, tests, roles, pools, routing).",
+    "/verify": "Run the project's checks (and the verify model) over the last change.",
     "/exit": "Quit (also /quit).",
 }
 
@@ -266,6 +267,8 @@ class Repl:
             self._cmd_models()
         elif cmd == "/setup":
             self._cmd_setup()
+        elif cmd == "/verify":
+            self._cmd_verify()
         elif cmd == "/model":
             self._cmd_model(args)
         elif cmd == "/tools":
@@ -441,7 +444,7 @@ class Repl:
         except ConfigError as exc:
             ui.error(f"Could not reload the config: {exc}")
             return
-        for attr in ("models", "default_model", "model_roles", "pools", "routing"):
+        for attr in ("models", "default_model", "model_roles", "pools", "routing", "verify"):
             setattr(self.config, attr, getattr(fresh, attr))
         for warning in self.config.model_warnings():
             ui.warn(warning)
@@ -453,6 +456,34 @@ class Repl:
             ui.warn(f"The active model '{active}' is no longer configured; "
                     "switch with /model.")
         ui.info("Config reloaded. /models shows the result.")
+
+    def _cmd_verify(self) -> None:
+        """Run the verification gate now, on whatever the last turn changed."""
+        from coded.verify import VerifySettings
+
+        settings = VerifySettings.from_config(self.config.verify)
+        has_reviewer = bool(self.config.model_roles.get("verify"))
+        if not (settings.runs_checks() or settings.runs_review(has_reviewer)):
+            ui.info('Verification is not configured. Set "verify": {"command": "pytest -q"} '
+                    'in your config (and model_roles.verify for a second opinion), or run '
+                    "/setup.")
+            return
+        changed = self.agent._turn_changed_things
+        self.agent._turn_changed_things = True   # verify on demand, change or not
+        self.agent._verify_rounds = 0
+        try:
+            feedback = self.agent._verify_turn(None)
+        finally:
+            self.agent._turn_changed_things = changed
+        if not feedback:
+            ui.success("Verification passed.")
+            return
+        ui.warn("Verification found something:")
+        ui.console.print(feedback)
+        if self.agent.permissions.ask("Send this back to the agent to fix?", feedback[:400]) \
+                in ("y", "yes"):
+            ui.user_prefix()
+            self.agent.run(feedback)
 
     def _cmd_model(self, args) -> None:
         if not args:

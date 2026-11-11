@@ -452,6 +452,35 @@ class Wizard:
         if not pools:
             self.data.pop("pools", None)
 
+    def set_verify(self) -> None:
+        """The verification gate: the project's checks, and a second model."""
+        verify = self.data.setdefault("verify", {})
+        self.p.out("\nVerification runs after a turn that changed something, before "
+                   "you see the answer.")
+        command = self.p.text('Command that proves the project still works, e.g. pytest -q '
+                              '("-" for none)', verify.get("command", ""))
+        if command == "-":
+            command = ""
+        if command:
+            verify["command"] = command
+        else:
+            verify.pop("command", None)
+        targets = [a for a in self.models] + list(self.data.get("pools") or {})
+        if targets and self.p.yes(
+                "Have a second model review each change? (costs one extra call per "
+                "changed turn)", bool(verify.get("second_opinion"))):
+            verify["second_opinion"] = True
+            roles = self.data.setdefault("model_roles", {})
+            pick = self.p.choose("Which model reviews?", targets, roles.get("verify", ""))
+            if pick:
+                roles["verify"] = pick
+            else:
+                self.p.out("  No reviewer chosen; the second opinion stays off until one is.")
+        else:
+            verify.pop("second_opinion", None)
+        if not verify:
+            self.data.pop("verify", None)
+
     def set_routing(self) -> None:
         targets = list(self.models) + list(self.data.get("pools") or {})
         routing = self.data.setdefault("routing", {})
@@ -492,6 +521,15 @@ class Wizard:
         if self.data.get("model_roles"):
             lines.append("   roles: " + ", ".join(f"{k}→{v}" for k, v in
                                                   self.data["model_roles"].items()))
+        verify = self.data.get("verify") or {}
+        if verify.get("command") or verify.get("second_opinion"):
+            bits = []
+            if verify.get("command"):
+                bits.append(verify["command"])
+            if verify.get("second_opinion"):
+                bits.append("second opinion: "
+                            + ((self.data.get("model_roles") or {}).get("verify") or "(unset)"))
+            lines.append("   verify: " + "; ".join(bits))
         routing = self.data.get("routing") or {}
         if routing.get("enabled"):
             lines.append("   routing: " + ", ".join(
@@ -507,7 +545,8 @@ class Wizard:
             aliases = list(self.models)
             actions = ["add a model", "test a model", "edit a model", "remove a model",
                        "set the default model", "models per role", "model pool",
-                       "difficulty routing", "save and quit", "quit without saving"]
+                       "difficulty routing", "verification", "save and quit",
+                       "quit without saving"]
             choice = self.p.choose("\nWhat next?", actions, "add a model")
             if choice is None:
                 continue
@@ -535,6 +574,8 @@ class Wizard:
                 self.set_pool()
             elif choice == "difficulty routing":
                 self.set_routing()
+            elif choice == "verification":
+                self.set_verify()
             elif choice == "quit without saving":
                 return False
             elif choice == "save and quit":

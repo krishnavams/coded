@@ -630,6 +630,43 @@ research with read-only tools only. When it has a plan it calls
 Every risky action is refused while plan mode is on, including `git`/`github`
 writes and sub-agents' actions.
 
+### Verification: don't claim success you haven't earned
+
+A turn that changed something can be made to prove it before you see the answer:
+
+```json
+{
+  "verify": {"command": "pytest -q", "second_opinion": true, "max_rounds": 2},
+  "model_roles": {"verify": "big"}
+}
+```
+
+Two gates, both off until configured:
+
+1. **The project's own checks.** `verify.command` runs after any turn that
+   touched something (file tools, `bash`, `git` — not just checkpointed edits).
+   A non-zero exit sends the turn back to the agent with the output, telling it
+   to fix the cause and **never** to weaken, skip or delete a test — and to say
+   so and stop if the failure predates its change.
+2. **A second opinion.** With `model_roles.verify` set, a *different* model
+   reads your request and the diff and answers `PASS` or `NEEDS_CHANGES`. One
+   model marking its own homework is a known weak spot; a reviewer that didn't
+   write the code is the cheapest correction available when you have more than
+   one endpoint — and in coded they can be from different vendors. The agent is
+   told the reviewer may be wrong, so it can push back in its answer instead of
+   obeying.
+
+Either complaint costs a round; after `max_rounds` the answer is delivered with
+a visible "unverified" note rather than a silent pass. The second opinion runs
+only when a verify model is *named* — it is never auto-assigned, so a small
+local model is not promoted to critic by accident — and an unparseable verdict
+or a reviewer outage releases the turn instead of blocking it. Sub-agents, plan
+mode and unchanged turns are never verified, so an unconfigured session sends
+exactly the requests it did before.
+
+`/verify` runs the gate on demand, and `coded config setup` offers to configure
+it.
+
 ### Hooks
 
 Run your own commands on agent events. Each hook gets a JSON payload on stdin

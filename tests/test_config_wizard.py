@@ -326,3 +326,23 @@ def test_switching_a_model_to_an_env_var_drops_the_stored_key(tmp_path):
     assert entry["api_key_env"] == "NEW_KEY"
     assert entry["base_url"] == "https://new.example.com/v1"
     assert entry["model"] == "a"
+
+
+def test_the_wizard_configures_verification(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"models": {"big": {"model": "b"}, "small": {"model": "s"}},
+                                "default_model": "big"}))
+    p = scripted(["verification", "pytest -q", "y", "small", "save and quit", "y"])
+    Wizard(path, p).run()
+    data = json.loads(path.read_text())
+    assert data["verify"] == {"command": "pytest -q", "second_opinion": True}
+    assert data["model_roles"]["verify"] == "small"
+
+
+def test_turning_verification_back_off_removes_it(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"models": {"a": {"model": "a"}}, "default_model": "a",
+                                "verify": {"command": "pytest", "second_opinion": True}}))
+    p = scripted(["verification", "-", "n", "save and quit", "y"])
+    Wizard(path, p).run()
+    assert "verify" not in json.loads(path.read_text())

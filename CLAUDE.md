@@ -317,6 +317,15 @@ config.example.json     # sample configuration
   unimplemented param with a 500; `tools` is never dropped automatically.
   `coded models --check` probes a failing endpoint in stages
   (`llm.probe_stages`/`probe_hint`) to say which part of the request it refuses.
+- **Verification** (`verify.py`, `Agent._verify_turn`): after a turn that
+  changed something, the project's `verify.command` and/or the `verify` role
+  model gate the answer; a complaint goes back as a `[verify]` user message,
+  bounded by `max_rounds`, then released with a visible note. The gate is "did
+  a tool with `requires_permission` or `mutates` run", **not** the checkpoint
+  group — `bash` edits are not checkpointed. Checkpoints only supply the diff.
+  Never runs for sub-agents, plan mode or an unchanged turn; an unparseable
+  verdict and a reviewer outage both release the turn. The second opinion needs
+  `model_roles.verify` set explicitly: never auto-assign a critic.
 - **Last-resort fallback** (`Config.auto_fallback`, on): when a model's own
   chain is exhausted, `Config.last_resort_models` offers the other configured
   models (same endpoint first, then the widest window) and `LLMClient._chain`
