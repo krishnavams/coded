@@ -1080,6 +1080,18 @@ Each call needs permission (it runs another program), and can use
 `/agents` shows what's available; `"detect_external_agents": false` turns
 auto-detection off.
 
+`coded agents` shows every supported agent: whether it is installed and ready,
+whether it is open source, and — for the ones you don't have — the command to
+install it on your platform (and a missing prerequisite such as Node.js).
+coded prints these commands for you to run; it never installs anything itself.
+
+```bash
+coded agents                 # status + install commands for the missing ones
+coded agents --check         # start each installed agent with --version to prove it runs
+coded agents aider goose     # just these
+coded agents --json          # for scripts
+```
+
 ### Worktree isolation
 
 `task` and `external_agent` accept `isolation: "worktree"`. The work happens in

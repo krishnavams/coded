@@ -370,8 +370,9 @@ class Repl:
     def _cmd_agents(self) -> None:
         tool = self.agent.registry.get("external_agent")
         if tool is None:
-            ui.info("No outside agents found. Install e.g. Claude Code (claude), Codex (codex), "
-                    "Gemini CLI (gemini) or Aider (aider), or add `external_agents` to config.")
+            ui.info("No outside agents found. Run `coded agents` in a shell to see which are "
+                    "supported and the command to install each, or add `external_agents` "
+                    "to config.")
             return
         table = Table(title="Outside agents (external_agent tool)")
         table.add_column("agent", style="cyan")
@@ -380,6 +381,7 @@ class Repl:
         for a in tool.agents.values():
             table.add_row(a.name, " ".join(a.command), a.description)
         ui.console.print(table)
+        ui.info("`coded agents` (in a shell) lists the others and how to install them.")
 
     def _cmd_plugins(self) -> None:
         from coded.plugins import installed_plugins

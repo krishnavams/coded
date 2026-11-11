@@ -223,6 +223,97 @@ def _handle_config_command(args: argparse.Namespace) -> int:
     return 1
 
 
+def _handle_agents_command(argv: List[str]) -> int:
+    """`coded agents`: which outside agent CLIs coded can delegate to, and the
+    install command for the rest. Nothing is ever installed from here."""
+    import json as _json
+
+    from coded.external_agents import agent_statuses, version_of
+
+    p = argparse.ArgumentParser(
+        prog="coded agents",
+        description="Show which outside coding agents (Aider, OpenCode, Goose, Codex, Gemini "
+                    "CLI, …) are installed for the external_agent tool, and how to install "
+                    "the others. Install commands are printed for you to run, never run.")
+    p.add_argument("names", nargs="*", help="Only these agents.")
+    p.add_argument("--check", action="store_true",
+                   help="Start each installed agent with --version to prove it runs.")
+    p.add_argument("--json", action="store_true", help="Machine-readable output.")
+    p.add_argument("--config", help="Path to a specific config file.")
+    p.add_argument("--cwd", help="Working directory.")
+    args = p.parse_args(argv)
+    cfg = load_config(cwd=args.cwd, config_path=args.config)
+    statuses = agent_statuses(cfg)
+    if args.names:
+        unknown = [n for n in args.names if n not in {s.name for s in statuses}]
+        if unknown:
+            ui.error(f"Unknown agent(s): {', '.join(unknown)}. Known: "
+                     + ", ".join(s.name for s in statuses))
+            return 2
+        statuses = [s for s in statuses if s.name in args.names]
+    checks = {}
+    if args.check:
+        for s in statuses:
+            if s.path and s.state in ("ready", "detection off"):
+                checks[s.name] = version_of(s.path)
+
+    if args.json:
+        rows = []
+        for s in statuses:
+            row = {k: v for k, v in s.__dict__.items()}
+            if s.name in checks:
+                row["check"] = {"ok": checks[s.name][0], "output": checks[s.name][1]}
+            rows.append(row)
+        print(_json.dumps(rows, indent=2))
+        return 0 if all(c[0] for c in checks.values()) else 1
+
+    from rich.table import Table
+
+    table = Table(title="Outside agents (delegated to with the external_agent tool)",
+                  title_style=f"bold {ui.ACCENT}", show_lines=False)
+    table.add_column("agent", style="bold")
+    table.add_column("status")
+    table.add_column("open source", justify="center")
+    table.add_column("details", overflow="fold")
+    marks = {"ready": f"[{ui.ACCENT2}]✓ ready[/]", "not installed": f"[{ui.MUTED}]– not installed[/]",
+             "disabled": f"[{ui.WARN}]disabled in config[/]",
+             "detection off": f"[{ui.WARN}]installed, detection off[/]"}
+    missing = []
+    for s in statuses:
+        oss = "" if s.open_source is None else ("yes" if s.open_source else "no")
+        if s.state == "not installed":
+            detail = s.note or ""
+            if s.install:
+                missing.append(s)
+                detail = "see below" + (f" — {s.note}" if s.note else "")
+        else:
+            detail = s.path or ""
+            if s.name in checks:
+                ok, out = checks[s.name]
+                detail += f"\n{'✓' if ok else '✗'} {out}"
+            if s.state == "detection off":
+                detail += "\nadd it under `external_agents` to offer it"
+        table.add_row(s.name + (" *" if s.configured else ""), marks.get(s.state, s.state),
+                      oss, detail)
+    ui.console.print(table)
+    if any(s.configured for s in statuses):
+        ui.console.print(f"[{ui.MUTED}]* defined or changed in your config[/]")
+    if missing:
+        ui.console.print(f"\n[bold {ui.ACCENT}]To install[/] [{ui.MUTED}](run these yourself; "
+                         "check each project's page first):[/]")
+        for s in missing:
+            ui.console.print(f"  [bold]{s.name}[/]  [{ui.MUTED}]{s.homepage}[/]")
+            ui.console.print(f"    {s.install}", markup=False, highlight=False, soft_wrap=True)
+            if s.note:
+                ui.console.print(f"    [{ui.WARN}]{s.note}[/]")
+        ui.console.print(f"[{ui.MUTED}]Once installed, coded finds it on PATH automatically "
+                         "(start a new session). Point an open-source agent at your own models "
+                         "with `env` under `external_agents` in config.json.[/]")
+    if checks and not all(c[0] for c in checks.values()):
+        return 1
+    return 0
+
+
 def _handle_models_command(argv: List[str]) -> int:
     p = argparse.ArgumentParser(prog="coded models", description="List configured models.")
     p.add_argument("--config", help="Path to a specific config file.")
@@ -510,6 +601,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _handle_config_command(cfg_args)
     if argv and argv[0] == "models":
         return _handle_models_command(argv[1:])
+    if argv and argv[0] == "agents":
+        return _handle_agents_command(argv[1:])
     if argv and argv[0] == "index":
         return _handle_index_command(argv[1:])
     if argv and argv[0] == "review":

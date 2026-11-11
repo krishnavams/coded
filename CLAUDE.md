@@ -108,6 +108,7 @@ tests/
 ├── test_git_tools.py   # git tool + github tool (fake API)
 ├── test_semantic_and_web.py  # index/search, web_fetch/search, image encoding
 ├── test_skills.py      # skill discovery, frontmatter, skill tool
+├── test_agents_command.py  # `coded agents`: states, install hints per platform, --check
 ├── test_skill_sources.py  # real-world collections: links, nesting, YAML, prompt budget
 ├── test_tools.py       # tool + config unit tests
 ├── test_routing.py     # difficulty routing, pools, endpoint reuse, per-model cost
@@ -247,6 +248,12 @@ config.example.json     # sample configuration
   goes through `limits_for`; `test_128k_limits_equal_the_historical_constants`
   pins the base values. Tools never hard-code output sizes: use `get_limits(ctx)`.
   Every prompt profile must keep the untrusted-content and secrets rules (tested).
+- **`coded agents`** (`external_agents.agent_statuses`/`install_hint`, `AGENT_INFO`):
+  status of every preset/configured outside agent and the install command for
+  missing presets. Install commands are **printed, never run** (same reason as
+  "no install tool"). `which`/`platform` are injectable, so tests don't depend
+  on what is installed; keep `AGENT_INFO` keys equal to `PRESETS` (tested), and
+  check new install commands against the real registry before adding them.
 - **Skill sources** (`sources.py`, `plugins.find_skills`): a fetched source has
   every symlink deleted unread (`strip_symlinks`); `Fetched.refuse_links_in`
   then refuses only an install whose own files held one (a skill dir, or a
@@ -475,7 +482,7 @@ one (e.g. `ruff`, `black`), record the commands here.
 
 - **argparse + free-form prompt**: the top-level parser has a `nargs="*"`
   positional `prompt`, which conflicts with argparse subparsers. Subcommands
-  (`config`, `models`, `index`, `review`, `sessions`, `commit`, `skill`,
+  (`config`, `models`, `agents`, `index`, `review`, `sessions`, `commit`, `skill`,
   `plugin`, `prompts`, `acp`, `mcp-serve`) are therefore dispatched manually by the first token in
   `cli.main()` — keep new subcommands on that path, not on `add_subparsers`.
 - **ACP / MCP server modes keep stdout clean** (`ui.set_quiet(True)`): stdout
