@@ -115,3 +115,32 @@ def test_prompts_cli(dirs, capsys):
     assert main(["prompts", "show", "--cwd", str(project)]) == 0
     assert "You are coded" in capsys.readouterr().out
     assert main(["prompts", "show", "nope", "--cwd", str(project)]) == 1
+
+
+def test_skill_tool_returns_prompt_file_bodies(dirs):
+    from coded.config import Config
+    from coded.permissions import PermissionManager
+    from coded.tools.base import ToolContext
+    from coded.tools.skill import SkillTool
+
+    _, _, project = dirs
+    tool = SkillTool(discover_skills(str(project)))
+    ctx = ToolContext(cwd=str(project), permissions=PermissionManager(), config=Config())
+    for name in ("planner", "reviewer", "debugger"):
+        res = tool.run({"name": name}, ctx)
+        assert not res.is_error and _first_line(name) in res.content, name
+        assert "coded:prompt" not in res.content
+
+
+def test_subagent_prompt_says_no_delegation(dirs):
+    _, _, project = dirs
+    assert "no task or exit_plan_mode tool" in build_subagent_prompt(str(project))
+
+
+def test_prompts_show_includes_skills_section(dirs, capsys):
+    from coded.cli import main
+
+    _, _, project = dirs
+    assert main(["prompts", "show", "--cwd", str(project)]) == 0
+    out = capsys.readouterr().out
+    assert _first_line("skills") in out and "**debugger**" in out

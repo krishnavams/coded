@@ -115,7 +115,8 @@ _SUBAGENT_HEAD = """You are a focused sub-agent spawned by the coded coding agen
 specific, self-contained task. You have the same file and shell tools.
 
 Do the task fully and autonomously, then return a concise final report of what you found \
-or did. You cannot ask the user questions — make reasonable assumptions and state them."""
+or did. You cannot ask the user questions — make reasonable assumptions and state them. \
+You have no task or exit_plan_mode tool: do the work yourself instead of delegating."""
 
 
 def build_subagent_prompt(cwd: str) -> str:

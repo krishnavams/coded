@@ -187,8 +187,10 @@ config.example.json     # sample configuration
   threadsafe=True)` (TUI, ACP) allows tools that may prompt to run in parallel;
   prompts are serialized by a lock either way. `ask()` is a raw yes/no question
   (used by `exit_plan_mode`).
-- **Prompt text lives in `coded/builtin_prompts/*.md`, not in Python strings.**
-  Never `str.format` prompt files (users' overrides may contain braces); put
+- **The system and role prompts live in `coded/builtin_prompts/*.md`.** (Short
+  operational prompts — the sub-agent opener, `PLAN_MODE_REMINDER`, review-phase
+  framing, compaction/verdict/`/init` prompts — are still in code.) Never
+  `str.format` prompt files (users' overrides may contain braces); put
   dynamic values in code-built sections. New prompt files must be added to
   `PROMPT_NAMES`, and stay covered by the `builtin_prompts/*.md` package-data
   glob. Watch the size: coded targets small local models too.

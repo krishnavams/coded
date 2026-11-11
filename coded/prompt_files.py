@@ -95,8 +95,10 @@ def prompts_main(argv: List[str]) -> int:
     if args.cmd == "show":
         if args.name in (None, "system-prompt", "all"):
             from coded.prompts import build_system_prompt
+            from coded.skills import discover_skills, skills_prompt_section
 
-            print(build_system_prompt(cwd))
+            # Same assembly as create_agent (minus --system extras).
+            print(build_system_prompt(cwd, extra=skills_prompt_section(discover_skills(cwd), cwd) or None))
         elif args.name == "subagent":
             from coded.prompts import build_subagent_prompt
 
