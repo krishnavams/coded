@@ -204,10 +204,21 @@ coded --provider groq --model-name llama-3.3-70b-versatile
 Create a config file with your models:
 
 ```bash
-coded config init          # writes ~/.config/coded/config.json
+coded config setup         # interactive: add, test and wire up models
+coded config init          # writes a sample ~/.config/coded/config.json
 coded config path          # print the path
 coded config show          # show the effective, merged config
 ```
+
+`coded config setup` (also `/setup` inside the REPL) is the quickest way in. It
+asks for the endpoint once, asks the endpoint which models it serves, and lets
+you pick several by number; then it names them, sends a test request, and sets
+the default model, per-role models, pools and difficulty routing. Keys default
+to an **environment variable name** — a literal key is read without echo, never
+printed back, and written only to your user config with mode 600. Nothing is
+written until you choose "save and quit", the file is replaced atomically, and
+keys the wizard doesn't know about (hooks, MCP servers, per-model `limits`)
+are left exactly as they were.
 
 Config is layered (later overrides earlier):
 
@@ -359,6 +370,7 @@ pip install -e '.[tui]'      # adds Textual
 | `/help` | List commands |
 | `/model [name]` | Show or switch the active model |
 | `/models` | List configured models |
+| `/setup` | Configure models interactively (then reloads the session) |
 | `/tools` | List available tools |
 | `/skills` | List available skills |
 | `/skill <name> [task]` | Invoke a skill now |
@@ -592,6 +604,16 @@ same permission gate.
 
 For multi-step work the agent keeps a visible task list (`todo_write`), shown in
 the REPL as it changes and above the TUI input box (`/todos` to show it again).
+Each update shows progress — `Tasks 2/5 ▰▰▰▰▱▱▱▱▱▱ 40%`, the running item marked
+`← now` — and the status bar carries the same count and the current item while
+the agent works, so a long turn is never a silent one.
+
+**You can type while it works.** A question or follow-up typed mid-turn is
+queued (`⏎ queued (1): …`) and run as the next message instead of being
+swallowed by the busy terminal; several queue in order. Ctrl-C drops the queue
+along with the turn. The permission prompt takes the next line you type, so the
+two never fight over the same keystrokes. This works in the REPL and the TUI;
+without a terminal (piped input, `--print`) it simply stays off.
 
 **Plan mode** (`coded --plan`, or `/plan` / **Shift+Tab** in the REPL/TUI) makes the agent
 research with read-only tools only. When it has a plan it calls

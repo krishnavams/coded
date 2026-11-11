@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
@@ -18,6 +18,7 @@ from rich.table import Table
 from coded import ui
 from coded.agent import Agent
 from coded.config import Config, ConfigError, load_config
+from coded.typeahead import TypeAhead, default_poll
 from coded.llm import explain_failure
 
 # prompt_toolkit color theme (matches ui.py accents).
@@ -101,6 +102,7 @@ class Repl:
     def __init__(self, agent: Agent, config: Config, on_turn=None):
         self.agent = agent
         self.config = config
+        self._typeahead = None  # set while a turn runs
         self._on_turn = on_turn  # called after each completed turn (autosave)
         self._pending_images: Optional[list] = None
         from coded.commands import discover_commands
@@ -145,17 +147,26 @@ class Repl:
         compact = "  ⟳ compacted" if getattr(s, "compactions", 0) else ""
         mode = ("  ·  <style fg='%s'><b>⏸ plan mode</b></style>" % ui.WARN
                 if self.agent.mode == "plan" else "")
+        done, total, _ = ui.todo_progress(self.agent.todos.items)
+        tasks = (f"  ·  <style fg='{ui.ACCENT_SOFT}'>tasks {done}/{total} "
+                 f"{ui.todo_bar(self.agent.todos.items, 8)}</style>" if total else "")
         return HTML(
             f"  <style fg='{ui.ACCENT}'><b>◆ {self.agent.model.name}</b></style>{mode}"
             f"  ·  {s.turns} turns"
             f"  ·  {tok_str} tokens"
-            f"  ·  ~${cost:.4f}{compact}"
+            f"  ·  ~${cost:.4f}{compact}{tasks}"
             f"  ·  shift+tab plan  ·  /help"
         )
 
     def _permission_prompt(self, title: str, detail: str) -> str:
         ui.console.print()
         ui.permission_panel(title, detail)
+        if self._typeahead is not None and self._typeahead.available:
+            # A turn is running and the type-ahead reader owns stdin; asking it
+            # for the line keeps the two from racing for the same keystrokes.
+            ui.console.print("[dim]  y = yes · a = always · n = no[/dim]")
+            answer = self._typeahead.ask()
+            return (answer or "no").strip() or "no"
         try:
             answer = self.prompt.prompt(
                 HTML("  <b>Allow?</b> <ansigreen>y</ansigreen>es  "
@@ -167,14 +178,17 @@ class Repl:
         return answer or "no"
 
     # -- main loop ----------------------------------------------------------
+    def _queued_note(self, text: str, waiting: int) -> None:
+        short = text if len(text) <= 60 else text[:57] + "…"
+        ui.console.print(f"[{ui.ACCENT_SOFT}]  ⏎ queued ({waiting}): {short}[/]")
+
     def run(self, initial: Optional[str] = None, images: Optional[list] = None) -> None:
         ui.banner(self.agent.model.name, self.agent.cwd)
-        pending = initial
+        queued: List[str] = [initial] if initial else []
         self._pending_images = images
         while True:
-            if pending is not None:
-                text = pending
-                pending = None
+            if queued:
+                text = queued.pop(0)
                 ui.echo_user(text)
             else:
                 try:
@@ -194,16 +208,27 @@ class Repl:
                 continue
             try:
                 ui.user_prefix()
-                self.agent.run(text, images=self._pending_images)
+                # Keep reading stdin during the turn: anything typed is queued
+                # and run next, instead of being swallowed by the busy terminal.
+                with TypeAhead(default_poll(), on_queue=self._queued_note) as ta:
+                    self._typeahead = ta
+                    try:
+                        self.agent.run(text, images=self._pending_images)
+                    finally:
+                        self._typeahead = None
+                        queued += ta.drain()
                 self._pending_images = None
                 if self._on_turn:
                     self._on_turn()
             except KeyboardInterrupt:
                 ui.warn("Interrupted.")
+                queued.clear()
             except ConfigError as exc:
                 ui.error(str(exc))
             except Exception as exc:  # noqa: BLE001
                 ui.error(explain_failure(exc))
+            if queued:
+                ui.info(f"{len(queued)} queued message(s) — running the next one.")
         ui.info("Goodbye.")
 
     # -- slash commands -----------------------------------------------------

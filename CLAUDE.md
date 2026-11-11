@@ -342,6 +342,21 @@ config.example.json     # sample configuration
   (sub-agents included). An unknown `shell` name is a ConfigError, never a silent
   fallback. Arguments passed to a `.bat`/`.cmd` shim are re-parsed by cmd, so
   `external_agents.cmd_shim_risk` refuses prompts it could execute.
+- **Interactive config** (`config_wizard.py`, `coded config setup`, REPL
+  `/setup`): edits **one config file's raw JSON**, never a merged `Config` —
+  otherwise another layer's models and plugin contributions would be written
+  into the user's file. Unknown keys survive; writes are atomic and confirmed;
+  API keys default to an env-var name and a literal key only ever reaches the
+  user file (mode 600), never the project one. All prompting goes through
+  `Prompter`, so the flow is testable without a TTY.
+- **A long turn must stay legible and interruptible**: task progress goes
+  through `ui.todo_progress`/`todo_bar`/`todo_title`/`current_todo` (panel, REPL
+  toolbar and TUI status line all use them), and input typed mid-turn is queued
+  by `typeahead.TypeAhead` (REPL) or `CodedTUI._queued` and run as the next
+  message. The type-ahead reader owns stdin during a turn, so a prompt that
+  needs an answer asks it via `TypeAhead.ask()` instead of reading stdin itself.
+  Polling (never a blocking read) is what lets the reader stop with the turn
+  instead of stealing the next prompt's first line.
 - **Config is layered**: presets → user file → project file → CLI flags. Don't
   hard-code paths or keys; go through `config.py`. Dict-valued settings
   (`hooks`, `sandbox`, `telemetry`, `external_agents`, `model_roles`) merge

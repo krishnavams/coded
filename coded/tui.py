@@ -153,6 +153,7 @@ class CodedTUI(App):
         self._assistant_buf = ""
         self._thought: Optional[Static] = None
         self._thought_buf = ""
+        self._queued: list = []  # messages typed while a turn was running
         from coded.commands import discover_commands
 
         self.commands = discover_commands(agent.cwd)
@@ -193,7 +194,12 @@ class CodedTUI(App):
         t.append("◆ ", style=ui.ACCENT)
         t.append(self.agent.model.name, style=f"bold {ui.ACCENT}")
         if self.busy:
-            t.append("  ·  working…", style=ui.ACCENT_SOFT)
+            doing = ui.current_todo(self.agent.todos.items)
+            done, total, _ = ui.todo_progress(self.agent.todos.items)
+            if doing:
+                t.append(f"  ·  {done}/{total} {doing}", style=ui.ACCENT_SOFT)
+            else:
+                t.append("  ·  working…", style=ui.ACCENT_SOFT)
         if self.agent.mode == "plan":
             t.append("  ·  plan mode (read-only)", style=f"bold {ui.WARN}")
         t.append(f"  ·  {s.turns} turns  ·  {tok_str} tokens  ·  "
@@ -205,8 +211,11 @@ class CodedTUI(App):
 
     def _tasks_text(self) -> Text:
         t = Text()
+        items = self.agent.todos.items
+        if items:
+            t.append(ui.todo_title(items) + "\n", style=f"bold {ui.ACCENT}")
         marks = {"pending": "☐", "in_progress": "◐", "completed": "☑"}
-        for item in self.agent.todos.items:
+        for item in items:
             status = item.get("status", "pending")
             style = (f"bold {ui.ACCENT}" if status == "in_progress" else
                      f"{ui.MUTED} strike" if status == "completed" else "")
@@ -239,9 +248,14 @@ class CodedTUI(App):
     # -- input --------------------------------------------------------------
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
-        if not text or self.busy:
+        if not text:
             return
         event.input.value = ""
+        if self.busy:
+            # Don't swallow a question asked mid-turn: queue it and run it next.
+            self._queued.append(text)
+            self._mount(StatusNote(f"queued ({len(self._queued)}): {text}"))
+            return
         if text in ("/exit", "/quit"):
             self.exit()
             return
@@ -260,9 +274,7 @@ class CodedTUI(App):
         elif text.startswith("/") and text.split()[0][1:] in self.commands:
             name = text.split()[0][1:]
             text = self.commands[name].expand(text[len(name) + 1:])
-        self._mount(UserMessage(text))
-        self.busy = True
-        self._run_agent(text)
+        self._start_turn(text)
 
     @work(thread=True, exclusive=True)
     def _run_agent(self, text: str) -> None:
@@ -283,6 +295,13 @@ class CodedTUI(App):
         self._finalize_assistant()
         self._refresh_sidebar()
         self.query_one("#prompt", Input).focus()
+        if self._queued:
+            self._start_turn(self._queued.pop(0))
+
+    def _start_turn(self, text: str) -> None:
+        self._mount(UserMessage(text))
+        self.busy = True
+        self._run_agent(text)
 
     # -- agent events (called from worker thread) ---------------------------
     def _agent_event(self, ev: dict) -> None:
