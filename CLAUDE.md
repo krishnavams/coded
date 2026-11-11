@@ -310,6 +310,13 @@ config.example.json     # sample configuration
   OpenAI API. SDK retries are off (`max_retries=0`); `LLMClient._create` owns
   retry/backoff, and `complete()` owns fallback. A stream that fails is retried
   only if no text/reasoning was emitted yet (otherwise it would display twice).
+- **Failures are explained, not dumped**: every error that ends a turn goes
+  through `llm.explain_failure` (REPL, TUI and `--print`), which names the model
+  and base_url and gives the next step. A 5xx gets one last attempt with the
+  optional params (`_OPTIONAL_PARAMS`) removed, since some gateways answer an
+  unimplemented param with a 500; `tools` is never dropped automatically.
+  `coded models --check` probes a failing endpoint in stages
+  (`llm.probe_stages`/`probe_hint`) to say which part of the request it refuses.
 - **Model chain**: an endpoint that fails over is skipped for
   `fallback_cooldown` seconds (`_Endpoint.down_until`; cooling endpoints are
   tried last). `LLMClient.next_model()` is the model the next request goes to;

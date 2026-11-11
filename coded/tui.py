@@ -35,6 +35,7 @@ from textual.widgets import (
 
 from coded import ui
 from coded.agent import Agent
+from coded.llm import explain_failure
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +269,7 @@ class CodedTUI(App):
         try:
             self.agent.run(text)
         except Exception as exc:  # noqa: BLE001
-            self.call_from_thread(self._mount, StatusNote(f"error: {exc}"))
+            self.call_from_thread(self._mount, StatusNote(explain_failure(exc)))
         finally:
             if self._on_turn:
                 try:

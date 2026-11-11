@@ -286,8 +286,29 @@ def _check_models(cfg: Config, names: List[str]) -> int:
             print(f"✓ {name:<16} {ms:7.0f} ms   {(out.content or '').strip()[:40]!r}")
         except Exception as exc:  # noqa: BLE001
             failures += 1
-            print(f"✗ {name:<16} {type(exc).__name__}: {str(exc).splitlines()[0][:120] if str(exc) else ''}")
+            print(f"✗ {name:<16} {type(exc).__name__}: "
+                  f"{str(exc).splitlines()[0][:120] if str(exc) else ''}")
+            _probe(mc)
     return 1 if failures else 0
+
+
+def _probe(mc: ModelConfig) -> None:
+    """Narrow a failed check down to the part of the request the endpoint refuses."""
+    from coded.llm import probe_hint, probe_stages
+
+    print("    probing which requests this endpoint accepts:")
+    try:
+        stages = probe_stages(mc)
+    except Exception as exc:  # noqa: BLE001 - e.g. a missing key
+        print(f"      could not probe: {exc}")
+        return
+    for label, exc in stages:
+        if exc is None:
+            print(f"      ✓ {label}")
+        else:
+            detail = str(exc).splitlines()[0][:160] if str(exc) else type(exc).__name__
+            print(f"      ✗ {label}: {type(exc).__name__}: {detail}")
+            print(f"      → {probe_hint(label, exc)}")
 
 
 def _handle_index_command(argv: List[str]) -> int:
@@ -655,7 +676,13 @@ def _run_print_mode(agent, prompt: Optional[str], images=None, *,
         agent.stream = False
         agent.verbose = False
     # In print mode we auto-approve nothing by default; keep it non-interactive.
-    result = agent.run(prompt, images=images)
+    try:
+        result = agent.run(prompt, images=images)
+    except Exception as exc:  # noqa: BLE001 - report it readably, don't traceback
+        from coded.llm import explain_failure
+
+        ui.error(explain_failure(exc))
+        return 1
     if on_done:
         on_done()
     if output_format == "json":

@@ -356,3 +356,85 @@ def test_plan_mode_without_a_plan_role_keeps_the_model(tmp_path, route_server):
         assert agent.model is main
         agent.set_mode("default")
         assert agent.model is main and not agent.permissions.plan_mode
+
+
+# -- a 500 that is really an unsupported parameter ---------------------------
+
+def _sse(text):
+    chunk = {"id": "x", "object": "chat.completion.chunk", "created": 0, "model": "m",
+             "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}]}
+    done = {"id": "x", "object": "chat.completion.chunk", "created": 0, "model": "m",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+    body = f"data: {json.dumps(chunk)}\n\ndata: {json.dumps(done)}\n\ndata: [DONE]\n\n"
+    return 200, "text/event-stream", body
+
+
+def test_a_500_caused_by_stream_options_is_retried_without_it(route_server):
+    """Some gateways answer a parameter they don't implement with a 500, which is
+    indistinguishable from an outage until you try the request without it."""
+    seen = []
+
+    def route(method, path, body):
+        params = json.loads(body)
+        seen.append(sorted(k for k in ("stream_options", "reasoning_effort") if k in params))
+        if "stream_options" in params:
+            return 500, "application/json", '{"error": {"message": "An unexpected error"}}'
+        return _sse("hi") if params.get("stream") else _ok("hi")
+
+    with route_server(route) as srv:
+        mc = _model(srv.base + "/v1", "m", max_retries=1, retry_base_delay=0)
+        client = LLMClient(mc)
+        out = client.complete([{"role": "user", "content": "hi"}], stream=True,
+                              on_text=lambda t: None)
+        assert out.content == "hi"
+        # try, one retry, then one attempt with the optional params removed
+        assert seen == [["stream_options"], ["stream_options"], []]
+        # and the endpoint is remembered, so the next request never sends it again
+        client.complete([{"role": "user", "content": "hi"}], stream=True)
+        assert seen[-1] == []
+        assert len(seen) == 4
+
+
+def test_a_real_outage_still_fails_after_the_bare_retry(route_server):
+    calls = {"n": 0}
+
+    def route(method, path, body):
+        calls["n"] += 1
+        return 500, "application/json", '{"error": {"message": "down"}}'
+
+    with route_server(route) as srv:
+        client = LLMClient(_model(srv.base + "/v1", "m", max_retries=1, retry_base_delay=0))
+        try:
+            client.complete([{"role": "user", "content": "hi"}], stream=True)
+            assert False, "expected the 500 to surface"
+        except openai.InternalServerError as exc:
+            assert exc.coded_model.name == "m"
+            text = __import__("coded.llm", fromlist=["x"]).explain_failure(exc)
+            assert "'m'" in text and "500" in text and "coded models --check m" in text
+    assert calls["n"] == 3  # try + retry + the one bare attempt
+
+
+def test_probe_reports_the_first_request_shape_the_endpoint_refuses(route_server):
+    def route(method, path, body):
+        params = json.loads(body)
+        if "stream_options" in params:
+            return 500, "application/json", '{"error": {"message": "nope"}}'
+        return _sse("ok") if params.get("stream") else _ok("ok")
+
+    from coded.llm import probe_hint, probe_stages
+
+    with route_server(route) as srv:
+        stages = probe_stages(_model(srv.base + "/v1", "m"))
+    labels = [label for label, _ in stages]
+    assert labels == ["minimal request", "streaming", "stream_options"]
+    assert [exc is None for _, exc in stages] == [True, True, False]
+    assert "stream_options" in probe_hint(*stages[-1])
+
+
+def test_probe_stops_at_a_dead_endpoint(route_server):
+    with route_server(_down) as srv:
+        from coded.llm import probe_hint, probe_stages
+
+        stages = probe_stages(_model(srv.base + "/v1", "m"))
+    assert len(stages) == 1 and stages[0][0] == "minimal request"
+    assert "endpoint or the model id" in probe_hint(*stages[0])

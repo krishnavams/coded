@@ -18,6 +18,7 @@ from rich.table import Table
 from coded import ui
 from coded.agent import Agent
 from coded.config import Config, ConfigError
+from coded.llm import explain_failure
 
 # prompt_toolkit color theme (matches ui.py accents).
 _PT_STYLE = Style.from_dict({
@@ -201,7 +202,7 @@ class Repl:
             except ConfigError as exc:
                 ui.error(str(exc))
             except Exception as exc:  # noqa: BLE001
-                ui.error(f"{type(exc).__name__}: {exc}")
+                ui.error(explain_failure(exc))
         ui.info("Goodbye.")
 
     # -- slash commands -----------------------------------------------------

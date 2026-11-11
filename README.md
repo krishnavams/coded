@@ -1077,6 +1077,46 @@ risky actions:
   denied unless started with `--yolo` (nobody is there to approve them) or
   allowed by permission rules.
 
+## When a model errors
+
+If a turn ends with something like `InternalServerError: Error code: 500`, the
+error came from the endpoint, not from coded — it already retried
+(`max_retries`, with backoff and `Retry-After`) and, if the model has a
+`fallback` list, tried those too. coded names the model and its base URL, and
+points at the next step:
+
+```bash
+coded models --check glm-5-3-flash
+```
+
+A failed check probes the endpoint in stages — a minimal request, then
+streaming, `stream_options`, tools, `reasoning_effort`, `extra_body` — and
+reports the first shape it refuses, because some gateways answer a parameter
+they don't implement with a 500 rather than a 400:
+
+```
+✗ glm-5-3-flash    InternalServerError: Error code: 500 - An unexpected error occurred
+    probing which requests this endpoint accepts:
+      ✓ minimal request
+      ✓ streaming
+      ✗ stream_options: InternalServerError: Error code: 500 - ...
+      → the endpoint does not implement stream_options; coded now drops it
+        automatically after a 5xx, so retry the request.
+```
+
+coded does the same thing by itself during a turn: after the retries for a 5xx
+are exhausted it tries once more with the optional parameters
+(`stream_options`, `reasoning_effort`, `parallel_tool_calls`) removed, and
+remembers them as unsupported if that works. It never drops `tools` — an agent
+that silently loses its tools is worse than an error; if the probe shows tools
+are the problem, set `"supports_tools": false` for that model.
+
+To keep working while an endpoint is down, give the model a fallback:
+
+```json
+{"models": {"glm-5-3-flash": {"fallback": ["gpt-oss-120b"]}}}
+```
+
 ## Development
 
 ```bash

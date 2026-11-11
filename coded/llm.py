@@ -12,7 +12,7 @@ import httpx
 import openai
 from openai import OpenAI
 
-from coded.config import ModelConfig
+from coded.config import ConfigError, ModelConfig
 
 # Optional request params some endpoints reject; dropped (and remembered) on a 400.
 _OPTIONAL_PARAMS = ("reasoning_effort", "stream_options", "parallel_tool_calls")
@@ -76,6 +76,10 @@ def _is_retryable(exc: Exception) -> bool:
     if isinstance(exc, openai.APIStatusError):
         return exc.status_code in (408, 409, 429) or exc.status_code >= 500
     return False
+
+
+def _is_server_error(exc: Exception) -> bool:
+    return isinstance(exc, openai.APIStatusError) and exc.status_code >= 500
 
 
 def _retry_after(exc: Exception) -> Optional[float]:
@@ -219,13 +223,13 @@ class LLMClient:
                 return completion
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
+                try:
+                    exc.coded_model = model  # which model/window the error refers to
+                except Exception:  # noqa: BLE001
+                    pass
                 if not (_is_retryable(exc) or isinstance(exc, (openai.AuthenticationError,
                                                                  openai.PermissionDeniedError,
                                                                  openai.NotFoundError))):
-                    try:
-                        exc.coded_model = model  # which window an overflow refers to
-                    except Exception:  # noqa: BLE001
-                        pass
                     raise
                 cooldown = float(model.fallback_cooldown or 0)
                 if cooldown > 0 and i + 1 < len(chain) and not getattr(exc, "coded_partial", False):
@@ -314,9 +318,13 @@ class LLMClient:
         dropping optional params the endpoint rejects."""
         model = model or endpoint.model
         attempt = 0
+        dropped: List[str] = []
         while True:
             try:
-                return endpoint.client.chat.completions.create(**params)
+                resp = endpoint.client.chat.completions.create(**params)
+                if dropped:  # the bare request worked, so the endpoint dislikes these
+                    endpoint.unsupported.update(dropped)
+                return resp
             except Exception as exc:  # noqa: BLE001
                 if is_context_overflow(exc):
                     raise  # the agent handles this; it's not an unsupported parameter
@@ -329,6 +337,17 @@ class LLMClient:
                     params.pop(bad, None)
                     continue
                 if not _is_retryable(exc) or attempt >= model.max_retries:
+                    # Some gateways answer an optional param they don't implement
+                    # with a 500 instead of a 400, which looks exactly like an
+                    # outage. Before giving up, try once without them. `tools` is
+                    # never dropped: an agent that silently loses its tools is
+                    # worse than an error.
+                    if not dropped and _is_server_error(exc):
+                        dropped = [n for n in _OPTIONAL_PARAMS if params.pop(n, None) is not None]
+                        if dropped:
+                            self._status(f"{_short(exc)} — retrying once without "
+                                         + ", ".join(dropped))
+                            continue
                     raise
                 delay = _retry_after(exc)
                 if delay is None:
@@ -409,3 +428,108 @@ def _short(exc: Optional[Exception]) -> str:
     status = getattr(exc, "status_code", None)
     text = str(exc).splitlines()[0][:160] if str(exc) else type(exc).__name__
     return f"{type(exc).__name__}{f' {status}' if status else ''}: {text}"
+
+
+def explain_failure(exc: Exception) -> str:
+    """A readable, actionable line for an error that ended a turn.
+
+    The raw SDK text ("InternalServerError: Error code: 500 - An unexpected error
+    occurred") says nothing about which model or endpoint failed, or what to do
+    about it, so say both.
+    """
+    if isinstance(exc, ConfigError):
+        return str(exc)
+    model = getattr(exc, "coded_model", None)
+    alias = getattr(model, "name", None)
+    where = ""
+    if model is not None:
+        try:
+            where = f" ({model.model} at {model.resolved_base_url()})"
+        except Exception:  # noqa: BLE001
+            where = f" ({model.model})"
+    status = getattr(exc, "status_code", None)
+    head = f"Model '{alias}'{where} " if alias else "The model "
+    body = str(exc).splitlines()[0][:200] if str(exc) else type(exc).__name__
+
+    if _is_server_error(exc):
+        hint = (f"Try `coded models --check {alias}` to see which kind of request it "
+                "accepts, or `/model <alias>` to switch." if alias
+                else "Try `coded models --check` or switch models.")
+        return (f"{head}failed: the server returned {status}. coded retried and gave up.\n"
+                f"  {body}\n  This is the endpoint's error, not coded's. {hint}")
+    if isinstance(exc, openai.AuthenticationError):
+        return (f"{head}rejected the API key ({status}).\n  {body}\n"
+                "  Check the key for this model's provider, then retry.")
+    if isinstance(exc, openai.NotFoundError):
+        return (f"{head}was not found ({status}).\n  {body}\n"
+                "  Check the model id and base_url; `coded models` lists what is configured.")
+    if isinstance(exc, openai.APIConnectionError):
+        return (f"{head}could not be reached.\n  {body}\n"
+                "  Check the base_url, the network, and any proxy or VPN.")
+    return f"{type(exc).__name__}: {body}" if not alias else f"{head}failed.\n  {body}"
+
+
+_PROBE_TOOL = {
+    "type": "function",
+    "function": {"name": "ping", "description": "A no-op used to probe tool support.",
+                 "parameters": {"type": "object", "properties": {}}},
+}
+
+
+def probe_stages(model: ModelConfig) -> List[tuple]:
+    """Send progressively richer requests to `model`'s endpoint, stopping at the
+    first one that fails.
+
+    Returns [(label, exception-or-None), ...]. An endpoint that answers a minimal
+    request but 500s on a later stage is rejecting that part of the request, not
+    failing: gateways that answer an unimplemented parameter with a 500 instead
+    of a 400 are indistinguishable from an outage until you ask this way.
+    """
+    client = build_openai_client(model)
+    base: Dict[str, Any] = {"model": model.model, "max_tokens": 16,
+                            "messages": [{"role": "user", "content": "Reply with: ok"}]}
+    stages: List[tuple] = [
+        ("minimal request", dict(base)),
+        ("streaming", {**base, "stream": True}),
+        ("stream_options", {**base, "stream": True, "stream_options": {"include_usage": True}}),
+    ]
+    if model.supports_tools:
+        stages.append(("tools", {**base, "tools": [_PROBE_TOOL], "tool_choice": "auto"}))
+    if model.reasoning_effort:
+        stages.append((f"reasoning_effort={model.reasoning_effort}",
+                       {**base, "reasoning_effort": model.reasoning_effort}))
+    if model.extra_body:
+        stages.append(("extra_body", {**base, "extra_body": dict(model.extra_body)}))
+
+    results: List[tuple] = []
+    for label, params in stages:
+        try:
+            resp = client.chat.completions.create(**params)
+            if params.get("stream"):
+                for _ in resp:  # the failure may only surface while reading
+                    pass
+            results.append((label, None))
+        except Exception as exc:  # noqa: BLE001 - every outcome is a result here
+            results.append((label, exc))
+            break
+    return results
+
+
+def probe_hint(label: str, exc: Exception) -> str:
+    """What to do about the stage that failed."""
+    if label == "minimal request":
+        return ("even a bare request fails, so this is the endpoint or the model id — "
+                "nothing coded sends. Check the model id, base_url and key.")
+    if label == "streaming":
+        return 'set "stream": false for this model, or use a different endpoint.'
+    if label == "stream_options":
+        return ("the endpoint does not implement stream_options; coded now drops it "
+                "automatically after a 5xx, so retry the request.")
+    if label == "tools":
+        return ('this endpoint cannot take tool definitions. Set "supports_tools": false '
+                "for this model — coded will then run it without tools.")
+    if label.startswith("reasoning_effort"):
+        return 'remove "reasoning_effort" from this model.'
+    if label == "extra_body":
+        return 'remove or correct "extra_body" for this model.'
+    return _short(exc)
