@@ -239,7 +239,7 @@ class Repl:
             self._cmd_review(args)
         elif cmd == "/init":
             ui.user_prefix()
-            self.agent.run(_INIT_PROMPT)
+            self.agent.run(_INIT_PROMPT, route_hint="/init")
         elif cmd == "/cost":
             self._cmd_cost()
         elif cmd in ("/clear", "/reset"):
@@ -288,7 +288,8 @@ class Repl:
             self.agent.force_model(mc)  # beats routing for this one request
         try:
             ui.user_prefix()
-            self.agent.run(command.expand(arguments))
+            self.agent.run(command.expand(arguments),
+                           route_hint=f"/{name} {arguments}".strip())
         finally:
             if previous is not None:
                 self.agent.use_model(previous)
@@ -514,7 +515,7 @@ class Repl:
             + f"---\n{body}"
         )
         ui.user_prefix()
-        self.agent.run(message)
+        self.agent.run(message, route_hint=f"/skill {name} {task}".strip())
 
     def _cmd_cost(self) -> None:
         u = self.agent.session.total_usage

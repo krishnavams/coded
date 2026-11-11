@@ -213,7 +213,7 @@ class LLMClient:
                 self._status(f"Falling back to model '{model.name}' after: {_short(last_exc)}")
             try:
                 completion = self._complete_on(endpoint, messages, tools, stream, on_text,
-                                               on_reasoning)
+                                               on_reasoning, model)
                 completion.model = model.name
                 endpoint.down_until = 0.0
                 return completion
@@ -242,8 +242,9 @@ class LLMClient:
         if self.on_status:
             self.on_status(text)
 
-    def _params(self, endpoint: _Endpoint, messages, tools, stream: bool) -> Dict[str, Any]:
-        model = endpoint.model
+    def _params(self, endpoint: _Endpoint, messages, tools, stream: bool,
+                model: Optional[ModelConfig] = None) -> Dict[str, Any]:
+        model = model or endpoint.model
         params: Dict[str, Any] = {"model": model.model, "messages": messages}
         if model.max_tokens:
             params["max_tokens"] = model.max_tokens
@@ -264,11 +265,15 @@ class LLMClient:
             params.pop(name, None)
         return params
 
-    def _complete_on(self, endpoint, messages, tools, stream, on_text, on_reasoning) -> Completion:
+    def _complete_on(self, endpoint, messages, tools, stream, on_text, on_reasoning,
+                     model: Optional[ModelConfig] = None) -> Completion:
+        # The endpoint is shared, so its stored ModelConfig is whichever one
+        # created it; this request's settings come from `model`.
+        model = model or endpoint.model
         if not stream:
             return self._parse_once(
-                self._create(endpoint, self._params(endpoint, messages, tools, stream)))
-        model = endpoint.model
+                self._create(endpoint, self._params(endpoint, messages, tools, stream, model),
+                             model))
         attempt = 0
         while True:
             emitted = [False]
@@ -282,7 +287,8 @@ class LLMClient:
                     _fn(chunk)
                 return inner
 
-            resp = self._create(endpoint, self._params(endpoint, messages, tools, stream))
+            resp = self._create(
+                endpoint, self._params(endpoint, messages, tools, stream, model), model)
             try:
                 return self._consume_stream(resp, wrap(on_text), wrap(on_reasoning))
             except Exception as exc:  # noqa: BLE001
@@ -302,10 +308,11 @@ class LLMClient:
                              f"(attempt {attempt}/{model.max_retries})")
                 self._sleep(delay)
 
-    def _create(self, endpoint: _Endpoint, params: Dict[str, Any]):
+    def _create(self, endpoint: _Endpoint, params: Dict[str, Any],
+                model: Optional[ModelConfig] = None):
         """Create a completion, retrying transient errors with jittered backoff and
         dropping optional params the endpoint rejects."""
-        model = endpoint.model
+        model = model or endpoint.model
         attempt = 0
         while True:
             try:

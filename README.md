@@ -109,7 +109,7 @@ git clone https://github.com/krishnavams/coded
 cd coded
 python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e .                 # core
-pip install -e '.[mcp]'          # + MCP client     (zsh users: keep the quotes)
+pip install -e '.[mcp]'          # + MCP client     (cmd.exe: use ".[mcp]")
 pip install -e '.[tui]'          # + full-screen UI
 pip install -e '.[dev]'          # + pytest
 pip install -e '.[mcp,tui,dev]'  # everything
@@ -139,20 +139,23 @@ uv pip install git+https://github.com/krishnavams/coded        # uv
 poetry add git+https://github.com/krishnavams/coded            # poetry
 ```
 
-Add a branch or tag with `@name`, e.g. `…/coded@main`.
+Add a branch or tag with `@name`, e.g. `…/coded@main`. While the repository is
+private, `git+https://…` needs credentials — use SSH
+(`git+ssh://git@github.com/krishnavams/coded`) or a token, or clone first and
+install from the directory.
 
 ### Per-platform notes
 
 | Where | Notes |
 | --- | --- |
-| **Linux** | `sudo apt install python3-venv python3-pip` (Debian/Ubuntu) first. For the sandbox: `sudo apt install bubblewrap`. On Arch/Fedora, `pip install` outside a venv is blocked (PEP 668) — use a venv, `pipx`, or `uv`. |
+| **Linux** | Install `python3-venv`/`python3-pip` from your package manager first; for the sandbox, `bubblewrap`. Most distributions now block `pip install` outside a virtualenv (PEP 668) — use a venv, `pipx`, or `uv`. |
 | **macOS** | `brew install python@3.12 pipx`. The sandbox (`sandbox-exec`) is built in. |
-| **Windows** | Install Python from python.org or `winget install Python.Python.3.12`, then use PowerShell or Windows Terminal. Install [Git for Windows](https://git-scm.com/download/win) too: coded uses its Git Bash for the `bash` tool. |
+| **Windows** | Install Python from python.org or `winget install Python.Python.3.12`, then use PowerShell or Windows Terminal. Install [Git for Windows](https://git-scm.com/download/win) too: coded uses its Git Bash for the `bash` tool. In `cmd.exe` quote extras with double quotes: `pip install -e ".[mcp]"`. |
 | **WSL** | Treat it as Linux; it also gives you the sandbox, which native Windows has no backend for. |
-| **Docker** | `FROM python:3.12-slim`, then `RUN pip install git+https://github.com/krishnavams/coded`. Pass keys with `-e OPENAI_API_KEY`, mount your project at `/work`, and run `coded --cwd /work`. Add `--yolo` only in a throwaway container. |
+| **Docker** | `python:3.12-slim` has no git, so install it first: `RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*`, then `RUN pip install git+https://github.com/krishnavams/coded`. (Copying the repo in and `pip install .` needs no git.) Pass keys with `-e OPENAI_API_KEY`, mount your project at `/work`, run `coded --cwd /work`. Use `--yolo` only in a throwaway container. |
 | **CI (GitHub Actions)** | `pip install git+https://github.com/krishnavams/coded`, then `coded review --fail-on NEEDS_CHANGES` with the key in a repository secret. See `.github/workflows/coded-review.yml`. |
 | **Remote box / server** | Same as Linux. For a long session use `tmux`; one-shot work needs no terminal at all: `coded -p "…" --output-format json`. |
-| **No internet on the target machine** | `pip download` the wheel on a connected machine, copy it over, `pip install coded-*.whl`, and point `base_url` at your internal endpoint. |
+| **No internet on the target machine** | On a connected machine with the same Python version and OS: `pip wheel -w wheels .` (coded plus its dependencies, ~24 wheels). Copy `wheels/` over, then `pip install --no-index --find-links wheels coded`. Point `base_url` at your internal endpoint. |
 
 ### Check it worked
 

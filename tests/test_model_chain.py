@@ -152,7 +152,7 @@ def test_stream_broken_before_any_text_is_retried(monkeypatch):
         def __init__(self, content):
             self.choices = [_Choice(content)]
 
-    def broken_then_ok(endpoint, params):
+    def broken_then_ok(endpoint, params, model=None):
         calls.append(1)
 
         def gen():
@@ -179,7 +179,7 @@ def test_stream_broken_after_text_is_not_replayed(monkeypatch):
             delta = type("D", (), {"content": "partial", "tool_calls": None})()
             self.choices = [type("C", (), {"delta": delta, "finish_reason": None})()]
 
-    def breaks_midway(endpoint, params):
+    def breaks_midway(endpoint, params, model=None):
         calls.append(1)
 
         def gen():

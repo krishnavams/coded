@@ -269,6 +269,11 @@ class Config:
             return None
         return pick_member(name, members, healthy_members(members, self.models))
 
+    def pool_of(self, alias: str) -> Optional[str]:
+        """The pool this model belongs to, if exactly one does."""
+        found = [name for name in (self.pools or {}) if alias in self.pool_members(name)]
+        return found[0] if len(found) == 1 else None
+
     def is_pool(self, name: Optional[str]) -> bool:
         return bool(self.pool_members(name))
 
@@ -300,7 +305,8 @@ class Config:
         aliases in `fallback` / `model_roles` / `default_model`."""
         known = ", ".join(self.models) or "(none)"
         out = []
-        if self.default_model and self.default_model not in self.models:
+        if (self.default_model and self.default_model not in self.models
+                and not self.pool_members(self.default_model)):
             out.append(f"default_model '{self.default_model}' is not a configured model "
                        f"(known: {known}).")
         for mc in self.models.values():
@@ -324,9 +330,9 @@ class Config:
                                f"(ignored; known: {known}).")
             windows = {self.models[a].context_window for a in self.pool_members(name)}
             if len(windows) > 1:
-                out.append(f"Pool '{name}' mixes context windows ({', '.join(
-                    f'{w // 1000}k' for w in sorted(windows))}); coded sizes each request "
-                    f"for the member it picked.")
+                sizes = ", ".join(f"{w // 1000}k" for w in sorted(windows))
+                out.append(f"Pool '{name}' mixes context windows ({sizes}); coded sizes "
+                           f"each request for the member it picked.")
         routing = self.routing or {}
         for level in ("simple", "medium", "hard"):
             alias = routing.get(level)

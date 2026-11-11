@@ -97,6 +97,18 @@ class FakeServer:
         self.httpd.shutdown()
 
 
+@pytest.fixture(autouse=True)
+def _fresh_model_state():
+    """Endpoints and pool rotation are process-wide; reset them per test so an
+    ephemeral port reused by another server can't inherit stale state."""
+    from coded import llm, routing
+
+    llm.reset_endpoints()
+    routing.reset_pools(seed=0)
+    yield
+    llm.reset_endpoints()
+
+
 @pytest.fixture
 def fake_server():
     return FakeServer

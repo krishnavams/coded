@@ -95,7 +95,8 @@ class Agent:
         return False
 
     def _make_llm(self, model: ModelConfig) -> LLMClient:
-        return LLMClient(model, fallbacks=self.config.fallbacks_for(model, self._pool),
+        pool = self._pool or self.config.pool_of(model.name)
+        return LLMClient(model, fallbacks=self.config.fallbacks_for(model, pool),
                          on_status=self._status_note)
 
     def _status_note(self, text: str) -> None:
@@ -103,16 +104,20 @@ class Agent:
             ui.warn(text)
 
     # -- public API ---------------------------------------------------------
-    def run(self, user_message: Any, images: Optional[list] = None) -> str:
+    def run(self, user_message: Any, images: Optional[list] = None,
+            route_hint: Optional[str] = None) -> str:
         """Run one user turn to completion. Returns the final assistant text.
 
         `images` is an optional list of image file paths to attach (for
-        vision-capable models).
+        vision-capable models). `route_hint` is what difficulty routing should
+        read when `user_message` is an expanded template (a custom command, a
+        skill body, /init) rather than something the user typed.
         """
         self._interrupted = False
         if not self.is_subagent:
             self.permissions.tainted = False
-            self._select_turn_model(user_message, images)
+            self._select_turn_model(
+                user_message if route_hint is None else route_hint, images)
         text = str(user_message)
         if not self.is_subagent:
             extra: List[str] = []
@@ -404,7 +409,13 @@ class Agent:
             self._pool = pool
 
     def _routed_target(self, text: str, images: Optional[list]):
-        """(model, pool, level) from difficulty routing, else the main model."""
+        """(model, pool, level) for this request.
+
+        "Stay where you are" is always the previous request's model, never the
+        main model: dropping to a smaller main model would force-compact the
+        conversation, which is exactly what routing must not cost.
+        """
+        stay = (self._turn_model, self._turn_pool(), None)
         settings = self.config.routing_settings()
         if not settings.configured:
             return self._main_model, self._main_pool, None
@@ -414,12 +425,27 @@ class Agent:
         if settings.sticky:
             level = harder(level, self._route_level)
         if level is None:
-            return self.model, self._pool, None  # a follow-up stays where it is
+            return stay  # a follow-up continues the last request's work
+        target = settings.target(level)
+        if not target:
+            return stay
         self._route_level = level
-        model, pool = self.config.resolve_target(settings.target(level))
-        if model is None or not self._can_route_to(model, images):
-            return self._main_model, self._main_pool, None
+        if self._turn_model.name in self.config.pool_members(target):
+            return self._turn_model, target, None  # already on a member of that pool
+        model, pool = self.config.resolve_target(target)
+        if model is None or model is self._turn_model:
+            return stay
+        if not self._can_route_to(model, images):
+            return stay
         return model, pool, level
+
+    def _turn_pool(self) -> Optional[str]:
+        """The pool this turn's model came from."""
+        if self._turn_model is self.model:
+            return self._pool
+        if self._turn_model is self._main_model:
+            return self._main_pool
+        return self.config.pool_of(self._turn_model.name)
 
     def _can_route_to(self, model: ModelConfig, images: Optional[list]) -> bool:
         """Refuse a target that cannot do this turn's work, or that the
@@ -429,9 +455,11 @@ class Agent:
             return False
         if images and not model.supports_vision:
             return False
-        from coded.compaction import compaction_threshold, current_input_tokens
+        from coded.compaction import compaction_threshold, current_input_tokens, estimate_tokens
 
-        size = current_input_tokens(self.session)
+        # Be conservative: the last reported usage misses anything appended since,
+        # and the estimate misses nothing.
+        size = max(current_input_tokens(self.session), estimate_tokens(self.session.messages))
         return size <= compaction_threshold(model, self.config.compact_ratio)
 
     def _sync_sizing(self, target: Optional[ModelConfig] = None) -> bool:

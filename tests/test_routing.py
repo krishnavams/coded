@@ -157,6 +157,62 @@ def test_routing_never_summarizes_history_to_use_a_smaller_model(tmp_path, route
     assert agent.session.compactions == 0
 
 
+def test_a_refused_downgrade_stays_on_the_current_model_not_main(tmp_path, route_server):
+    """Main is smaller than the routed model: 'stay' must mean stay, not go home."""
+    served = []
+
+    def route(method, path, body):
+        served.append(json.loads(body)["model"])
+        return _ok()
+
+    with route_server(route) as srv:
+        cfg, _s, medium, _l = _setup(tmp_path, srv, {
+            "enabled": True, "simple": "small", "hard": "large", "sticky": False})
+        agent = _agent(tmp_path, cfg, medium)          # main model is the 128k one
+        agent.run("Refactor the auth system across the codebase")   # → large (300k)
+        for i in range(10):  # history that fits large but neither medium nor small
+            agent.session.messages.append({"role": "user", "content": f"q{i} " + "x" * 12_000})
+            agent.session.messages.append({"role": "assistant", "content": "a" * 12_000})
+        before = len(agent.session.messages)
+        agent.run("fix the typo in README")            # simple, but nothing smaller fits
+    assert served == ["large", "large"]
+    assert len(agent.session.messages) == before + 2 and agent.session.compactions == 0
+
+
+def test_plan_approval_returns_to_the_routed_model_for_an_unreadable_request(
+        tmp_path, route_server):
+    served = []
+
+    def route(method, path, body):
+        served.append(json.loads(body)["model"])
+        return _ok()
+
+    with route_server(route) as srv:
+        cfg, _s, medium, _l = _setup(tmp_path, srv, {"enabled": True, "hard": "large"})
+        cfg.model_roles = {"plan": "small"}
+        agent = _agent(tmp_path, cfg, medium)
+        agent.set_mode("plan")
+        agent.run("plan it")                 # unreadable: stays on the main model…
+        assert agent.model.name == "small"   # …but plan mode borrows the plan model
+        agent.set_mode("default")            # exit_plan_mode mid-turn
+        assert agent.model.name == "medium"  # not stranded on the plan model
+    assert served == ["small"]
+
+
+def test_an_expanded_template_is_not_classified_as_the_users_words(tmp_path, route_server):
+    served = []
+
+    def route(method, path, body):
+        served.append(json.loads(body)["model"])
+        return _ok()
+
+    with route_server(route) as srv:
+        cfg, _s, medium, _l = _setup(tmp_path, srv, {"enabled": True, "hard": "large"})
+        agent = _agent(tmp_path, cfg, medium)
+        agent.run("Please review this. " * 60, route_hint="/ship")  # long template body
+    assert served == ["medium"] and agent._route_level is None
+
+
 def test_an_explicit_model_pins_it_and_route_on_restores(tmp_path, route_server):
     served = []
 
@@ -242,35 +298,54 @@ def test_a_pool_name_works_wherever_a_model_does(tmp_path, route_server):
         assert cfg.is_pool("big") and not cfg.is_pool("medium")
 
 
-def test_an_agent_sticks_to_its_pool_member_but_sub_agents_spread(tmp_path, route_server):
-    served = []
+def test_an_agent_keeps_its_member_while_sub_agents_spread(tmp_path, route_server):
+    """The main agent stays put (prompt cache); each sub-agent gets its own member."""
+    main_models, sub_models = [], []
+    steps = {"n": 0}
 
     def route(method, path, body):
         req = json.loads(body)
-        served.append(req["model"])
-        if any(m.get("role") == "tool" for m in req["messages"]):
+        if req["messages"][0]["content"].startswith("You are a focused sub-agent"):
+            sub_models.append(req["model"])
             return _ok("sub done")
-        sub = req["messages"][0]["content"].startswith("You are a focused sub-agent")
-        if sub:
-            return _ok("sub done")
-        return 200, "application/json", json.dumps({
-            "id": "x", "object": "chat.completion", "created": 0, "model": "m",
-            "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
-                "role": "assistant", "content": "", "tool_calls": [
-                    {"id": "t1", "type": "function",
-                     "function": {"name": "task", "arguments": '{"prompt": "go"}'}}]}}],
-            "usage": USAGE}) if len(served) == 1 else _ok()
+        main_models.append(req["model"])
+        steps["n"] += 1
+        if steps["n"] % 2 == 1:  # first step of each turn: spawn a sub-agent
+            return 200, "application/json", json.dumps({
+                "id": "x", "object": "chat.completion", "created": 0, "model": "m",
+                "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+                    "role": "assistant", "content": "", "tool_calls": [
+                        {"id": f"t{steps['n']}", "type": "function",
+                         "function": {"name": "task", "arguments": '{"prompt": "go"}'}}]}}],
+                "usage": USAGE})
+        return _ok()
 
     with route_server(route) as srv:
         cfg, _s, medium, large = _setup(tmp_path, srv, pools={"big": ["medium", "large"]})
         cfg.model_roles = {"subagent": "big"}
-        routing.reset_pools(seed=3)
+        routing.reset_pools(seed=5)
         agent = _agent(tmp_path, cfg, medium, pool="big")
-        agent.run("do the thing")
-        agent.run("and again")
-    main_calls = [m for m in served if m == agent.model.name]
-    assert len(main_calls) >= 2                      # the main agent never moved
-    assert agent._pool == "big"
+        for _ in range(4):
+            agent.run("do the thing")
+    assert set(main_models) == {"medium"}          # never moved
+    assert set(sub_models) == {"medium", "large"}  # spread across the pool
+
+
+def test_a_pool_as_a_routing_target_does_not_rotate_every_request(tmp_path, route_server):
+    served = []
+
+    def route(method, path, body):
+        served.append(json.loads(body)["model"])
+        return _ok()
+
+    with route_server(route) as srv:
+        cfg, _s, medium, large = _setup(tmp_path, srv, {
+            "enabled": True, "hard": "big"}, pools={"big": ["medium", "large"]})
+        routing.reset_pools(seed=2)
+        agent = _agent(tmp_path, cfg, medium)
+        agent.run("Refactor the auth system across the codebase")
+        agent.run("Refactor the session handling across the codebase")
+    assert served[0] == served[1]  # same member, so the prompt cache survives
 
 
 def test_pool_siblings_are_fallbacks_and_a_dead_member_is_skipped(tmp_path, route_server):
