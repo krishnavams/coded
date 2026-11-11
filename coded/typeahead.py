@@ -42,7 +42,8 @@ class _WindowsPoll:
     """Console input on Windows, where stdin cannot be select()ed.
 
     Characters are collected (and echoed) as they are typed, and handed over as
-    a line on Enter — so a half-typed line is not lost when the turn ends.
+    a line on Enter. A line still being typed when the turn ends stays in `buf`
+    and is handed to the next prompt by `TypeAhead.partial`.
     """
 
     def __init__(self) -> None:
@@ -181,6 +182,11 @@ class TypeAhead:
         finally:
             self._want_answer.clear()
 
+    def requeue(self, text: str) -> None:
+        """Put a line back: it was typed as a message, not as an answer."""
+        if text.strip():
+            self._queued.put(text.strip())
+
     def drain(self) -> List[str]:
         out: List[str] = []
         while True:
@@ -192,3 +198,14 @@ class TypeAhead:
     @property
     def pending(self) -> int:
         return self._queued.qsize()
+
+    @property
+    def partial(self) -> str:
+        """A line the user was still typing when the turn ended (Windows only;
+        on POSIX the terminal keeps it until Enter). The caller pre-fills the
+        next prompt with it so nothing typed is lost."""
+        buf = getattr(self._poll, "buf", None)
+        if not buf:
+            return ""
+        text, buf[:] = "".join(buf), []
+        return text

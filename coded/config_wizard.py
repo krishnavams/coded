@@ -136,16 +136,32 @@ def read_file(path: Path) -> Dict[str, Any]:
     return data
 
 
-def write_file(path: Path, data: Dict[str, Any], *, secret: bool = False) -> None:
-    """Write atomically, so an interrupted save cannot truncate the config."""
+def holds_a_key(data: Dict[str, Any]) -> bool:
+    """Does this config embed a literal API key (rather than an env var name)?"""
+    return any(entry.get("api_key") for entry in (data.get("models") or {}).values()
+               if isinstance(entry, dict))
+
+
+def write_file(path: Path, data: Dict[str, Any], *, secret: Optional[bool] = None) -> None:
+    """Write atomically, so an interrupted save cannot truncate the config.
+
+    The mode is decided from the data, not from what this session happened to
+    type: a file that already held a key must not become world-readable because
+    the edit was only a rename. An existing file keeps the mode it has.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
+    secret = holds_a_key(data) if secret is None else (secret or holds_a_key(data))
+    mode = None
+    try:
+        mode = path.stat().st_mode & 0o777
+    except OSError:
+        pass
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    if secret:
-        try:
-            os.chmod(tmp, 0o600)  # a no-op on Windows
-        except OSError:
-            pass
+    try:
+        os.chmod(tmp, mode if mode is not None else (0o600 if secret else 0o644))
+    except OSError:  # a no-op on Windows
+        pass
     os.replace(tmp, path)
 
 
@@ -260,6 +276,7 @@ class Wizard:
         if how.startswith("s"):
             self.p.out("  This file is shared with the project, so keys stay in env vars.")
         name = self.p.text("Environment variable name", env_name)
+        entry.pop("api_key", None)  # never leave a stale literal key behind
         if name != preset.get("api_key_env"):
             entry["api_key_env"] = name
         return entry
@@ -320,7 +337,10 @@ class Wizard:
         if field is None:
             return
         if field == "api key":
-            self.models[alias] = {**entry, **self._provider_entry(), "model": entry.get("model")}
+            fresh = self._provider_entry()
+            for stale in ("api_key", "api_key_env", "base_url"):
+                entry.pop(stale, None)
+            self.models[alias] = {**entry, **fresh, "model": entry.get("model")}
             return
         if field == "rename":
             new = self.p.text("New alias", alias)

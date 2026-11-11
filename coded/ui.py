@@ -348,7 +348,7 @@ def todo_bar(items: list, width: int = 12) -> str:
     filled = int(width * done / total)
     bar = "▰" * filled
     if active and filled < width:
-        bar += "▱"  # the running item sits just past the filled part
+        bar += "▨"  # the running item, distinct from both done and pending
     return bar.ljust(width, "▱")
 
 

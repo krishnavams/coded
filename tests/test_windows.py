@@ -390,3 +390,39 @@ def test_requesting_bash_never_picks_the_wsl_launcher():
                            which=_which({"bash": wsl, "git": GIT_CMD}),
                            exists=_exists([GIT_BASH, wsl]), env={})
     assert picked.path == GIT_BASH
+
+
+# -- type-ahead on Windows ----------------------------------------------------
+
+def test_windows_console_reader_assembles_a_line_from_keystrokes(monkeypatch):
+    """stdin cannot be select()ed on Windows, so keys are read one at a time;
+    this exercises that reader on any OS."""
+    import sys
+    import types
+
+    from coded.typeahead import _WindowsPoll
+
+    keys = list("hi\x08there\r")
+    fake = types.SimpleNamespace(kbhit=lambda: bool(keys), getwch=lambda: keys.pop(0))
+    monkeypatch.setitem(sys.modules, "msvcrt", fake)
+
+    poll = _WindowsPoll()
+    assert poll(0.1) == "hthere"  # backspace removed the 'i'
+    assert poll(0.01) is None     # nothing more typed
+
+
+def test_a_half_typed_windows_line_is_handed_to_the_next_prompt(monkeypatch):
+    import sys
+    import types
+
+    from coded.typeahead import TypeAhead, _WindowsPoll
+
+    keys = list("half a quest")  # no Enter: the turn ended first
+    fake = types.SimpleNamespace(kbhit=lambda: bool(keys), getwch=lambda: keys.pop(0))
+    monkeypatch.setitem(sys.modules, "msvcrt", fake)
+
+    poll = _WindowsPoll()
+    assert poll(0.05) is None
+    ta = TypeAhead(poll)
+    assert ta.partial == "half a quest"
+    assert ta.partial == ""  # handed over once

@@ -103,6 +103,7 @@ class Repl:
         self.agent = agent
         self.config = config
         self._typeahead = None  # set while a turn runs
+        self._prefill = ""  # a line half-typed when the last turn ended
         self._on_turn = on_turn  # called after each completed turn (autosave)
         self._pending_images: Optional[list] = None
         from coded.commands import discover_commands
@@ -148,8 +149,13 @@ class Repl:
         mode = ("  ·  <style fg='%s'><b>⏸ plan mode</b></style>" % ui.WARN
                 if self.agent.mode == "plan" else "")
         done, total, _ = ui.todo_progress(self.agent.todos.items)
-        tasks = (f"  ·  <style fg='{ui.ACCENT_SOFT}'>tasks {done}/{total} "
-                 f"{ui.todo_bar(self.agent.todos.items, 8)}</style>" if total else "")
+        if not total:
+            tasks = ""
+        elif done == total:
+            tasks = f"  ·  <style fg='{ui.MUTED}'>tasks {done}/{total} done</style>"
+        else:
+            tasks = (f"  ·  <style fg='{ui.ACCENT_SOFT}'>tasks {done}/{total} "
+                     f"{ui.todo_bar(self.agent.todos.items, 8)}</style>")
         return HTML(
             f"  <style fg='{ui.ACCENT}'><b>◆ {self.agent.model.name}</b></style>{mode}"
             f"  ·  {s.turns} turns"
@@ -164,9 +170,21 @@ class Repl:
         if self._typeahead is not None and self._typeahead.available:
             # A turn is running and the type-ahead reader owns stdin; asking it
             # for the line keeps the two from racing for the same keystrokes.
-            ui.console.print("[dim]  y = yes · a = always · n = no[/dim]")
-            answer = self._typeahead.ask()
-            return (answer or "no").strip() or "no"
+            # Only a real answer counts here: a follow-up the user happened to
+            # send at this moment must not approve an action, nor be lost.
+            while True:
+                ui.console.print("  [bold]Allow?[/bold] [green]y[/green]es  "
+                                 "[red]n[/red]o  [cyan]a[/cyan]lways")
+                answer = self._typeahead.ask()
+                if answer is None:
+                    return "no"
+                answer = answer.strip()
+                if answer.lower() in ("y", "yes", "n", "no", "a", "always"):
+                    return answer
+                if answer:
+                    self._typeahead.requeue(answer)
+                    ui.console.print(f"[{ui.ACCENT_SOFT}]  (queued as a message — "
+                                     f"answer y, n or a first)[/]")
         try:
             answer = self.prompt.prompt(
                 HTML("  <b>Allow?</b> <ansigreen>y</ansigreen>es  "
@@ -194,7 +212,9 @@ class Repl:
                 try:
                     ui.console.print()
                     ui.console.rule(style=ui.ACCENT_DEEP)
-                    text = self.prompt.prompt(HTML("<prompt>&gt;</prompt> "))
+                    text = self.prompt.prompt(HTML("<prompt>&gt;</prompt> "),
+                                              default=self._prefill)
+                    self._prefill = ""
                 except KeyboardInterrupt:
                     continue
                 except EOFError:
@@ -217,6 +237,7 @@ class Repl:
                     finally:
                         self._typeahead = None
                         queued += ta.drain()
+                        self._prefill = ta.partial  # a half-typed line (Windows)
                 self._pending_images = None
                 if self._on_turn:
                     self._on_turn()
@@ -405,7 +426,13 @@ class Repl:
         ui.console.print(table)
 
     def _cmd_setup(self) -> None:
-        """Run the wizard, then reload every config layer into the live session."""
+        """Run the wizard, then fold the result into the live session.
+
+        The model-related fields are updated **in place** on the Config the
+        agent already holds: replacing the object would drop the CLI overrides
+        (--yolo, --max-turns, --config …) applied at startup, and anything
+        still holding the old one would not see the change.
+        """
         from coded.config_wizard import run_wizard
 
         run_wizard(cwd=self.agent.cwd)
@@ -414,15 +441,17 @@ class Repl:
         except ConfigError as exc:
             ui.error(f"Could not reload the config: {exc}")
             return
-        self.config = fresh
-        self.agent.config = fresh
-        for warning in fresh.model_warnings():
+        for attr in ("models", "default_model", "model_roles", "pools", "routing"):
+            setattr(self.config, attr, getattr(fresh, attr))
+        for warning in self.config.model_warnings():
             ui.warn(warning)
-        if self.agent.model.name not in fresh.models:
-            ui.warn(f"The active model '{self.agent.model.name}' is no longer configured; "
-                    "pick another with /model.")
+        active = self.agent.model.name
+        if active in self.config.models:
+            # Re-select without pinning, so routing configured in the wizard stays on.
+            self.agent.switch_model(self.config.models[active], pin=False)
         else:
-            self.agent.switch_model(self.agent.model.name)  # pick up edited settings
+            ui.warn(f"The active model '{active}' is no longer configured; "
+                    "switch with /model.")
         ui.info("Config reloaded. /models shows the result.")
 
     def _cmd_model(self, args) -> None:

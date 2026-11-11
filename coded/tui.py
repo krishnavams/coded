@@ -256,7 +256,12 @@ class CodedTUI(App):
             self._queued.append(text)
             self._mount(StatusNote(f"queued ({len(self._queued)}): {text}"))
             return
+        self._submit(text)
+
+    def _submit(self, text: str) -> None:
+        """Handle one message: slash commands first, then a turn."""
         if text in ("/exit", "/quit"):
+            self._queued.clear()
             self.exit()
             return
         if text in ("/clear", "/reset"):
@@ -295,8 +300,11 @@ class CodedTUI(App):
         self._finalize_assistant()
         self._refresh_sidebar()
         self.query_one("#prompt", Input).focus()
-        if self._queued:
-            self._start_turn(self._queued.pop(0))
+        # Queued text takes the same path as typed text, so a slash command
+        # typed mid-turn still acts as a command, not as a prompt — and a
+        # command that starts no turn does not stall the rest of the queue.
+        while self._queued and not self.busy:
+            self._submit(self._queued.pop(0))
 
     def _start_turn(self, text: str) -> None:
         self._mount(UserMessage(text))

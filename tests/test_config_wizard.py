@@ -7,6 +7,7 @@ what it keeps, what it never writes, and that an abort changes nothing.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -113,7 +114,8 @@ def test_a_stored_key_is_never_printed_back(tmp_path):
     Wizard(path, p).run()
     assert json.loads(path.read_text())["models"]["m"]["api_key"] == "sk-super-secret-value"
     assert "sk-super-secret-value" not in "\n".join(p.printed)  # type: ignore[attr-defined]
-    assert path.stat().st_mode & 0o077 == 0  # not readable by anyone else
+    if os.name != "nt":  # chmod is a no-op on Windows
+        assert path.stat().st_mode & 0o077 == 0  # not readable by anyone else
 
 
 def test_the_project_file_only_gets_env_var_names(tmp_path):
@@ -292,3 +294,35 @@ def test_the_wizard_never_writes_another_layers_models(tmp_path, monkeypatch):
     p = scripted(ADD_TYPED + ["save and quit", "y"])
     Wizard(user, p).run()
     assert set(json.loads(user.read_text())["models"]) == {"mine", "flash"}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
+def test_a_file_that_already_holds_a_key_keeps_its_mode(tmp_path):
+    """A rename must not make an existing 0600 config world-readable."""
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"models": {"a": {"model": "a", "api_key": "sk-old"}},
+                                "default_model": "a"}))
+    path.chmod(0o600)
+    p = scripted(["edit a model", "a", "rename", "fast", "save and quit", "y"])
+    Wizard(path, p).run()
+    assert path.stat().st_mode & 0o077 == 0
+    assert json.loads(path.read_text())["models"]["fast"]["api_key"] == "sk-old"
+
+
+def test_switching_a_model_to_an_env_var_drops_the_stored_key(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({
+        "models": {"a": {"model": "a", "provider": "openai-compatible",
+                         "base_url": "https://old.example.com/v1", "api_key": "sk-old"}},
+        "default_model": "a"}))
+    p = scripted([
+        "edit a model", "a", "api key",
+        "openai-compatible", "https://new.example.com/v1", "env", "NEW_KEY",
+        "save and quit", "y",
+    ])
+    Wizard(path, p).run()
+    entry = json.loads(path.read_text())["models"]["a"]
+    assert "api_key" not in entry
+    assert entry["api_key_env"] == "NEW_KEY"
+    assert entry["base_url"] == "https://new.example.com/v1"
+    assert entry["model"] == "a"
