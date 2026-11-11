@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 
 from coded.agent import create_agent
 from coded.config import Config, ModelConfig
@@ -55,7 +56,11 @@ def _checker(tmp_path, passes_after: int):
         "c.write_text(str(n + 1))\n"
         "print('check run', n + 1)\n"
         f"sys.exit(0 if n + 1 > {passes_after} else 1)\n")
-    return f"{sys.executable} {script}", counter
+    # Forward slashes, no quotes: the command goes through whichever shell is
+    # resolved, and Git Bash — the usual one on Windows — treats a backslash as
+    # an escape, so a native path would silently never run.
+    exe = Path(sys.executable).as_posix()
+    return f"{exe} {script.as_posix()}", counter
 
 
 # -- the checks gate ---------------------------------------------------------
@@ -146,7 +151,8 @@ def test_plan_mode_and_subagents_are_never_verified(tmp_path, fake_server):
 
 
 def test_a_check_that_cannot_run_is_reported_not_ignored(tmp_path):
-    result = run_checks(f"{sys.executable} -c import sys;sys.exit(3)", str(tmp_path), 30)
+    exe = Path(sys.executable).as_posix()
+    result = run_checks(f"{exe} -c import sys;sys.exit(3)", str(tmp_path), 30)
     assert result.ok is False
     bad = run_checks("definitely-not-a-command-xyz", str(tmp_path), 30)
     assert bad.ok is False  # a missing command is a failure, never a pass

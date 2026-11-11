@@ -713,7 +713,10 @@ mode and unchanged turns are never verified, so an unconfigured session sends
 exactly the requests it did before.
 
 `/verify` runs the gate on demand, and `coded config setup` offers to configure
-it.
+it. The command runs through the same shell as the `bash` tool, so on Windows
+write it the way that shell expects — Git Bash treats a backslash as an escape,
+so `C:/tools/python.exe -m pytest` works where the backslashed path silently
+does not.
 
 ### Hooks
 
