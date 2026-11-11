@@ -33,6 +33,7 @@ def split_args(raw: str) -> list:
 
 class GitTool(Tool):
     name = "git"
+    brief = 'Run git with the arguments after `git`, e.g. "diff HEAD~1". Read-only commands run freely; commit, checkout, push and other changes ask first.'
     description = """Run a git command in the repository. Read-only subcommands \
 (status, diff, log, show, blame, branch, remote, ...) run without approval. \
 Mutating subcommands (commit, checkout, reset, push, merge, add, ...) ask first. \

@@ -10,6 +10,7 @@ from coded.tools.base import Tool, ToolContext, ToolResult
 
 class RepoMapTool(Tool):
     name = "repo_map"
+    brief = "Ranked outline of the repository's definitions, most-used files first. Use it in an unfamiliar codebase or to find where something lives; narrow with path or focus, then read the files."
     description = """A ranked outline of the repository: each file's definitions \
 (classes, functions, types), with the files the rest of the code depends on most listed \
 first. Use it at the start of a task in an unfamiliar codebase, or to find where a concept \

@@ -320,6 +320,13 @@ def _handle_models_command(argv: List[str]) -> int:
     p.add_argument("--cwd", help="Working directory.")
     p.add_argument("--check", nargs="*", metavar="ALIAS",
                    help="Send a tiny request to each model (or the named ones) and report status.")
+    p.add_argument("--speed", nargs="*", metavar="ALIAS",
+                   help="Time each model (or the named ones) on the request a real turn sends: "
+                        "time to first token, total, tokens/s.")
+    p.add_argument("--runs", type=int, default=1, help="With --speed: requests per model "
+                   "(the median is shown).")
+    p.add_argument("--minimal", action="store_true",
+                   help="With --speed: a bare question, without coded's system prompt and tools.")
     args = p.parse_args(argv)
     cfg = load_config(cwd=args.cwd, config_path=args.config)
     if not cfg.models:
@@ -328,6 +335,9 @@ def _handle_models_command(argv: List[str]) -> int:
     roles = {}
     for role, alias in cfg.model_roles.items():
         roles.setdefault(alias, []).append(role)
+    if args.speed is not None:
+        return _speed_models(cfg, args.speed or list(cfg.models), args.runs, args.minimal,
+                             args.cwd or os.getcwd())
     if args.check is None:
         for name, mc in cfg.models.items():
             marker = "*" if name == cfg.default_model else " "
@@ -364,6 +374,52 @@ def _handle_models_command(argv: List[str]) -> int:
         members = cfg.pool_members(name)
         expanded += members or [name]
     return _check_models(cfg, list(dict.fromkeys(expanded)))
+
+
+def _speed_models(cfg: Config, names: List[str], runs: int, minimal: bool, cwd: str) -> int:
+    from rich.table import Table
+
+    from coded.speed import advice, measure, request_for
+
+    expanded: List[str] = []
+    for name in names:
+        expanded += cfg.pool_members(name) or [name]
+    unknown = [n for n in expanded if n not in cfg.models]
+    if unknown:
+        ui.error(f"Unknown model(s): {', '.join(unknown)}. Known: {', '.join(cfg.models)}")
+        return 2
+    shape = "a bare question" if minimal else "coded's system prompt + tools + a question"
+    ui.info(f"Timing {len(expanded)} model(s) on {shape}, {runs} run(s) each…")
+    results = []
+    for name in dict.fromkeys(expanded):
+        model = cfg.models[name]
+        with ui.thinking(f"{name}…"):
+            try:
+                messages, tools = request_for(model, cfg, cwd, minimal)
+            except Exception as exc:  # noqa: BLE001
+                from coded.speed import SpeedResult
+
+                results.append(SpeedResult(name, False, error=str(exc)))
+                continue
+            results.append(measure(model, messages, tools, runs))
+    table = Table(title_style=f"bold {ui.ACCENT}", title="Model speed (median)")
+    for col, justify in (("model", "left"), ("first token", "right"), ("total", "right"),
+                         ("speed", "right"), ("prompt", "right"), ("output", "right")):
+        table.add_column(col, justify=justify)
+    for r in results:
+        if not r.ok:
+            table.add_row(r.name, f"[{ui.ERR}]failed[/]", "", "", "", r.error[:60])
+            continue
+        mark = "~" if r.estimated else ""
+        table.add_row(r.name, f"{r.first_token:.2f}s", f"{r.total:.2f}s",
+                      f"{r.tokens_per_second:.0f} tok/s" if r.tokens_per_second else "–",
+                      f"{mark}{r.prompt_tokens:,}", f"{mark}{r.output_tokens:,}")
+    ui.console.print(table)
+    if any(r.estimated for r in results if r.ok):
+        ui.console.print(f"[{ui.MUTED}]~ estimated: the server did not report token usage[/]")
+    for line in advice(results):
+        ui.console.print(f"[{ui.MUTED}]{line}[/]")
+    return 0 if all(r.ok for r in results) else 1
 
 
 def _check_models(cfg: Config, names: List[str]) -> int:
@@ -634,6 +690,11 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     parser = build_parser()
     args = parser.parse_args(argv)
+    # Load the model SDK while config, MCP and the prompt are being set up (and
+    # while the user types the first message). `--version` has exited by now.
+    from coded.llm import prewarm
+
+    prewarm()
 
     # In JSON print mode, keep stdout clean — send all log output to stderr.
     if args.print_mode and args.output_format == "json":

@@ -8,11 +8,49 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, List, Optional
 
-import httpx
-import openai
-from openai import OpenAI
+import importlib
+import sys
 
 from coded.config import ConfigError, ModelConfig
+
+
+class _LazyModule:
+    """Stands in for a heavy module until its first use.
+
+    The `openai` SDK takes about half a second to import — most of coded's
+    startup — and commands like `coded agents`, `coded skill`, `--version` or
+    the time before the first prompt never need it. The first attribute access
+    imports it and puts the real module in place of this proxy.
+    """
+
+    def __init__(self, name: str):
+        self._name = name
+
+    def __getattr__(self, attr: str) -> Any:
+        module = importlib.import_module(self._name)
+        globals()[self._name] = module
+        return getattr(module, attr)
+
+
+openai: Any = sys.modules.get("openai") or _LazyModule("openai")
+httpx: Any = sys.modules.get("httpx") or _LazyModule("httpx")
+
+
+def prewarm() -> None:
+    """Import the SDK on a background thread, so it is loaded by the time the
+    user has typed a first message. Safe to call more than once."""
+    def load() -> None:
+        try:
+            import openai as _openai  # noqa: F401
+
+            globals()["openai"] = _openai
+            import httpx as _httpx
+
+            globals()["httpx"] = _httpx
+        except Exception:  # noqa: BLE001 - the real import will raise it later
+            pass
+
+    threading.Thread(target=load, name="coded-prewarm", daemon=True).start()
 
 # Optional request params some endpoints reject; dropped (and remembered) on a 400.
 _OPTIONAL_PARAMS = ("reasoning_effort", "stream_options", "parallel_tool_calls")
@@ -48,7 +86,7 @@ class Completion:
     model: str = ""  # alias that actually answered (differs after a fallback)
 
 
-def build_openai_client(model: ModelConfig) -> OpenAI:
+def build_openai_client(model: ModelConfig) -> "openai.OpenAI":
     """Construct an OpenAI client honoring the model's TLS settings.
 
     SDK-level retries are disabled; LLMClient retries itself so it can apply
@@ -60,7 +98,7 @@ def build_openai_client(model: ModelConfig) -> OpenAI:
     if model.timeout:
         # Read timeout applies between stream chunks, so a slow but live model is fine.
         extra["timeout"] = httpx.Timeout(float(model.timeout), connect=min(float(model.timeout), 30.0))
-    return OpenAI(
+    return openai.OpenAI(
         **extra,
         base_url=model.resolved_base_url(),
         api_key=model.resolved_api_key(),

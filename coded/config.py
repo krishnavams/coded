@@ -111,6 +111,8 @@ class ModelConfig:
     prompts_dir: Optional[str] = None
     # Repository overview in the system prompt: "auto" (on at >= 200k context) | true | false.
     repo_overview: Any = "auto"
+    # Tools this model is not offered (added to the top-level `disabled_tools`).
+    disabled_tools: list = field(default_factory=list)
 
     def resolved_base_url_safe(self) -> str:
         """`resolved_base_url` without raising for a model that has none."""
@@ -219,6 +221,10 @@ class Config:
     sandbox: Dict[str, Any] = field(default_factory=dict)
     show_reasoning: bool = False  # display streamed reasoning/thinking text
     parallel_tools: bool = True  # run independent read-only tool calls concurrently
+    # Tools never offered to the model, by name or pattern ("github",
+    # "mcp__slack__*"). Each tool's definition is sent with every request, so
+    # unused ones cost time on every step.
+    disabled_tools: list = field(default_factory=list)
     # Tracing: {"jsonl": "path/to/trace.jsonl", "otel": false}.
     telemetry: Dict[str, Any] = field(default_factory=dict)
     # Prompt-injection guard after untrusted content: "off" | "warn" | "strict".
@@ -335,6 +341,13 @@ class Config:
         return sorted(out, key=lambda m: (0 if m.resolved_base_url_safe() == here else 1,
                                           -(m.context_window or 0), m.name))
 
+    def disabled_tools_for(self, model: Optional[ModelConfig] = None) -> List[str]:
+        """Patterns of tools not offered to `model` (global + the model's own)."""
+        out = [str(x) for x in (self.disabled_tools or [])]
+        if model is not None:
+            out += [str(x) for x in (getattr(model, "disabled_tools", None) or [])]
+        return out
+
     def model_warnings(self) -> list:
         """Config mistakes that would otherwise be skipped silently: unknown
         aliases in `fallback` / `model_roles` / `default_model`."""
@@ -439,7 +452,7 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
     for key in ("auto_approve", "max_turns", "stream", "auto_compact", "auto_fallback",
                 "compact_ratio",
                 "show_reasoning", "parallel_tools", "injection_guard",
-                "detect_external_agents", "shell"):
+                "detect_external_agents", "shell", "disabled_tools"):
         if key in data:
             setattr(cfg, key, data[key])
 

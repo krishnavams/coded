@@ -9,6 +9,7 @@ from coded.tools.base import Tool, ToolContext, ToolResult
 
 class MemoryTool(Tool):
     name = "memory"
+    brief = 'Save a short, durable note about THIS repository for future sessions (a convention, decision, gotcha, or how to build/test). Not for task state. The user approves each note. actions: "remember" (text), "forget" (id), "list".'
     description = """Remember something about THIS repository that the next session would \
 otherwise have to rediscover: a convention the code follows, a decision and its reason, a \
 gotcha that cost you time, a fact about how to build or test it. Notes are shown to you at \

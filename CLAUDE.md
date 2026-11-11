@@ -43,6 +43,7 @@ coded/
 ├── repo_overview.py    # repository overview for large-context models
 ├── repomap.py          # ranked symbol map (ast + regex, PageRank over references)
 ├── memory.py           # project memory store (./.coded/memory.json)
+├── speed.py            # `coded models --speed`: first token, total, tok/s per model
 ├── verify.py           # post-turn gates: project checks + a second model
 ├── routing.py          # difficulty classifier + model pools (round-robin, health)
 ├── builtin_prompts/    # system, coder, tools, security, skills, planner, reviewer, debugger (.md);
@@ -115,6 +116,7 @@ tests/
 ├── test_repomap.py     # symbol extraction, ranking, budgets, the repo_map tool
 ├── test_memory.py      # memory store, the permission gate, prompt injection
 ├── test_documents.py   # reading PDF/Word/Excel/PowerPoint, refusals, no-extra path
+├── test_speed.py       # lazy SDK import, disabled_tools, compact tool schema, --speed
 ├── test_verify.py      # the verification loop: checks, second opinion, rounds
 ├── test_model_chain.py # failover cooldown, sizing for a smaller fallback, stream retry,
 │                       # per-model timeout, unknown-alias warnings
@@ -351,6 +353,16 @@ config.example.json     # sample configuration
   unimplemented param with a 500; `tools` is never dropped automatically.
   `coded models --check` probes a failing endpoint in stages
   (`llm.probe_stages`/`probe_hint`) to say which part of the request it refuses.
+- **Startup and per-request size**: `openai`/`httpx` are lazy in `llm.py`
+  (`_LazyModule`, warmed by `llm.prewarm()` on a thread from `cli.main`), so
+  importing `coded.cli`/`coded.agent` must not import them — a test checks.
+  Don't add top-level imports of heavy libraries; import inside the function.
+  Tool definitions go out with every request: `Agent._tool_schema()` applies
+  `Config.disabled_tools_for(model)` (fnmatch patterns, global + per model)
+  and, for the compact prompt profile, `Tool.brief` plus argument descriptions
+  cut to a sentence (`base._compact_parameters`). The standard profile's schema
+  must stay byte-identical. A disabled tool is also refused in `_run_tool`.
+  `coded models --speed` (`speed.py`) times the real turn shape.
 - **Documents** (`documents.py`, through the `read` tool): PDF/DOCX/XLSX/PPTX
   become sections (pages, slides, sheets) of text lines, then go through the
   same offset/limit/budget code as text. The parsers are the `docs` extra and

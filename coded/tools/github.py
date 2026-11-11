@@ -15,7 +15,6 @@ import subprocess
 from coded.shells import text_kwargs
 from typing import Any, Dict, Optional
 
-import httpx
 
 from coded.permissions import Decision
 from coded.tools.base import Tool, ToolContext, ToolResult
@@ -37,6 +36,7 @@ def _detect_repo(cwd: str) -> Optional[str]:
 
 class GitHubTool(Tool):
     name = "github"
+    brief = 'GitHub pull requests: list_prs, get_pr, create_pr, comment_pr. Needs GITHUB_TOKEN; repo is detected from the git remote.'
     untrusted_output = True
     description = """Interact with GitHub pull requests. Actions: list_prs, get_pr, \
 create_pr (title, head, base, body), comment_pr (number, body). Needs GITHUB_TOKEN. \
@@ -79,12 +79,16 @@ Repo is auto-detected from the git remote unless you pass repo='owner/name'."""
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
+        import httpx  # network library loaded on first use, not at startup
+
         try:
             return self._dispatch(action, repo, args, base_url, headers)
         except httpx.HTTPError as exc:
             return ToolResult.error(f"GitHub request failed: {exc}")
 
     def _dispatch(self, action, repo, args, base_url, headers) -> ToolResult:
+        import httpx
+
         with httpx.Client(timeout=30, headers=headers) as client:
             if action == "list_prs":
                 r = client.get(f"{base_url}/repos/{repo}/pulls", params={"state": "open", "per_page": 20})

@@ -404,6 +404,10 @@ class Agent:
         tool = self.registry.get(tc.name)
         if tool is None:
             return False
+        from coded.tools.base import tool_disabled
+
+        if tool_disabled(tc.name, self.config.disabled_tools_for(self.model)):
+            return False
         try:
             args = json.loads(tc.arguments or "{}")
         except json.JSONDecodeError:
@@ -585,8 +589,18 @@ class Agent:
                 return
             self._maybe_compact(force=True, keep_recent=keep)
 
+    def _tool_schema(self) -> Optional[list]:
+        """The tool definitions sent with each request to the current model."""
+        if not self.model.supports_tools:
+            return None
+        from coded.prompt_files import prompt_profile
+
+        return self.registry.openai_schema(
+            compact=prompt_profile(self.model) == "compact",
+            exclude=self.config.disabled_tools_for(self.model))
+
     def _call_model(self) -> Completion:
-        tools = self.registry.openai_schema() if self.model.supports_tools else None
+        tools = self._tool_schema()
         with self.tracer.span("llm", model=self.model.name, model_id=self.model.model,
                               messages=len(self.session.messages)) as attrs:
             if self.on_event is not None:
@@ -734,6 +748,14 @@ class Agent:
             if display:
                 self._show_tool_result(f"Unknown tool '{tc.name}'.", True, tc.id, tc.name)
             return f"Error: unknown tool '{tc.name}'.", True, args
+        from coded.tools.base import tool_disabled
+
+        if tool_disabled(tc.name, self.config.disabled_tools_for(self.model)):
+            msg = (f"The '{tc.name}' tool is disabled in this configuration "
+                   f"(disabled_tools). Do the work with the tools you were given.")
+            if display:
+                self._show_tool_result(msg, True, tc.id, tc.name)
+            return f"Error: {msg}", True, args
 
         ctx = self._ctx()
 

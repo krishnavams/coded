@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import copy
+import fnmatch
+import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 
 @dataclass
@@ -41,6 +44,10 @@ class Tool:
 
     name: str = ""
     description: str = ""
+    # A shorter description for the compact prompt profile (small/local
+    # models), where every token of every tool definition is paid each step.
+    # Keep the rules that prevent mistakes; drop the explanation.
+    brief: str = ""
     # JSON Schema for the tool's arguments.
     parameters: Dict[str, Any] = {"type": "object", "properties": {}}
     requires_permission: bool = False
@@ -76,15 +83,49 @@ class Tool:
         """Optional colored/plain preview (e.g. a diff) shown before running."""
         return None
 
-    def to_openai(self) -> Dict[str, Any]:
+    def to_openai(self, compact: bool = False) -> Dict[str, Any]:
+        description = (self.brief or self.description) if compact else self.description
         return {
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": self.description.strip(),
-                "parameters": self.parameters,
+                "description": description.strip(),
+                "parameters": _compact_parameters(self.parameters) if compact else self.parameters,
             },
         }
+
+
+_PARAM_DESC_MAX = 120
+
+
+def _compact_parameters(schema: Any) -> Any:
+    """Long argument descriptions cut to their first sentence (compact profile)."""
+    if not isinstance(schema, dict):
+        return schema
+    out = copy.deepcopy(schema)
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            desc = node.get("description")
+            if isinstance(desc, str) and len(desc) > _PARAM_DESC_MAX:
+                m = re.search(r"(?<=[.!?])\s", desc)
+                cut = desc[: m.start()] if m and m.start() <= _PARAM_DESC_MAX else desc
+                if len(cut) > _PARAM_DESC_MAX:
+                    cut = cut[: _PARAM_DESC_MAX - 1].rsplit(" ", 1)[0] + "…"
+                node["description"] = cut
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(out)
+    return out
+
+
+def tool_disabled(name: str, patterns: Iterable[str]) -> bool:
+    """Does `name` match any disabled-tool pattern ("github", "mcp__slack__*")?"""
+    return any(fnmatch.fnmatchcase(name, p) for p in patterns or ())
 
 
 class ToolRegistry:
@@ -100,8 +141,11 @@ class ToolRegistry:
     def all(self) -> List[Tool]:
         return list(self._tools.values())
 
-    def openai_schema(self) -> List[Dict[str, Any]]:
-        return [t.to_openai() for t in self._tools.values()]
+    def openai_schema(self, compact: bool = False,
+                      exclude: Iterable[str] = ()) -> List[Dict[str, Any]]:
+        exclude = list(exclude or ())
+        return [t.to_openai(compact) for t in self._tools.values()
+                if not tool_disabled(t.name, exclude)]
 
     def names(self) -> List[str]:
         return list(self._tools)

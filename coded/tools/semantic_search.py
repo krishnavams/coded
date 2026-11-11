@@ -9,6 +9,7 @@ from coded.tools.base import Tool, ToolContext, ToolResult
 
 class SemanticSearchTool(Tool):
     name = "semantic_search"
+    brief = 'Search code by meaning using the index (built by `coded index`). Use grep for exact text.'
     parallel_safe = True
     description = """Search the codebase by meaning (not just literal text) using the \
 embedded index. Returns the most relevant code chunks as path:line ranges. Requires a \

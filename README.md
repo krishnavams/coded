@@ -1261,6 +1261,48 @@ risky actions:
   denied unless started with `--yolo` (nobody is there to approve them) or
   allowed by permission rules.
 
+## Making it faster
+
+Most of the wait is the model. The parts coded controls:
+
+- **Measure first.** `coded models --speed` times every configured model (or
+  the ones you name) on the request a real turn sends — coded's system prompt,
+  the tool definitions and a question — and shows time to the first token, total
+  time, output tokens per second and prompt size. `--runs 3` takes the median;
+  `--minimal` sends only the question, to see the bare model.
+
+  ```
+  ┃ model      ┃ first token ┃ total ┃     speed ┃ prompt ┃ output ┃
+  │ big-model  │       1.22s │ 4.10s │  22 tok/s │  7,900 │     64 │
+  │ small-fast │       0.16s │ 0.90s │ 86 tok/s  │  7,900 │     64 │
+  ```
+
+- **Don't send tools you never use.** Every tool's definition goes with every
+  request (about 4k tokens for all of them). Names or patterns, globally or per
+  model:
+
+  ```json
+  {
+    "disabled_tools": ["github", "web_*", "semantic_search", "mcp__slack__*"],
+    "models": { "local-7b": { "disabled_tools": ["task", "repo_map", "memory"] } }
+  }
+  ```
+
+  A disabled tool is not offered, and a call to one is refused with a reason.
+- **Compact prompt profile** (`"prompt_profile": "compact"`, automatic at
+  32k context or less) now also sends shorter tool descriptions — about 20%
+  fewer tool tokens, with the rules that prevent mistakes kept.
+- **Faster failover:** `"max_retries": 1` on a flaky model, plus a `fallback`.
+- **Route by difficulty** to a quick model for simple requests (see routing),
+  using the `--speed` numbers to choose.
+- **Lower reasoning effort** (`--reasoning-effort low`) on reasoning models.
+- **Server-side prefix caching** (vLLM `--enable-prefix-caching`; llama.cpp
+  caches by default): coded's system prompt and tools are identical between
+  requests, so a caching server only reads them once.
+- **Startup:** the model SDK now loads in the background, so `coded --version`,
+  `coded agents`, `coded skill …` and the first prompt appear in ~0.2 s instead
+  of ~0.7 s.
+
 ## When a model errors
 
 If a turn ends with something like `InternalServerError: Error code: 500`, that

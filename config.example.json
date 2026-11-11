@@ -357,6 +357,8 @@
   "auto_compact": true,
   "// auto_fallback": "When a model fails and its own fallbacks are exhausted (or it has none), try the other configured models before giving up. This can send a request to a different provider than the one you selected.",
   "auto_fallback": true,
+  "// disabled_tools": "Tools never offered to the model, by name or pattern. Each tool's definition is sent with every request, so dropping unused ones makes every step faster. Models can disable more with their own \"disabled_tools\".",
+  "disabled_tools": [],
   "compact_ratio": 0.8,
   "max_turns": 100,
   "stream": true

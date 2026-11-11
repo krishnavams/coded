@@ -38,6 +38,7 @@ def _checkpoint(ctx: ToolContext, *paths: Path) -> None:
 
 class ReadTool(Tool):
     name = "read"
+    brief = 'Read a file with line numbers; use offset/limit for large files. Also reads PDF, .docx, .xlsx and .pptx; `pages` picks pages, slides or sheets ("3", "2-5", a sheet name).'
     parallel_safe = True
     description = """Read a file from the filesystem. Returns the file contents with \
 1-indexed line numbers in `cat -n` format. Use `offset` and `limit` for large files. \
