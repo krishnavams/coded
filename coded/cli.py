@@ -234,6 +234,8 @@ def _handle_models_command(argv: List[str]) -> int:
                 url = "(no base_url)"
             print(f"{marker} {name:<16} {mc.provider:<12} {mc.model:<32} {url}"
                   + (f"   [{'; '.join(extra)}]" if extra else ""))
+        for w in cfg.model_warnings():
+            ui.warn(w)
         return 0
     return _check_models(cfg, args.check or list(cfg.models))
 
@@ -518,6 +520,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         if bad:
             ui.warn(f"Model '{mc.name}': unknown limits key(s) {', '.join(bad)} (ignored). "
                     f"Valid keys: {', '.join(LIMIT_KEYS)}")
+    for w in cfg.model_warnings():
+        ui.warn(w)
     for w in cfg.plugin_warnings:
         ui.warn(w)
     if cfg.plugins:

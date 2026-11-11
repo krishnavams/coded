@@ -98,6 +98,8 @@ tests/
 ├── test_semantic_and_web.py  # index/search, web_fetch/search, image encoding
 ├── test_skills.py      # skill discovery, frontmatter, skill tool
 ├── test_tools.py       # tool + config unit tests
+├── test_model_chain.py # failover cooldown, sizing for a smaller fallback, stream retry,
+│                       # per-model timeout, unknown-alias warnings
 ├── test_big_models.py  # scaled limits, caps, overflow retry, max_turns, profiles, repo overview
 ├── test_prompts.py     # prompt files: placement, override order, empty=remove, CLI
 ├── test_plugins.py     # sources, zip safety, skill/plugin install/update/remove,
@@ -280,7 +282,15 @@ config.example.json     # sample configuration
   are dropped and remembered per endpoint (`_OPTIONAL_PARAMS`). Keep this
   graceful-degradation habit for endpoints that implement only part of the
   OpenAI API. SDK retries are off (`max_retries=0`); `LLMClient._create` owns
-  retry/backoff, and `complete()` owns fallback.
+  retry/backoff, and `complete()` owns fallback. A stream that fails is retried
+  only if no text/reasoning was emitted yet (otherwise it would display twice).
+- **Model chain**: an endpoint that fails over is skipped for
+  `fallback_cooldown` seconds (`_Endpoint.down_until`; cooling endpoints are
+  tried last). `LLMClient.next_model()` is the model the next request goes to;
+  `Agent._sync_sizing()` (each step, and on overflow) makes `self.limits` and
+  compaction follow it via `_sized_model`, shrinking history when it is
+  smaller. Use `_sized_model`, not `self.model`, for anything window-dependent
+  in the loop. `Config.model_warnings()` reports unknown aliases.
 - **Config is layered**: presets → user file → project file → CLI flags. Don't
   hard-code paths or keys; go through `config.py`. Dict-valued settings
   (`hooks`, `sandbox`, `telemetry`, `external_agents`, `model_roles`) merge

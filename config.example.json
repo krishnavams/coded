@@ -250,6 +250,8 @@
       "api_key_env": "INTERNAL_API_KEY",
       "model": "your-700b-model",
       "context_window": 300000,
+      "timeout": 900,
+      "fallback_cooldown": 120,
       "max_tokens": 32000,
       "max_turns": 400,
       "prompt_profile": "full",

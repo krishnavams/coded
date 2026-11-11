@@ -57,17 +57,35 @@ def _transcript(messages: List[Dict[str, Any]]) -> str:
     return "\n\n".join(lines)
 
 
+_SUMMARY_SYSTEM = (
+    "You compress a coding-assistant conversation into a compact briefing. "
+    "Preserve: decisions made, files created/edited and how, important facts "
+    "learned about the codebase, and any unfinished tasks. Use terse bullet "
+    "points. Omit chit-chat.")
+
+
+def _summarizer_budget_chars(llm) -> int:
+    """How much transcript one summarization request may carry (half the
+    summarizer's window, ~4 chars/token)."""
+    model = llm.next_model() if hasattr(llm, "next_model") else getattr(llm, "model", None)
+    window = getattr(model, "context_window", 0) or 128_000
+    return max(8000, window * 2)
+
+
 def _summarize(head: List[Dict[str, Any]], llm) -> str:
-    messages = [
-        {"role": "system", "content":
-            "You compress a coding-assistant conversation into a compact briefing. "
-            "Preserve: decisions made, files created/edited and how, important facts "
-            "learned about the codebase, and any unfinished tasks. Use terse bullet "
-            "points. Omit chit-chat."},
-        {"role": "user", "content": "Summarize this conversation so far:\n\n" + _transcript(head)},
-    ]
-    completion = llm.complete(messages, tools=None, stream=False)
-    return (completion.content or "").strip() or "(summary unavailable)"
+    text = _transcript(head)
+    budget = _summarizer_budget_chars(llm)
+    # A history built for a bigger model may not fit the summarizer: do it in parts.
+    parts = [text[i:i + budget] for i in range(0, len(text), budget)] or [""]
+    summaries = []
+    for n, part in enumerate(parts, 1):
+        label = ("Summarize this conversation so far:" if len(parts) == 1 else
+                 f"Summarize part {n} of {len(parts)} of this conversation:")
+        completion = llm.complete(
+            [{"role": "system", "content": _SUMMARY_SYSTEM},
+             {"role": "user", "content": f"{label}\n\n{part}"}], tools=None, stream=False)
+        summaries.append((completion.content or "").strip())
+    return "\n\n".join(x for x in summaries if x) or "(summary unavailable)"
 
 
 def compaction_threshold(model: ModelConfig, ratio: float) -> int:

@@ -90,6 +90,12 @@ class ModelConfig:
     # Retries for 429/5xx/connection errors, with jittered exponential backoff.
     max_retries: int = 4
     retry_base_delay: float = 1.0
+    # Seconds to wait for the endpoint (per request; for streams, between chunks).
+    # None = the SDK default (10 minutes).
+    timeout: Optional[float] = None
+    # After this endpoint fails over to a fallback, skip it for this many seconds
+    # instead of retrying it on every step (0 = always try it first).
+    fallback_cooldown: float = 120.0
     # Model aliases to fall back to (in order) when this endpoint keeps failing,
     # e.g. the same model on another provider/key, or a different model.
     fallback: list = field(default_factory=list)
@@ -225,6 +231,27 @@ class Config:
 
     def fallbacks_for(self, model: ModelConfig) -> list:
         return [self.models[a] for a in model.fallback if a in self.models and a != model.name]
+
+    def model_warnings(self) -> list:
+        """Config mistakes that would otherwise be skipped silently: unknown
+        aliases in `fallback` / `model_roles` / `default_model`."""
+        known = ", ".join(self.models) or "(none)"
+        out = []
+        if self.default_model and self.default_model not in self.models:
+            out.append(f"default_model '{self.default_model}' is not a configured model "
+                       f"(known: {known}).")
+        for mc in self.models.values():
+            for alias in mc.fallback:
+                if alias == mc.name:
+                    out.append(f"Model '{mc.name}': fallback lists itself (ignored).")
+                elif alias not in self.models:
+                    out.append(f"Model '{mc.name}': fallback '{alias}' is not a configured "
+                               f"model (ignored; known: {known}).")
+        for role, alias in self.model_roles.items():
+            if alias not in self.models:
+                out.append(f"model_roles: '{role}' points to '{alias}', which is not a "
+                           f"configured model (the main model is used; known: {known}).")
+        return out
 
     def add_model(self, mc: ModelConfig, make_default: bool = False) -> None:
         self.models[mc.name] = mc

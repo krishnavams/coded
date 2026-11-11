@@ -609,9 +609,24 @@ top of that:
 
 - **Retries**: 429/5xx/connection errors are retried with jittered exponential
   backoff (honoring `Retry-After`), `max_retries` / `retry_base_delay` per model.
+  A stream that breaks before any text was shown is retried the same way.
+- **Timeout**: `"timeout": 900` (seconds) per model: how long to wait for the
+  endpoint to connect/respond and, while streaming, between chunks. Unset = 10
+  minutes. Raise it for slow, very large models.
 - **Fallback**: when a model still fails (or its key is rejected), coded moves
   on to the next alias in `fallback`, e.g. the same model through another
   provider or key, then a local model.
+  - **Cooldown**: a model that failed over is skipped for `fallback_cooldown`
+    seconds (default 120; `0` = try it first every time), so an outage doesn't
+    cost a full retry cycle on every step. It is still tried last if every
+    other model in the chain fails.
+  - **Smaller fallbacks**: while a fallback with a smaller `context_window` is
+    in use, coded sizes tool output and compaction for *that* model and
+    shrinks/summarizes the existing conversation to fit. It returns to the main
+    model's sizes when the main model is back. Detail is lost in the
+    summary, so prefer fallbacks with a similar window.
+  - **Typos**: an alias in `fallback`, `model_roles` or `default_model` that
+    isn't a configured model is reported at startup and by `coded models`.
 - **Roles**: `model_roles` picks the model for sub-agents (`subagent`), context
   compaction (`compact`), the review phases (`review`) and the CI pass/fail
   call (`verdict`). The `task` tool also accepts a `model` alias per sub-agent.

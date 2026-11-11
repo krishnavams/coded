@@ -55,7 +55,12 @@ def build_openai_client(model: ModelConfig) -> OpenAI:
     """
     verify = model.ssl_verify()
     http_client = httpx.Client(verify=verify)
+    extra: Dict[str, Any] = {}
+    if model.timeout:
+        # Read timeout applies between stream chunks, so a slow but live model is fine.
+        extra["timeout"] = httpx.Timeout(float(model.timeout), connect=min(float(model.timeout), 30.0))
     return OpenAI(
+        **extra,
         base_url=model.resolved_base_url(),
         api_key=model.resolved_api_key(),
         default_headers=model.extra_headers or None,
@@ -118,6 +123,7 @@ class _Endpoint:
         self.model = model
         self.client = build_openai_client(model)
         self.unsupported: set = set()
+        self.down_until = 0.0  # monotonic time until which this endpoint is skipped
 
 
 class LLMClient:
@@ -132,6 +138,25 @@ class LLMClient:
         self._fallbacks: Dict[str, _Endpoint] = {}
         self.on_status = on_status
         self._sleep = time.sleep
+        self._clock = time.monotonic
+
+    def _chain(self) -> List[ModelConfig]:
+        """Primary + fallbacks, with endpoints that recently failed moved to the end."""
+        chain = [self.model, *self._fallback_models]
+        now = self._clock()
+        up = [m for m in chain if self._down_until(m) <= now]
+        return up + [m for m in chain if self._down_until(m) > now]
+
+    def _down_until(self, model: ModelConfig) -> float:
+        if model is self.model:
+            return self._primary.down_until
+        ep = self._fallbacks.get(model.name)
+        return ep.down_until if ep else 0.0
+
+    def next_model(self) -> ModelConfig:
+        """The model the next request goes to first (a fallback while the primary
+        is cooling down). Callers size the request for this model's window."""
+        return self._chain()[0]
 
     def complete(
         self,
@@ -143,25 +168,36 @@ class LLMClient:
         on_reasoning: Optional[Callable[[str], None]] = None,
     ) -> Completion:
         last_exc: Optional[Exception] = None
-        for i, model in enumerate([self.model, *self._fallback_models]):
+        chain = self._chain()
+        for i, model in enumerate(chain):
             try:
-                endpoint = self._primary if i == 0 else self._endpoint(model)
+                endpoint = self._primary if model is self.model else self._endpoint(model)
             except Exception as exc:  # noqa: BLE001 - e.g. missing key for a fallback
                 last_exc = exc
                 continue
-            if i > 0:
+            if last_exc is not None:
                 self._status(f"Falling back to model '{model.name}' after: {_short(last_exc)}")
             try:
                 completion = self._complete_on(endpoint, messages, tools, stream, on_text,
                                                on_reasoning)
                 completion.model = model.name
+                endpoint.down_until = 0.0
                 return completion
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 if not (_is_retryable(exc) or isinstance(exc, (openai.AuthenticationError,
                                                                  openai.PermissionDeniedError,
                                                                  openai.NotFoundError))):
+                    try:
+                        exc.coded_model = model  # which window an overflow refers to
+                    except Exception:  # noqa: BLE001
+                        pass
                     raise
+                cooldown = float(model.fallback_cooldown or 0)
+                if cooldown > 0 and i + 1 < len(chain):
+                    endpoint.down_until = self._clock() + cooldown
+                    self._status(f"Model '{model.name}' is unavailable; skipping it for "
+                                 f"{cooldown:.0f}s.")
         assert last_exc is not None
         raise last_exc
 
@@ -197,11 +233,37 @@ class LLMClient:
         return params
 
     def _complete_on(self, endpoint, messages, tools, stream, on_text, on_reasoning) -> Completion:
-        params = self._params(endpoint, messages, tools, stream)
-        resp = self._create(endpoint, params)
-        if stream:
-            return self._consume_stream(resp, on_text, on_reasoning)
-        return self._parse_once(resp)
+        if not stream:
+            return self._parse_once(
+                self._create(endpoint, self._params(endpoint, messages, tools, stream)))
+        model = endpoint.model
+        attempt = 0
+        while True:
+            emitted = [False]
+
+            def wrap(fn):
+                if fn is None:
+                    return None
+
+                def inner(chunk, _fn=fn):
+                    emitted[0] = True
+                    _fn(chunk)
+                return inner
+
+            resp = self._create(endpoint, self._params(endpoint, messages, tools, stream))
+            try:
+                return self._consume_stream(resp, wrap(on_text), wrap(on_reasoning))
+            except Exception as exc:  # noqa: BLE001
+                # A stream that broke before showing anything can be retried safely;
+                # once text has been displayed a retry would print it twice.
+                if emitted[0] or not _is_retryable(exc) or attempt >= model.max_retries:
+                    raise
+                delay = min(_MAX_RETRY_DELAY,
+                            model.retry_base_delay * (2 ** attempt) * (0.5 + random.random()))
+                attempt += 1
+                self._status(f"Stream interrupted ({_short(exc)}) — retrying in {delay:.1f}s "
+                             f"(attempt {attempt}/{model.max_retries})")
+                self._sleep(delay)
 
     def _create(self, endpoint: _Endpoint, params: Dict[str, Any]):
         """Create a completion, retrying transient errors with jittered backoff and

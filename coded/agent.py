@@ -65,6 +65,7 @@ class Agent:
         self.todos = TodoStore(on_change=self._show_todos)
         self.mode = "default"
         self.limits: Limits = limits_for(model)
+        self._sized_model: ModelConfig = model  # whose window limits/compaction target
         self.llm = self._make_llm(model)
         self._compact_llm: Optional[LLMClient] = None
         for t in extra_tools or []:
@@ -151,6 +152,7 @@ class Agent:
     def switch_model(self, model: ModelConfig) -> None:
         self.model = model
         self.limits = limits_for(model)
+        self._sized_model = model
         self.llm = self._make_llm(model)
         self._compact_llm = None
         self.refresh_system_prompt()
@@ -191,6 +193,7 @@ class Agent:
                 self._status_note("Interrupted.")
                 break
             self.session.turns += 1
+            self._sync_sizing()
             self._maybe_compact()
             try:
                 completion = self._call_model()
@@ -202,8 +205,10 @@ class Agent:
                 context_retry = True
                 self._status_note("Request exceeded the model's context window; "
                                   "shrinking tool results and compacting, then retrying.")
+                self._sync_sizing()  # a fallback with a smaller window may have refused it
                 self._shrink_recent_tool_results()
                 self._maybe_compact(force=True)
+                self._compact_until_fits()
                 completion = self._call_model()
             self.session.record_usage(completion.usage)
             if completion.usage.prompt_tokens:
@@ -284,7 +289,7 @@ class Agent:
         except Exception:  # noqa: BLE001
             return False
 
-    def _maybe_compact(self, force: bool = False) -> bool:
+    def _maybe_compact(self, force: bool = False, keep_recent: Optional[int] = None) -> bool:
         if not force and not self.config.auto_compact:
             return False
         from coded.compaction import maybe_compact
@@ -292,9 +297,10 @@ class Agent:
         if self._compact_llm is None:
             role_model = self.config.model_for_role("compact", self.model)
             self._compact_llm = self.llm if role_model is self.model else self._make_llm(role_model)
-        did = maybe_compact(self.session, self.model, self._compact_llm,
+        did = maybe_compact(self.session, self._sized_model, self._compact_llm,
                             ratio=self.config.compact_ratio, force=force,
-                            keep_recent=self.limits.compact_keep_recent)
+                            keep_recent=(self.limits.compact_keep_recent if keep_recent is None
+                                         else keep_recent))
         if did and self.todos.items and len(self.session.messages) > 1:
             # Keep the task list across summarization so long runs don't lose track.
             summary = self.session.messages[1]
@@ -305,6 +311,39 @@ class Agent:
                 if self.verbose:
                     ui.info("(summarized earlier conversation to stay within the context window)")
         return did
+
+    def _sync_sizing(self) -> None:
+        """Size limits and compaction for the model the next request goes to: a
+        fallback while the main model is cooling down, the main model otherwise."""
+        target = self.llm.next_model()
+        if target is self._sized_model:
+            return
+        smaller = target.context_window < self._sized_model.context_window
+        self._sized_model = target
+        self.limits = limits_for(target)
+        if smaller:
+            self._status_note(f"Now using '{target.name}' ({target.context_window // 1000}k "
+                              f"context): shrinking the conversation to fit.")
+            for m in self.session.messages:
+                if m.get("role") == "tool" and isinstance(m.get("content"), str):
+                    m["content"] = cap_text(m["content"], self.limits.tool_result_chars // 4,
+                                            "shrunk to fit a smaller model")
+            self.session.last_prompt_tokens = 0  # re-estimate after shrinking
+            from coded.compaction import compaction_threshold, estimate_tokens
+
+            if estimate_tokens(self.session.messages) > compaction_threshold(
+                    target, self.config.compact_ratio):
+                self._maybe_compact(force=True)  # needed to fit, even with auto_compact off
+                self._compact_until_fits()
+
+    def _compact_until_fits(self) -> None:
+        """If the conversation is still over the target model's threshold after a
+        normal compaction (the recent tail alone is too big), summarize all of it."""
+        from coded.compaction import compaction_threshold, estimate_tokens
+
+        limit = compaction_threshold(self._sized_model, self.config.compact_ratio)
+        if estimate_tokens(self.session.messages) > limit:
+            self._maybe_compact(force=True, keep_recent=0)
 
     def _call_model(self) -> Completion:
         tools = self.registry.openai_schema() if self.model.supports_tools else None
