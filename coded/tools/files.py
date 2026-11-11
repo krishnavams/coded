@@ -72,13 +72,21 @@ Prefer this over `cat`/`head` via the shell."""
         if not chunk:
             return ToolResult.ok(f"(file has {len(lines)} lines; offset {offset} is past the end)")
         out = []
+        budget = get_limits(ctx).tool_result_chars - 200
+        used = 0
+        last = offset - 1
         for i, line in enumerate(chunk, start=offset):
             if len(line) > _MAX_LINE_LEN:
                 line = line[:_MAX_LINE_LEN] + "… (truncated)"
-            out.append(f"{i:6d}\t{line}")
+            row = f"{i:6d}\t{line}"
+            if out and used + len(row) + 1 > budget:
+                break  # stop at a whole line within this model's result budget
+            out.append(row)
+            used += len(row) + 1
+            last = i
         footer = ""
-        if offset - 1 + limit < len(lines):
-            footer = f"\n… ({len(lines) - (offset - 1 + limit)} more lines)"
+        if last < len(lines):
+            footer = f"\n… ({len(lines) - last} more lines; continue with offset={last + 1})"
         return ToolResult.ok("\n".join(out) + footer)
 
 

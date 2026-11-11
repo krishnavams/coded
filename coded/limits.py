@@ -8,8 +8,10 @@ constants). Other windows scale them by ``context_window / 128_000`` (clamped to
                        "limits": {"read_lines": 10000, "shell_output_chars": 200000}}}
 
 Two caps keep bigger limits from overflowing the window: every tool result is cut
-to ``tool_result_chars`` (~9% of the window) and all results of one model step
-together to ``step_result_chars`` (~25% of the window). Characters ≈ tokens × 4.
+to ``tool_result_chars`` (~30% of the window) and all results of one model step
+together to ``step_result_chars`` (~60% of the window). At 128k they're loose
+enough that a full 2,000-line read and normal parallel batches pass intact.
+Characters ≈ tokens × 4.
 """
 
 from __future__ import annotations
@@ -34,8 +36,8 @@ class Limits:
     instructions_total_chars: int = 32_000  # all instruction files together
     nested_instructions_chars: int = 12_000  # subdirectory instructions, per load
     compact_keep_recent: int = 6        # messages kept verbatim when compacting
-    tool_result_chars: int = 46_080     # hard cap on any single tool result
-    step_result_chars: int = 128_000    # hard cap on all results of one step
+    tool_result_chars: int = 153_600    # hard cap on any single tool result (30% of window)
+    step_result_chars: int = 307_200    # hard cap on all results of one step (60% of window)
     repo_overview_chars: int = 0        # repository overview in the prompt (0 = off)
 
 
@@ -76,8 +78,8 @@ def limits_for(model: Any) -> Limits:
         for key in _SCALED:
             values[key] = max(_FLOORS[key], int(round(getattr(base, key) * f)))
     window_chars = window * _CHARS_PER_TOKEN
-    values["tool_result_chars"] = max(_FLOORS["tool_result_chars"], int(window_chars * 0.09))
-    values["step_result_chars"] = max(_FLOORS["step_result_chars"], int(window_chars * 0.25))
+    values["tool_result_chars"] = max(_FLOORS["tool_result_chars"], int(window_chars * 0.30))
+    values["step_result_chars"] = max(_FLOORS["step_result_chars"], int(window_chars * 0.60))
     if repo_overview_enabled(model):
         values["repo_overview_chars"] = min(60_000, int(window_chars * 0.03))
     for key, val in (getattr(model, "limits", None) or {}).items():

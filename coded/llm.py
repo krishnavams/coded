@@ -87,6 +87,19 @@ def _retry_after(exc: Exception) -> Optional[float]:
     return None
 
 
+_OVERFLOW_PHRASES = ("context length", "context_length", "maximum context", "context window",
+                     "too many tokens", "prompt is too long", "request too large",
+                     "reduce the length", "exceeds the context")
+
+
+def is_context_overflow(exc: Exception) -> bool:
+    """A 400/413 saying the request is too long for the model's context window."""
+    if getattr(exc, "status_code", None) not in (400, 413):
+        return False
+    msg = str(exc).lower()
+    return any(k in msg for k in _OVERFLOW_PHRASES)
+
+
 def _rejected_param(exc: Exception, params: Dict[str, Any]) -> Optional[str]:
     """If a 400/422 complains about an optional param we sent, return its name."""
     if not isinstance(exc, (openai.BadRequestError, openai.UnprocessableEntityError)):
@@ -199,6 +212,8 @@ class LLMClient:
             try:
                 return endpoint.client.chat.completions.create(**params)
             except Exception as exc:  # noqa: BLE001
+                if is_context_overflow(exc):
+                    raise  # the agent handles this; it's not an unsupported parameter
                 bad = _rejected_param(exc, params)
                 if bad is None and "stream_options" in params and isinstance(exc, openai.APIStatusError) \
                         and 400 <= exc.status_code < 500 and exc.status_code not in (401, 403, 408, 409, 429):

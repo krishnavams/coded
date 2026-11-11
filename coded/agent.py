@@ -17,7 +17,7 @@ from coded.background import BackgroundShells
 from coded.config import Config, ModelConfig
 from coded.hooks import HookRunner
 from coded.limits import Limits, cap_text, limits_for
-from coded.llm import Completion, LLMClient
+from coded.llm import Completion, LLMClient, is_context_overflow
 from coded.permissions import Decision, PermissionManager
 from coded.prompt_files import load_prompt
 from coded.prompts import _dir_instruction_files, build_subagent_prompt, build_system_prompt, read_instructions
@@ -195,7 +195,7 @@ class Agent:
             try:
                 completion = self._call_model()
             except Exception as exc:  # noqa: BLE001
-                if context_retry or not _is_context_overflow(exc):
+                if context_retry or not is_context_overflow(exc):
                     raise
                 # The request no longer fits the window: shrink this turn's tool
                 # results, summarize older history, and retry once.
@@ -522,12 +522,13 @@ class Agent:
         return done(content, result.is_error, args)
 
     def _shrink_recent_tool_results(self) -> None:
-        """Cut tool results since the last user message to a quarter of the cap."""
+        """Halve every tool result since the last user message (and keep each under
+        a quarter of the per-result cap) so the retry is guaranteed to be smaller."""
         msgs = self.session.messages
         last_user = max((i for i, m in enumerate(msgs) if m.get("role") == "user"), default=0)
-        cap = max(2000, self.limits.tool_result_chars // 4)
         for m in msgs[last_user:]:
             if m.get("role") == "tool" and isinstance(m.get("content"), str):
+                cap = max(2000, min(len(m["content"]) // 2, self.limits.tool_result_chars // 4))
                 m["content"] = cap_text(m["content"], cap, "shrunk to fit the context window")
 
     def _nested_instructions(self, path: str) -> str:
@@ -608,17 +609,6 @@ class Agent:
             return result
 
         return runner
-
-
-def _is_context_overflow(exc: Exception) -> bool:
-    """A 400 complaining that the request is too long for the model."""
-    status = getattr(exc, "status_code", None)
-    if status not in (400, 413):
-        return False
-    msg = str(exc).lower()
-    return any(k in msg for k in ("context length", "context_length", "maximum context",
-                                  "context window", "too many tokens", "prompt is too long",
-                                  "request too large", "reduce the length"))
 
 
 def create_agent(

@@ -640,12 +640,17 @@ knob, and the default is 128k.
   - instruction-file budgets
   - messages kept verbatim when compacting
 
-  At 128k everything is exactly as before.
-- **Safety caps.** No single tool result may exceed ~9% of the window, and all
-  results of one step together ~25%. Larger limits can't overflow the model, and
-  the model is told to narrow its request when a cap hits. If an endpoint still
-  rejects a request as too long, coded shrinks that step's tool results,
-  compacts, and retries once.
+  At 128k the limits are the same as before.
+- **Safety caps.** No single tool result may exceed ~30% of the window, and all
+  results of one step together ~60%. At 128k that's loose enough for a full
+  2,000-line read or a normal batch of parallel reads. `read` stops at whole
+  lines and tells the model which `offset` to continue from; other output is
+  cut with a note asking for a narrower request. If an endpoint still rejects
+  a request as too long, coded halves that step's tool results, compacts and
+  retries once. It recognizes "too long" by an HTTP 400 or 413 whose message
+  contains phrases such as "context length", "maximum context", "context
+  window", "too many tokens", "prompt is too long" or "request too large". If
+  your server words it differently, that retry won't fire.
 - **Tune per model** with `limits`. Unknown keys are reported at startup:
 
   ```json

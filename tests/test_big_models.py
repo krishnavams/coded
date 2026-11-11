@@ -52,7 +52,7 @@ def test_128k_limits_equal_the_historical_constants():
 def test_limits_scale_up_down_and_overrides():
     big = limits_for(_m(context_window=300_000))
     assert big.read_lines == round(2000 * 300 / 128) and big.shell_output_chars > 60_000
-    assert big.tool_result_chars == int(300_000 * 4 * 0.09)
+    assert big.tool_result_chars == int(300_000 * 4 * 0.30)
     assert big.repo_overview_chars > 0
     small = limits_for(_m(context_window=16_000))
     assert small.read_lines == 250 and small.shell_output_chars == 4000  # floors
@@ -109,13 +109,34 @@ def _run_with(tmp_path, fake_server, model_kw, calls, extra_tools=()):
 
 
 def test_per_result_and_per_step_caps(tmp_path, fake_server):
-    # 32k window: per-result cap 11,520 chars, per-step cap 32,000 chars.
+    # 32k window: per-result cap 38,400 chars (30%), per-step cap 76,800 chars (60%).
     agent, msgs = _run_with(tmp_path, fake_server, {"context_window": 32_000}, _calls(4), [_Big()])
-    assert agent.limits.tool_result_chars == 11_520
-    assert all(len(m["content"]) < 12_000 for m in msgs)
+    assert agent.limits.tool_result_chars == 38_400
+    assert agent.limits.step_result_chars == 76_800
+    assert all(len(m["content"]) < 38_400 + 400 for m in msgs)
     assert "per-result budget" in msgs[0]["content"]
-    assert sum(len(m["content"]) for m in msgs) <= 32_000 + 4 * 400
+    assert sum(len(m["content"]) for m in msgs) <= 76_800 + 4 * 400
     assert "context budget" in msgs[-1]["content"]
+
+
+def test_128k_full_read_and_parallel_batch_arrive_intact(tmp_path, fake_server):
+    (tmp_path / "wide.txt").write_text("\n".join("x" * 60 for _ in range(2000)))
+    calls = [{"id": f"r{i}", "type": "function",
+              "function": {"name": "read", "arguments": json.dumps({"path": "wide.txt"})}}
+             for i in range(2)]
+    _, msgs = _run_with(tmp_path, fake_server, {}, calls)
+    for m in msgs:
+        assert "  2000\t" in m["content"]
+        assert "truncated" not in m["content"] and "more lines" not in m["content"]
+
+
+def test_read_stops_at_whole_lines_within_budget(tmp_path, fake_server):
+    (tmp_path / "wide.txt").write_text("\n".join("y" * 200 for _ in range(1000)))
+    call = [{"id": "r", "type": "function",
+             "function": {"name": "read", "arguments": json.dumps({"path": "wide.txt"})}}]
+    _, msgs = _run_with(tmp_path, fake_server, {"context_window": 16_000}, call)
+    content = msgs[0]["content"]
+    assert "continue with offset=" in content and "truncated:" not in content
 
 
 def test_big_model_keeps_large_results(tmp_path, fake_server):
@@ -133,13 +154,15 @@ def test_read_tool_uses_agent_limits(tmp_path, fake_server):
     assert "line 3999" in big[0]["content"]  # 300k window reads up to 4,688 lines
 
 
-def test_context_overflow_shrinks_and_retries(tmp_path, fake_server):
+@pytest.mark.parametrize("stream", [False, True])
+def test_context_overflow_shrinks_and_retries(tmp_path, fake_server, stream):
     from conftest import _Handler
 
-    state = {"n": 0}
+    state = {"n": 0, "bodies": []}
 
     def script(body):
         state["n"] += 1
+        state["bodies"].append(body)
         if state["n"] == 1:
             return {"role": "assistant", "content": "", "tool_calls": _calls(1)}, USAGE
         if state["n"] == 2:
@@ -172,30 +195,27 @@ def test_context_overflow_shrinks_and_retries(tmp_path, fake_server):
             cfg.add_model(model)
             cfg.auto_compact = False
             agent = create_agent(model=model, config=cfg, cwd=str(tmp_path),
-                                 permissions=PermissionManager(auto_approve=True), stream=False,
+                                 permissions=PermissionManager(auto_approve=True), stream=stream,
                                  verbose=False)
             agent.registry.register(_Big())
             result = agent.run("go")
     finally:
         _Handler.do_POST = orig
     assert result.startswith("len=") and int(result[4:]) < 50_000
+    if stream:  # the overflow must not be mistaken for "stream_options unsupported"
+        assert all("stream_options" in b for b in state["bodies"])
+        assert not agent.llm._primary.unsupported
 
 
 def test_small_role_model_subagent_gets_small_limits(tmp_path, fake_server):
-    seen = {}
-
-    class _Probe(Tool):
-        name = "probe"
-        parameters = {"type": "object", "properties": {}}
-
-        def run(self, args, ctx):
-            seen["read_lines"] = ctx.extra["limits"].read_lines
-            return ToolResult.ok("ok")
+    sub_tool_results = []
 
     def script(body):
         msgs = body["messages"]
         sub = msgs[0]["content"].startswith("You are a focused sub-agent")
         tools = [m for m in msgs if m.get("role") == "tool"]
+        if sub and tools:
+            sub_tool_results.append(tools[0]["content"])
         if sub and not tools:
             return {"role": "assistant", "content": "", "tool_calls": [
                 {"id": "p", "type": "function", "function": {"name": "read", "arguments": '{"path": "x"}'}}]}, USAGE
@@ -218,11 +238,9 @@ def test_small_role_model_subagent_gets_small_limits(tmp_path, fake_server):
                              permissions=PermissionManager(auto_approve=True), stream=False,
                              verbose=False)
         agent.run("delegate")
-    report = [m for m in agent.session.messages if m.get("role") == "tool"][0]["content"]
-    assert report == "done"
-    assert agent.limits.read_lines > 4000
-    sub_limits = limits_for(small)
-    assert sub_limits.read_lines == 250
+    # The sub-agent (16k model) read 250 lines; the parent (300k) would read 4,688.
+    assert sub_tool_results and sub_tool_results[0].rstrip().endswith(
+        "(4750 more lines; continue with offset=251)")
 
 
 # ---------------------------------------------------------------------------
