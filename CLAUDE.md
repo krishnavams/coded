@@ -313,7 +313,10 @@ config.example.json     # sample configuration
   `load_config` → `shells.ensure_shell` (or `--shell`, which pins it), before
   plugin hook paths or the system prompt are built. Decoding a file is strict:
   edits refuse non-UTF-8 files (`textio.NOT_UTF8`) rather than rewriting them
-  from a lossy read.
+  from a lossy read. Windows shells differ in more than quoting: PowerShell
+  commands go through `-EncodedCommand` (and its CLIXML error stream is decoded
+  back to text by `shells.clean_clixml`), cmd goes through subprocess's own
+  `shell=True`, and `prompts._environment` tells the model which syntax to write.
 - **Config is layered**: presets → user file → project file → CLI flags. Don't
   hard-code paths or keys; go through `config.py`. Dict-valued settings
   (`hooks`, `sandbox`, `telemetry`, `external_agents`, `model_roles`) merge
