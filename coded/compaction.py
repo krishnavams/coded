@@ -57,17 +57,37 @@ def _transcript(messages: List[Dict[str, Any]]) -> str:
     return "\n\n".join(lines)
 
 
+_SUMMARY_SYSTEM = (
+    "You compress a coding-assistant conversation into a compact briefing. "
+    "Preserve: decisions made, files created/edited and how, important facts "
+    "learned about the codebase, and any unfinished tasks. Use terse bullet "
+    "points. Omit chit-chat.")
+
+
+def _summarizer_budget_chars(llm) -> int:
+    """How much transcript one summarization request may carry: half the smallest
+    window in the summarizer's fallback chain (~4 chars/token)."""
+    if hasattr(llm, "min_context_window"):
+        window = llm.min_context_window()
+    else:
+        window = getattr(getattr(llm, "model", None), "context_window", 0) or 128_000
+    return max(8000, window * 2)
+
+
 def _summarize(head: List[Dict[str, Any]], llm) -> str:
-    messages = [
-        {"role": "system", "content":
-            "You compress a coding-assistant conversation into a compact briefing. "
-            "Preserve: decisions made, files created/edited and how, important facts "
-            "learned about the codebase, and any unfinished tasks. Use terse bullet "
-            "points. Omit chit-chat."},
-        {"role": "user", "content": "Summarize this conversation so far:\n\n" + _transcript(head)},
-    ]
-    completion = llm.complete(messages, tools=None, stream=False)
-    return (completion.content or "").strip() or "(summary unavailable)"
+    text = _transcript(head)
+    budget = _summarizer_budget_chars(llm)
+    # A history built for a bigger model may not fit the summarizer: do it in parts.
+    parts = [text[i:i + budget] for i in range(0, len(text), budget)] or [""]
+    summaries = []
+    for n, part in enumerate(parts, 1):
+        label = ("Summarize this conversation so far:" if len(parts) == 1 else
+                 f"Summarize part {n} of {len(parts)} of this conversation:")
+        completion = llm.complete(
+            [{"role": "system", "content": _SUMMARY_SYSTEM},
+             {"role": "user", "content": f"{label}\n\n{part}"}], tools=None, stream=False)
+        summaries.append((completion.content or "").strip())
+    return "\n\n".join(x for x in summaries if x) or "(summary unavailable)"
 
 
 def compaction_threshold(model: ModelConfig, ratio: float) -> int:
@@ -88,17 +108,25 @@ def maybe_compact(session, model: ModelConfig, llm, *, ratio: float = 0.8,
 
     system = messages[0]
     body = messages[1:]
-    if len(body) <= keep_recent:
+    if len(body) <= max(keep_recent, 0):
         return False
 
     # Choose a cut point: keep the last `keep_recent`, then move the boundary
     # forward until it lands on a 'user' message so the tail is self-consistent
     # (no assistant tool_calls without their tool results, no orphan tool msgs).
-    cut = len(body) - keep_recent
-    while cut < len(body) and body[cut].get("role") != "user":
-        cut += 1
-    if cut >= len(body):
-        cut = len(body)  # summarize everything; keep nothing partial
+    # keep_recent=0 keeps only the current request (from the last user message);
+    # a negative value summarizes everything.
+    if keep_recent < 0:
+        cut = len(body)
+    elif keep_recent == 0:
+        users = [i for i, m in enumerate(body) if m.get("role") == "user"]
+        cut = users[-1] if users and users[-1] > 0 else len(body)
+    else:
+        cut = len(body) - keep_recent
+        while cut < len(body) and body[cut].get("role") != "user":
+            cut += 1
+        if cut >= len(body):
+            cut = len(body)  # summarize everything; keep nothing partial
     head, tail = body[:cut], body[cut:]
     if not head:
         return False

@@ -18,6 +18,8 @@ import json
 import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+
+from coded.shells import ensure_shell
 from typing import Any, Dict, Optional
 
 # ---------------------------------------------------------------------------
@@ -83,6 +85,32 @@ class ModelConfig:
     verify_ssl: bool = True
     # Path to a custom CA cert/bundle (PEM) to trust for this endpoint.
     ca_bundle: Optional[str] = None
+    # Reasoning models: "minimal" | "low" | "medium" | "high" (sent as reasoning_effort).
+    reasoning_effort: Optional[str] = None
+    # Provider-specific request fields merged into the request body verbatim.
+    extra_body: Dict[str, Any] = field(default_factory=dict)
+    # Retries for 429/5xx/connection errors, with jittered exponential backoff.
+    max_retries: int = 4
+    retry_base_delay: float = 1.0
+    # Seconds to wait for the endpoint (per request; for streams, between chunks).
+    # None = the SDK default (10 minutes).
+    timeout: Optional[float] = None
+    # After this endpoint fails over to a fallback, skip it for this many seconds
+    # instead of retrying it on every step (0 = always try it first).
+    fallback_cooldown: float = 120.0
+    # Model aliases to fall back to (in order) when this endpoint keeps failing,
+    # e.g. the same model on another provider/key, or a different model.
+    fallback: list = field(default_factory=list)
+    # Per-model overrides of the context-scaled limits (see coded/limits.py).
+    limits: Dict[str, Any] = field(default_factory=dict)
+    # Max agent loop steps for this model (CLI --max-turns still wins).
+    max_turns: Optional[int] = None
+    # Prompt set: "auto" | "standard" | "compact" | "full" (see prompt_files.py),
+    # and an optional directory of this model's own prompt files.
+    prompt_profile: str = "auto"
+    prompts_dir: Optional[str] = None
+    # Repository overview in the system prompt: "auto" (on at >= 200k context) | true | false.
+    repo_overview: Any = "auto"
 
     def resolved_base_url(self) -> str:
         if self.base_url:
@@ -158,10 +186,38 @@ class Config:
     # Behaviour toggles.
     auto_approve: bool = False  # skip permission prompts (a.k.a. "yolo")
     max_turns: int = 100  # safety cap on agent tool-loop iterations
+    # Windows only: which shell runs bash-tool commands — "bash" (Git Bash),
+    # "pwsh", "powershell", "cmd", or a full path. Default: the best available
+    # (shells.resolve_shell). Ignored on Linux/macOS, which always use sh.
+    shell: Optional[str] = None
+    # Interchangeable models behind one name: {"big": ["large-a", "large-b"]}.
+    # Usable anywhere an alias is (see routing.py).
+    pools: Dict[str, Any] = field(default_factory=dict)
+    # Pick the model per request by how hard it looks (see routing.py).
+    routing: Dict[str, Any] = field(default_factory=dict)
+    max_turns_override: Optional[int] = None  # --max-turns (beats per-model max_turns)
     stream: bool = True
     auto_compact: bool = True  # summarize old messages near the context limit
     compact_ratio: float = 0.8  # fraction of context_window that triggers it
     permissions: Optional[Dict[str, Any]] = None  # {"allow": [...], "deny": [...]}
+    # Lifecycle hooks: {"PreToolUse": [{"matcher": "bash", "command": "..."}], ...}.
+    hooks: Dict[str, Any] = field(default_factory=dict)
+    # OS sandbox for bash: {"enabled": true, "network": false, "writable": [...]}.
+    sandbox: Dict[str, Any] = field(default_factory=dict)
+    show_reasoning: bool = False  # display streamed reasoning/thinking text
+    parallel_tools: bool = True  # run independent read-only tool calls concurrently
+    # Tracing: {"jsonl": "path/to/trace.jsonl", "otel": false}.
+    telemetry: Dict[str, Any] = field(default_factory=dict)
+    # Prompt-injection guard after untrusted content: "off" | "warn" | "strict".
+    injection_guard: str = "warn"
+    # Which model alias to use for each role, e.g. {"subagent": "cheap",
+    # "compact": "cheap", "review": "smart", "verdict": "smart", "plan": "smart"}.
+    model_roles: Dict[str, str] = field(default_factory=dict)
+    # Outside coding agents (Claude Code, Codex, Gemini CLI, Aider, ...).
+    external_agents: Dict[str, Any] = field(default_factory=dict)
+    detect_external_agents: bool = True  # offer installed CLIs automatically
+    plugins: list = field(default_factory=list)  # names of enabled plugins merged in
+    plugin_warnings: list = field(default_factory=list)
     source_paths: list = field(default_factory=list)  # config files that were loaded
 
     def get_model(self, name: Optional[str] = None) -> ModelConfig:
@@ -172,10 +228,123 @@ class Config:
                 "file, set OPENAI_API_KEY, or pass --model/--base-url/--api-key."
             )
         if name not in self.models:
+            picked = self.pick_from_pool(name)
+            if picked:
+                return self.models[picked]
             raise ConfigError(
                 f"Unknown model '{name}'. Known models: {', '.join(self.models) or '(none)'}"
+                + (f"; pools: {', '.join(self.pools)}" if self.pools else "")
             )
         return self.models[name]
+
+    def model_for_role(self, role: str, default: ModelConfig) -> ModelConfig:
+        """The model configured for `role` (subagent, compact, review, …), else `default`.
+
+        A role may name a pool, in which case one member is picked (that is a
+        named point: each sub-agent or review phase gets its own member).
+        """
+        alias = self.model_roles.get(role)
+        if not alias:
+            return default
+        if alias in self.models:
+            return self.models[alias]
+        picked = self.pick_from_pool(alias)
+        return self.models[picked] if picked else default
+
+    def pool_members(self, name: Optional[str]) -> List[str]:
+        """Configured members of pool `name` that are real models ([] if not a pool)."""
+        if not name or name in self.models:
+            return []  # a model of the same name wins; model_warnings() flags it
+        members = self.pools.get(name)
+        if not isinstance(members, list):
+            return []
+        return [m for m in members if isinstance(m, str) and m in self.models]
+
+    def pick_from_pool(self, name: Optional[str]) -> Optional[str]:
+        """Choose a member of pool `name` (round-robin, skipping failed endpoints)."""
+        from coded.routing import healthy_members, pick_member
+
+        members = self.pool_members(name)
+        if not members:
+            return None
+        return pick_member(name, members, healthy_members(members, self.models))
+
+    def pool_of(self, alias: str) -> Optional[str]:
+        """The pool this model belongs to, if exactly one does."""
+        found = [name for name in (self.pools or {}) if alias in self.pool_members(name)]
+        return found[0] if len(found) == 1 else None
+
+    def is_pool(self, name: Optional[str]) -> bool:
+        return bool(self.pool_members(name))
+
+    def resolve_target(self, name: Optional[str], default: Optional[ModelConfig] = None):
+        """(model, pool name) for an alias or pool name; (default, None) if unknown."""
+        if name and name in self.models:
+            return self.models[name], None
+        picked = self.pick_from_pool(name)
+        if picked:
+            return self.models[picked], name
+        return default, None
+
+    def routing_settings(self):
+        from coded.routing import RoutingSettings
+
+        return RoutingSettings.from_config(self.routing)
+
+    def fallbacks_for(self, model: ModelConfig, pool: Optional[str] = None) -> list:
+        """The model's fallbacks. Members of `pool` come first: a sibling is the
+        closest substitute for a model that just failed."""
+        names: List[str] = []
+        for alias in [*self.pool_members(pool), *model.fallback]:
+            if alias in self.models and alias != model.name and alias not in names:
+                names.append(alias)
+        return [self.models[a] for a in names]
+
+    def model_warnings(self) -> list:
+        """Config mistakes that would otherwise be skipped silently: unknown
+        aliases in `fallback` / `model_roles` / `default_model`."""
+        known = ", ".join(self.models) or "(none)"
+        out = []
+        if (self.default_model and self.default_model not in self.models
+                and not self.pool_members(self.default_model)):
+            out.append(f"default_model '{self.default_model}' is not a configured model "
+                       f"(known: {known}).")
+        for mc in self.models.values():
+            for alias in mc.fallback:
+                if alias == mc.name:
+                    out.append(f"Model '{mc.name}': fallback lists itself (ignored).")
+                elif alias not in self.models:
+                    out.append(f"Model '{mc.name}': fallback '{alias}' is not a configured "
+                               f"model (ignored; known: {known}).")
+        for name, members in (self.pools or {}).items():
+            if name in self.models:
+                out.append(f"Pool '{name}' has the same name as a model; the model wins. "
+                           f"Rename the pool.")
+                continue
+            if not isinstance(members, list) or not members:
+                out.append(f"Pool '{name}' is empty (expected a list of model names).")
+                continue
+            for alias in members:
+                if not isinstance(alias, str) or alias not in self.models:
+                    out.append(f"Pool '{name}': '{alias}' is not a configured model "
+                               f"(ignored; known: {known}).")
+            windows = {self.models[a].context_window for a in self.pool_members(name)}
+            if len(windows) > 1:
+                sizes = ", ".join(f"{w // 1000}k" for w in sorted(windows))
+                out.append(f"Pool '{name}' mixes context windows ({sizes}); coded sizes "
+                           f"each request for the member it picked.")
+        routing = self.routing or {}
+        for level in ("simple", "medium", "hard"):
+            alias = routing.get(level)
+            if alias and alias not in self.models and not self.pool_members(alias):
+                out.append(f"routing.{level} points to '{alias}', which is not a configured "
+                           f"model or pool (that level is ignored; known: {known}).")
+        for role, alias in self.model_roles.items():
+            if alias not in self.models and not self.pool_members(alias):
+                out.append(f"model_roles: '{role}' points to '{alias}', which is not a "
+                           f"configured model or pool (the main model is used; "
+                           f"known: {known}).")
+        return out
 
     def add_model(self, mc: ModelConfig, make_default: bool = False) -> None:
         self.models[mc.name] = mc
@@ -226,13 +395,23 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
         cfg.web_search = data["web_search"]
     if data.get("permissions"):
         cfg.permissions = data["permissions"]
-    for key in ("auto_approve", "max_turns", "stream", "auto_compact", "compact_ratio"):
+    for key in ("hooks", "sandbox", "telemetry", "external_agents", "model_roles",
+                "pools", "routing"):
+        if data.get(key):
+            merged = dict(getattr(cfg, key))
+            merged.update(data[key])
+            setattr(cfg, key, merged)
+    for key in ("auto_approve", "max_turns", "stream", "auto_compact", "compact_ratio",
+                "show_reasoning", "parallel_tools", "injection_guard",
+                "detect_external_agents", "shell"):
         if key in data:
             setattr(cfg, key, data[key])
 
 
-def load_config(cwd: Optional[str] = None, config_path: Optional[str] = None) -> Config:
-    """Load and merge all configuration layers."""
+def load_config(cwd: Optional[str] = None, config_path: Optional[str] = None,
+                plugins: bool = True) -> Config:
+    """Load and merge all configuration layers, then enabled plugins' hooks,
+    MCP servers and outside agents (user config wins on name clashes)."""
     cfg = Config()
 
     if config_path:
@@ -240,6 +419,15 @@ def load_config(cwd: Optional[str] = None, config_path: Optional[str] = None) ->
     else:
         _merge_into(cfg, _load_json(user_config_path()), user_config_path())
         _merge_into(cfg, _load_json(project_config_path(cwd)), project_config_path(cwd))
+
+    # Settle the shell before anything that depends on it (plugin hook paths,
+    # the system prompt, the bash tool).
+    ensure_shell(cfg.shell)
+
+    if plugins:
+        from coded.plugins import apply_plugins_to_config
+
+        cfg.plugin_warnings = apply_plugins_to_config(cfg, cwd)
 
     # Fallback: if nothing is configured but OPENAI_API_KEY exists, register a
     # sensible default so the tool works out of the box.

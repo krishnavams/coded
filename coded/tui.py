@@ -1,12 +1,11 @@
-"""A full-screen terminal UI (Textual) for coded, à la Claude Code.
+"""A full-screen terminal UI (Textual) for coded.
 
-Layout:
-  ┌ header ────────────────────────────────────────────┐
-  │ conversation transcript (scrollable) │  session     │
-  │  · user / assistant / tool cards     │  sidebar      │
-  ├──────────────────────────────────────┴──────────────┤
-  │ input                                                │
-  └ footer (key hints) ──────────────────────────────────┘
+Layout (single column):
+  welcome card (logo, model, directory)
+  conversation transcript (scrollable): requests, tool calls, diffs, answers
+  task list (only while the agent has one)
+  ╭ input ─────────────────────────────────────────────╮
+  status line: model · mode · turns · tokens · cost · key hints
 
 The synchronous agent runs in a worker thread; it emits structured events
 (via Agent.on_event) that are marshalled onto the UI thread to build widgets.
@@ -19,7 +18,6 @@ import threading
 from typing import Any, Optional
 
 from rich.markup import escape as _esc
-from rich.syntax import Syntax
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
@@ -29,64 +27,54 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
-    Footer,
-    Header,
     Input,
     Label,
     Markdown,
     Static,
 )
 
+from coded import ui
 from coded.agent import Agent
 
 
 # ---------------------------------------------------------------------------
 # Widgets for the transcript
 # ---------------------------------------------------------------------------
+class Welcome(Static):
+    def __init__(self, model_name: str, cwd: str):
+        super().__init__(ui.welcome(model_name, cwd), classes="welcome")
+
+
 class UserMessage(Static):
     def __init__(self, text: str):
-        super().__init__(Text(text, style="bold"), classes="msg user")
+        body = Text()
+        body.append("> ", style=f"bold {ui.ACCENT}")
+        body.append(text, style="bold")
+        super().__init__(body, classes="msg user")
 
 
 class ToolCall(Static):
-    def __init__(self, name: str, args: dict):
-        import json
-        try:
-            arg_str = json.dumps(args, ensure_ascii=False)
-        except (TypeError, ValueError):
-            arg_str = str(args)
-        if len(arg_str) > 240:
-            arg_str = arg_str[:240] + "…"
-        body = Text()
-        body.append("● ", style="#7c9cff")
-        body.append(name, style="bold #7c9cff")
-        body.append("  " + arg_str, style="#8a94a7")
-        super().__init__(body, classes="toolcall")
+    def __init__(self, name: str, args: dict, cwd: str = ""):
+        super().__init__(ui.tool_call_text(name, args, cwd), classes="toolcall")
 
 
 class ToolResult(Static):
-    def __init__(self, content: str, is_error: bool):
-        lines = content.splitlines() or [content]
-        shown = lines[:14]
-        style = "#f7768e" if is_error else "#8a94a7"
-        body = Text()
-        for line in shown:
-            body.append(line + "\n", style=style)
-        if len(lines) > len(shown):
-            body.append(f"… (+{len(lines) - len(shown)} more)\n", style="#8a94a7 italic")
-        cls = "toolresult error" if is_error else "toolresult"
-        super().__init__(body, classes=cls)
+    def __init__(self, content: str, is_error: bool, name: str = "", cwd: str = ""):
+        body = ui.tool_result_text(content, is_error, name, cwd)
+        body.rstrip()
+        super().__init__(body, classes="toolresult error" if is_error else "toolresult")
 
 
 class DiffView(Static):
     def __init__(self, diff: str):
-        super().__init__(Syntax(diff, "diff", theme="ansi_dark", word_wrap=False),
-                         classes="diff")
+        body = ui.diff_text(diff)
+        body.rstrip()
+        super().__init__(body, classes="diff")
 
 
 class StatusNote(Static):
     def __init__(self, text: str):
-        super().__init__(Text("• " + text, style="#8a94a7 italic"), classes="statusnote")
+        super().__init__(Text("  " + text, style=f"{ui.MUTED} italic"), classes="statusnote")
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +89,7 @@ class PermissionModal(ModalScreen[str]):
     def compose(self) -> ComposeResult:
         from textual.containers import Vertical
         with Vertical(id="perm-box"):
-            yield Label(f"[b yellow]{_esc(self._title)}[/]", id="perm-title")
+            yield Label(f"[b {ui.ACCENT}]{_esc(self._title)}[/]", id="perm-title")
             yield Static(Text(self._detail), id="perm-detail")
             with Horizontal(id="perm-buttons"):
                 yield Button("Allow (y)", variant="success", id="yes")
@@ -122,30 +110,34 @@ class PermissionModal(ModalScreen[str]):
 # The app
 # ---------------------------------------------------------------------------
 class CodedTUI(App):
-    CSS = """
-    Screen { background: #0b0e14; }
-    #main { height: 1fr; }
-    #transcript { width: 3fr; padding: 0 1; }
-    #sidebar { width: 1fr; border-left: solid #232838; padding: 1; color: #8a94a7; }
-    #sidebar .h { color: #7c9cff; text-style: bold; }
-    .msg.user { background: #161c2c; color: #e6ebf5; padding: 0 1; margin: 1 0 0 0; border-left: thick #7c9cff; }
-    .assistant { padding: 0 1; margin: 0 0 1 0; }
-    .toolcall { margin: 1 0 0 0; }
-    .toolresult { color: #8a94a7; padding: 0 0 0 2; }
-    .toolresult.error { color: #f7768e; }
-    .diff { margin: 0 0 1 2; }
-    .statusnote { margin: 0 0 0 1; }
-    #prompt { border: round #232838; }
-    #prompt:focus { border: round #7c9cff; }
-    #perm-box { background: #11151f; border: round #e0af68; padding: 1 2; width: 70; height: auto; align: center middle; }
-    #perm-buttons { height: auto; align: center middle; padding-top: 1; }
-    PermissionModal { align: center middle; }
+    CSS = f"""
+    Screen {{ background: #100d1a; }}
+    #transcript {{ height: 1fr; padding: 0 1; scrollbar-color: {ui.ACCENT_DEEP}; }}
+    .welcome {{ margin: 1 0 0 0; }}
+    .msg.user {{ background: #1c1830; color: #f3efff; padding: 0 1; margin: 1 0 0 0; }}
+    .assistant {{ padding: 0 0; margin: 1 0 0 0; background: #100d1a; }}
+    .assistant MarkdownFence {{ background: #181426; }}
+    .assistant MarkdownBlock > .code_inline {{ color: {ui.ACCENT_SOFT}; background: #1c1830; }}
+    .assistant MarkdownBullet {{ color: {ui.ACCENT}; }}
+    .toolcall {{ margin: 1 0 0 0; }}
+    .toolresult {{ color: {ui.MUTED}; }}
+    .toolresult.error {{ color: {ui.ERR}; }}
+    .statusnote {{ margin: 1 0 0 0; }}
+    #tasks {{ height: auto; max-height: 10; padding: 0 2; margin: 1 0 0 0; display: none; }}
+    #tasks.shown {{ display: block; }}
+    #prompt {{ border: round #3b3260; background: #100d1a; margin: 0 1; }}
+    #prompt:focus {{ border: round {ui.ACCENT}; }}
+    #statusline {{ height: 1; padding: 0 2; color: {ui.MUTED}; }}
+    #perm-box {{ background: #181426; border: round {ui.ACCENT}; padding: 1 2; width: 76; height: auto; }}
+    #perm-buttons {{ height: auto; align: center middle; padding-top: 1; }}
+    PermissionModal {{ align: center middle; background: #100d1a 60%; }}
     """
 
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit", priority=True),
         Binding("ctrl+l", "clear", "Clear"),
         Binding("ctrl+u", "undo", "Undo edits"),
+        Binding("shift+tab", "toggle_plan", "Plan mode", priority=True),
     ]
 
     busy = reactive(False)
@@ -155,49 +147,79 @@ class CodedTUI(App):
         self.agent = agent
         self._on_turn = on_turn
         self.agent.on_event = self._agent_event  # called from the worker thread
-        self.agent.permissions.set_prompt(self._permission_prompt)
+        self.agent.permissions.set_prompt(self._permission_prompt, threadsafe=True)
         self._assistant_md: Optional[Markdown] = None
         self._assistant_buf = ""
+        self._thought: Optional[Static] = None
+        self._thought_buf = ""
+        from coded.commands import discover_commands
+
+        self.commands = discover_commands(agent.cwd)
 
     # -- layout -------------------------------------------------------------
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
-        with Horizontal(id="main"):
-            yield VerticalScroll(id="transcript")
-            yield Static(self._sidebar_text(), id="sidebar")
-        yield Input(placeholder="Ask coded to build, fix, explain…  (Enter to send)", id="prompt")
-        yield Footer()
+        yield VerticalScroll(id="transcript")
+        yield Static("", id="tasks")
+        yield Input(placeholder="Ask coded to build, fix, explain…", id="prompt")
+        yield Static(self._status_text(), id="statusline")
 
     def on_mount(self) -> None:
+        try:
+            from textual.theme import Theme
+
+            self.register_theme(Theme(
+                name="coded", primary=ui.ACCENT, secondary=ui.ACCENT_DEEP, accent=ui.ACCENT_SOFT,
+                warning=ui.WARN, error=ui.ERR, success=ui.ACCENT2, foreground="#e9e4f7",
+                background="#100d1a", surface="#181426", panel="#1c1830", dark=True))
+            self.theme = "coded"
+        except Exception:  # noqa: BLE001 - older Textual without themes
+            pass
         self.title = "coded"
         self.sub_title = f"{self.agent.model.name}  ·  {self.agent.cwd}"
         self.query_one("#prompt", Input).focus()
-        self._mount(StatusNote("Ready. Type a request and press Enter."))
+        self._mount(Welcome(self.agent.model.name, self.agent.cwd))
 
-    # -- sidebar ------------------------------------------------------------
-    def _sidebar_text(self) -> Text:
+    def watch_busy(self, busy: bool) -> None:
+        self._refresh_sidebar()
+
+    # -- status line + task list --------------------------------------------
+    def _status_text(self) -> Text:
         s = self.agent.session
         u = s.total_usage
         tok = u.prompt_tokens + u.completion_tokens
-        cost = s.estimated_cost(self.agent.model)
-        t = Text()
-        t.append("SESSION\n", style="#7c9cff bold")
-        t.append(f"model   {self.agent.model.name}\n")
-        t.append(f"turns   {s.turns}\n")
-        t.append(f"tokens  {tok:,}\n")
-        t.append(f"cost    ~${cost:.4f}\n")
+        tok_str = f"{tok / 1000:.1f}k" if tok >= 1000 else str(tok)
+        t = Text(no_wrap=True, overflow="ellipsis")
+        t.append("◆ ", style=ui.ACCENT)
+        t.append(self.agent.model.name, style=f"bold {ui.ACCENT}")
+        if self.busy:
+            t.append("  ·  working…", style=ui.ACCENT_SOFT)
+        if self.agent.mode == "plan":
+            t.append("  ·  plan mode (read-only)", style=f"bold {ui.WARN}")
+        t.append(f"  ·  {s.turns} turns  ·  {tok_str} tokens  ·  "
+                 f"~${s.estimated_cost(self.agent.model):.4f}")
         if getattr(s, "compactions", 0):
-            t.append(f"compacted {s.compactions}×\n")
-        t.append("\nTOOLS\n", style="#7c9cff bold")
-        t.append(", ".join(self.agent.registry.names()) + "\n", style="#8a94a7")
-        if self.agent.skills:
-            t.append("\nSKILLS\n", style="#7c9cff bold")
-            t.append(", ".join(self.agent.skills) + "\n", style="#8a94a7")
+            t.append(f"  ·  compacted {s.compactions}×")
+        t.append("  ·  shift+tab plan  ^C quit  ^L clear  ^U undo")
+        return t
+
+    def _tasks_text(self) -> Text:
+        t = Text()
+        marks = {"pending": "☐", "in_progress": "◐", "completed": "☑"}
+        for item in self.agent.todos.items:
+            status = item.get("status", "pending")
+            style = (f"bold {ui.ACCENT}" if status == "in_progress" else
+                     f"{ui.MUTED} strike" if status == "completed" else "")
+            t.append(f"{marks.get(status, '☐')} {item.get('content', '')}\n", style=style)
+        t.rstrip()
         return t
 
     def _refresh_sidebar(self) -> None:
+        """Refresh the status line and the task list."""
         try:
-            self.query_one("#sidebar", Static).update(self._sidebar_text())
+            self.query_one("#statusline", Static).update(self._status_text())
+            tasks = self.query_one("#tasks", Static)
+            tasks.update(self._tasks_text())
+            tasks.set_class(bool(self.agent.todos.items), "shown")
         except Exception:  # noqa: BLE001
             pass
 
@@ -210,6 +232,8 @@ class CodedTUI(App):
     def _finalize_assistant(self) -> None:
         self._assistant_md = None
         self._assistant_buf = ""
+        self._thought = None
+        self._thought_buf = ""
 
     # -- input --------------------------------------------------------------
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -226,6 +250,15 @@ class CodedTUI(App):
         if text == "/undo":
             self.action_undo()
             return
+        if text.split()[0] == "/plan":
+            self.agent.set_mode("default" if self.agent.mode == "plan" else "plan")
+            text = text[len("/plan"):].strip()
+            self._refresh_sidebar()
+            if not text:
+                return
+        elif text.startswith("/") and text.split()[0][1:] in self.commands:
+            name = text.split()[0][1:]
+            text = self.commands[name].expand(text[len(name) + 1:])
         self._mount(UserMessage(text))
         self.busy = True
         self._run_agent(text)
@@ -252,8 +285,12 @@ class CodedTUI(App):
 
     # -- agent events (called from worker thread) ---------------------------
     def _agent_event(self, ev: dict) -> None:
-        # Marshal onto the UI thread.
-        self.call_from_thread(self._handle_event, ev)
+        # Marshal onto the UI thread (or handle directly if already on it, e.g.
+        # a status note from /plan).
+        try:
+            self.call_from_thread(self._handle_event, ev)
+        except RuntimeError:
+            self._handle_event(ev)
 
     def _handle_event(self, ev: dict) -> None:
         kind = ev.get("type")
@@ -268,11 +305,20 @@ class CodedTUI(App):
             self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
         elif kind == "assistant_end":
             self._finalize_assistant()
+        elif kind == "reasoning_delta" and self.agent.config.show_reasoning:
+            self._thought_buf += ev.get("text", "")
+            if self._thought is None:
+                self._thought = Static("", classes="statusnote")
+                self._mount(self._thought)
+            self._thought.update(Text(self._thought_buf, style=f"{ui.MUTED} italic"))
+        elif kind == "todos":
+            pass  # rendered in the sidebar (refreshed below)
         elif kind == "tool_call":
             self._finalize_assistant()
-            self._mount(ToolCall(ev["name"], ev.get("args", {})))
+            self._mount(ToolCall(ev["name"], ev.get("args", {}), self.agent.cwd))
         elif kind == "tool_result":
-            self._mount(ToolResult(ev.get("content", ""), ev.get("is_error", False)))
+            self._mount(ToolResult(ev.get("content", ""), ev.get("is_error", False),
+                                   ev.get("name", ""), self.agent.cwd))
         elif kind == "diff":
             self._mount(DiffView(ev.get("diff", "")))
         elif kind == "status":
@@ -300,6 +346,12 @@ class CodedTUI(App):
         self.query_one("#transcript", VerticalScroll).remove_children()
         self._finalize_assistant()
         self._mount(StatusNote("Conversation cleared."))
+        self._refresh_sidebar()
+
+    def action_toggle_plan(self) -> None:
+        if self.busy:
+            return  # not while a turn is running
+        self.agent.set_mode("default" if self.agent.mode == "plan" else "plan", announce=False)
         self._refresh_sidebar()
 
     def action_undo(self) -> None:

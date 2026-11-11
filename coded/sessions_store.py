@@ -58,6 +58,7 @@ class SessionStore:
             "usage": {
                 "prompt_tokens": session.total_usage.prompt_tokens,
                 "completion_tokens": session.total_usage.completion_tokens,
+                "cost": session.cost,
             },
             "system_prompt": session.system_prompt,
             "messages": session.messages,
@@ -81,6 +82,8 @@ class SessionStore:
         s.messages = data.get("messages") or s.messages
         u = data.get("usage") or {}
         s.total_usage = Usage(u.get("prompt_tokens", 0), u.get("completion_tokens", 0))
+        s.cost = float(u.get("cost", 0.0) or 0.0)
+        s._priced = bool(u.get("cost"))
         s.turns = data.get("turns", 0)
         s.compactions = data.get("compactions", 0)
         return s

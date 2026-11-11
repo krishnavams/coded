@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import shlex
 import subprocess
+
+from coded.shells import text_kwargs
 from typing import Any, Dict
 
 from coded.permissions import Decision
+from coded.shells import IS_WINDOWS
+from coded.limits import get_limits
 from coded.tools.base import Tool, ToolContext, ToolResult
 
 # Subcommands that only read repository state — safe to run without prompting.
@@ -16,6 +20,15 @@ _READ_ONLY = {
     "config",  # reading config; writes still require --global/set which we gate below
 }
 _MAX_OUTPUT = 30_000
+
+
+def split_args(raw: str) -> list:
+    """Split a git argument string. On Windows, backslashes are path separators,
+    not escapes, so POSIX splitting would turn `src\app.py` into `srcapp.py`."""
+    if not IS_WINDOWS:
+        return shlex.split(raw)
+    tokens = shlex.split(raw, posix=False)
+    return [t[1:-1] if len(t) > 1 and t[0] == t[-1] and t[0] in "\"'" else t for t in tokens]
 
 
 class GitTool(Tool):
@@ -37,7 +50,7 @@ Pass the arguments after `git`, e.g. "status", "diff HEAD~1", "log --oneline -10
     def run(self, args: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         raw = args["args"].strip()
         try:
-            tokens = shlex.split(raw)
+            tokens = split_args(raw)
         except ValueError as exc:
             return ToolResult.error(f"Could not parse git args: {exc}")
         if not tokens:
@@ -59,7 +72,8 @@ Pass the arguments after `git`, e.g. "status", "diff HEAD~1", "log --oneline -10
 
         try:
             proc = subprocess.run(
-                ["git", *tokens], cwd=ctx.cwd, capture_output=True, text=True, timeout=60,
+                ["git", *tokens], cwd=ctx.cwd, capture_output=True, timeout=60,
+                **text_kwargs(),
             )
         except FileNotFoundError:
             return ToolResult.error("git is not installed or not on PATH.")
@@ -67,7 +81,8 @@ Pass the arguments after `git`, e.g. "status", "diff HEAD~1", "log --oneline -10
             return ToolResult.error("git command timed out.")
 
         out = (proc.stdout or "") + (proc.stderr or "")
-        if len(out) > _MAX_OUTPUT:
-            out = out[:_MAX_OUTPUT] + "\n… (truncated)"
+        limit = get_limits(ctx).git_output_chars
+        if len(out) > limit:
+            out = out[:limit] + "\n… (truncated)"
         body = out.strip() or "(no output)"
         return ToolResult(f"[git {sub} exit {proc.returncode}]\n{body}", is_error=proc.returncode != 0)

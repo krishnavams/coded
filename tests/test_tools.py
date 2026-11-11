@@ -125,3 +125,28 @@ def test_example_config_parses_and_resolves(monkeypatch, tmp_path):
     for name, mc in cfg.models.items():
         assert mc.resolved_base_url(), name
         assert mc.resolved_api_key(), name
+
+
+def test_the_built_wheel_carries_every_data_file(tmp_path):
+    """A `*.md` glob does not cover subdirectories: profiles and skills must ship."""
+    import subprocess
+    import sys
+    import zipfile
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parent.parent
+    out = tmp_path / "dist"
+    build = subprocess.run([sys.executable, "-m", "build", "--wheel", "-o", str(out), str(repo)],
+                           capture_output=True, text=True)
+    if build.returncode != 0:
+        import pytest
+
+        pytest.skip(f"wheel build unavailable: {build.stderr.strip().splitlines()[-1:]}")
+    wheel = next(out.glob("*.whl"))
+    names = zipfile.ZipFile(wheel).namelist()
+    for expected in ("coded/builtin_prompts/system.md",
+                     "coded/builtin_prompts/compact/coder.md",
+                     "coded/builtin_prompts/full/reviewer.md",
+                     "coded/builtin_skills/planner/SKILL.md",
+                     "coded/tools/shell.py", "coded/routing.py", "coded/shells.py"):
+        assert expected in names, expected

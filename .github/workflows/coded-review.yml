@@ -3,9 +3,13 @@ name: coded review
 # Runs the coded reviewer→qa→security pipeline on every pull request and fails
 # the check if the synthesized verdict is NEEDS_CHANGES.
 #
-# Setup: add an OPENAI_API_KEY (or another provider's key) repository secret.
+# Setup: add an OPENAI_API_KEY (or another provider's key) repository secret —
+# Settings → Secrets and variables → Actions → New repository secret. Without
+# one the job skips with a notice instead of failing the pull request.
+#
 # Point coded at a different provider by editing the `coded review` flags below
-# (e.g. --provider groq --model-name llama-3.3-70b-versatile).
+# (e.g. --provider groq --model-name llama-3.3-70b-versatile) and passing that
+# provider's key in `env` instead.
 
 on:
   pull_request:
@@ -25,10 +29,26 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Check for a model key
+        id: key
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -n "$OPENAI_API_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=coded review skipped::No OPENAI_API_KEY secret is set, so \
+            there is no model to review with. Add one under Settings → Secrets and variables \
+            → Actions, or edit .github/workflows/coded-review.yml to use another provider."
+          fi
+
       - name: Install coded
+        if: steps.key.outputs.configured == 'true'
         run: pip install -e .
 
       - name: Run review
+        if: steps.key.outputs.configured == 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
@@ -37,7 +57,7 @@ jobs:
              use the git tool to see the diff (git diff origin/${{ github.base_ref }}...HEAD)"
 
       - name: Upload review report
-        if: always()
+        if: always() && steps.key.outputs.configured == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: coded-review

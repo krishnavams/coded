@@ -1,0 +1,13 @@
+{
+  "name": "coded-examples",
+  "description": "Example plugins that ship with coded.",
+  "owner": {"name": "coded contributors"},
+  "plugins": [
+    {
+      "name": "code-quality",
+      "version": "1.0.0",
+      "description": "Changelog skill, /code-quality:tidy, and a trailing-whitespace hook.",
+      "source": "./plugins/code-quality"
+    }
+  ]
+}

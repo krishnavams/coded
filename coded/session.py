@@ -18,6 +18,9 @@ class Session:
     # Input tokens of the most recent model call (drives compaction).
     last_prompt_tokens: int = 0
     compactions: int = 0
+    # Cost accrued per answering model (routing and pools change it mid-session).
+    cost: float = 0.0
+    _priced: bool = False
 
     def __post_init__(self) -> None:
         if not self.messages:
@@ -54,15 +57,25 @@ class Session:
             {"role": "tool", "tool_call_id": tool_call_id, "content": content}
         )
 
-    def record_usage(self, usage: Usage) -> None:
+    def record_usage(self, usage: Usage, model: ModelConfig | None = None) -> None:
         self.total_usage = self.total_usage + usage
+        if model is not None:
+            self.cost += (usage.prompt_tokens / 1_000_000 * model.input_cost
+                          + usage.completion_tokens / 1_000_000 * model.output_cost)
+            self._priced = True
 
     def reset(self) -> None:
         self.messages = [{"role": "system", "content": self.system_prompt}]
         self.total_usage = Usage()
         self.turns = 0
+        self.cost = 0.0
+        self._priced = False
 
     def estimated_cost(self, model: ModelConfig) -> float:
+        """Cost so far. Priced per answering model once anything has been
+        recorded with one; `model` only prices usage restored from disk."""
+        if self._priced:
+            return self.cost
         return (
             self.total_usage.prompt_tokens / 1_000_000 * model.input_cost
             + self.total_usage.completion_tokens / 1_000_000 * model.output_cost

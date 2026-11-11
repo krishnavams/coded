@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from coded.limits import get_limits
 from coded.tools.base import Tool, ToolContext, ToolResult
 
 
 class WebSearchTool(Tool):
     name = "web_search"
+    parallel_safe = True
+    untrusted_output = True
     description = """Search the web and return titles, URLs, and snippets. Requires a \
 configured backend (Tavily/Brave/SerpAPI/SearXNG). Use web_fetch to read a result."""
     parameters = {
@@ -37,6 +40,8 @@ configured backend (Tavily/Brave/SerpAPI/SearXNG). Use web_fetch to read a resul
 
 class WebFetchTool(Tool):
     name = "web_fetch"
+    parallel_safe = True
+    untrusted_output = True
     description = """Fetch a URL and return its readable text content (HTML tags stripped). \
 Use for reading documentation pages or search results."""
     parameters = {
@@ -54,7 +59,7 @@ Use for reading documentation pages or search results."""
         if not url.startswith(("http://", "https://")):
             return ToolResult.error("URL must start with http:// or https://")
         try:
-            text = fetch_url(url)
+            text = fetch_url(url, max_chars=get_limits(ctx).web_fetch_chars)
         except Exception as exc:  # noqa: BLE001
             return ToolResult.error(f"Could not fetch {url}: {exc}")
         return ToolResult.ok(text)

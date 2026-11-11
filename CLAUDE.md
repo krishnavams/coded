@@ -37,13 +37,19 @@ coded/
 ├── agent.py            # Agent: the agentic loop; sub-agent spawning
 ├── session.py          # Session: message history + usage/cost tracking
 ├── permissions.py      # PermissionManager: approve/deny/always gate
-├── prompts.py          # system prompt construction (+ project CODED.md/CLAUDE.md)
+├── prompts.py          # assembles main/sub-agent prompts + AGENTS.md/CODED.md/CLAUDE.md hierarchy
+├── prompt_files.py     # prompt-file loading/overrides/profiles + `coded prompts` CLI
+├── limits.py           # per-model limits scaled by context_window; result/step caps
+├── repo_overview.py    # repository overview for large-context models
+├── routing.py          # difficulty classifier + model pools (round-robin, health)
+├── builtin_prompts/    # system, coder, tools, security, skills, planner, reviewer, debugger (.md);
+│                       # compact/ and full/ hold per-profile variants
 ├── repl.py             # interactive REPL and slash commands
 ├── tui.py              # full-screen Textual app (coded --tui), optional
 ├── ui.py               # rich-based rendering helpers (single Console)
 ├── skills.py           # skill discovery, frontmatter parsing, prompt section
 ├── review.py           # /review pipeline: reviewer→qa→security sub-agents
-├── builtin_skills/     # bundled agent roles: planner, reviewer, qa, security
+├── builtin_skills/     # bundled roles: planner, reviewer, debugger (bodies from prompt files), qa, security
 ├── compaction.py       # context auto-compaction (summarize old messages)
 ├── sessions_store.py   # persist/restore sessions (--continue/--resume)
 ├── checkpoints.py      # CheckpointManager: per-turn file snapshots for /undo
@@ -52,13 +58,31 @@ coded/
 ├── websearch.py        # web-search backends + HTML→text fetch
 ├── images.py           # image → base64 data URL for vision models
 ├── mcp_client.py       # optional MCP stdio client (background asyncio loop)
+├── hooks.py            # HookRunner: PreToolUse/PostToolUse/UserPromptSubmit/SessionStart/Stop
+├── sandbox.py          # bwrap / sandbox-exec wrapping for bash (no Windows backend)
+├── shells.py           # shell resolution (Git Bash/PowerShell/cmd), tree kill, UTF-8, rmtree
+├── textio.py           # read/write text files preserving their line endings
+├── background.py       # BackgroundShells: run_in_background processes
+├── commands.py         # custom slash commands (.coded/commands/*.md)
+├── telemetry.py        # Tracer: JSONL spans + optional OpenTelemetry
+├── worktree.py         # git worktree isolation for task / external_agent
+├── external_agents.py  # outside agent CLIs (claude, codex, gemini, aider, …)
+├── acp.py              # `coded acp`: Agent Client Protocol server (stdio JSON-RPC)
+├── mcp_server.py       # `coded mcp-serve`: coded as an MCP server
+├── sources.py          # fetch dir / zip (safe extract) / git / GitHub shorthand into a temp dir
+├── plugins.py          # skill + plugin install, registry (installed.json), marketplaces,
+│                       # plugin contributions merged into skills/commands/config
+├── manage_cli.py       # `coded skill …` and `coded plugin …` subcommands
 └── tools/
     ├── __init__.py     # build_registry(): assembles the tool suite
     ├── base.py         # Tool, ToolResult, ToolContext, ToolRegistry
     ├── files.py        # read, write, edit, ls, move, delete
+    ├── patch.py        # multi_edit, apply_patch (Codex patch format)
+    ├── todo.py         # todo_write (TodoStore), exit_plan_mode
+    ├── external_agent.py  # external_agent (delegate to an outside CLI agent)
     ├── search.py       # glob, grep
     ├── semantic_search.py  # semantic_search (uses the embedded index)
-    ├── shell.py        # bash
+    ├── shell.py        # bash (sandbox/background), bash_output, kill_shell
     ├── git.py          # git (read-only free, mutations gated)
     ├── github.py       # github (PR list/get/create, comment) via GITHUB_TOKEN
     ├── web.py          # web_search, web_fetch
@@ -76,8 +100,21 @@ tests/
 ├── test_git_tools.py   # git tool + github tool (fake API)
 ├── test_semantic_and_web.py  # index/search, web_fetch/search, image encoding
 ├── test_skills.py      # skill discovery, frontmatter, skill tool
-└── test_tools.py       # tool + config unit tests
+├── test_tools.py       # tool + config unit tests
+├── test_routing.py     # difficulty routing, pools, endpoint reuse, per-model cost
+├── test_model_chain.py # failover cooldown, sizing for a smaller fallback, stream retry,
+│                       # per-model timeout, unknown-alias warnings
+├── test_big_models.py  # scaled limits, caps, overflow retry, max_turns, profiles, repo overview
+├── test_windows.py     # shell resolution, line endings, UTF-8, shims (runs everywhere)
+├── test_prompts.py     # prompt files: placement, override order, empty=remove, CLI
+├── test_plugins.py     # sources, zip safety, skill/plugin install/update/remove,
+│                       # Claude-format plugins, marketplaces, CLI
+└── test_modern_features.py  # todo/plan, hooks, sandbox, AGENTS.md, patch, parallel,
+                        # retry/fallback/roles, reasoning, shells, commands, tracing,
+                        # worktrees, injection guard, external agents, ACP, MCP server
 examples/skills/        # example SKILL.md packs + install guide
+examples/plugins/       # example plugin (code-quality) + plugin layout guide
+examples/.coded-plugin/marketplace.json  # examples folder doubles as a marketplace
 config.example.json     # sample configuration
 ```
 
@@ -113,6 +150,59 @@ config.example.json     # sample configuration
    model call → APPROVE/NEEDS_CHANGES) and maps NEEDS_CHANGES to exit code 1
    (`--fail-on`, `--yolo`, `--output`, `--no-verdict`).
 
+8. **Turn lifecycle** (`Agent.run`/`_loop`/`_run_tool`): `SessionStart` (first
+   turn) and `UserPromptSubmit` hooks → plan-mode reminder appended → model call
+   (`LLMClient`: retries, dropped unsupported params, `fallback` models) → tool
+   calls, with consecutive parallel-safe calls run on a thread pool → per call:
+   `PreToolUse` hook → plan-mode refusal → diff preview → permission gate
+   (`auto_allowed` for sandboxed bash) → run → untrusted-output fencing/taint →
+   nested `AGENTS.md` injection for file tools → `PostToolUse` hook. A final
+   answer runs the `Stop` hook, which may push the agent to continue.
+9a. **Which model answers a request** (`Agent._select_turn_model`, once per
+   request, never per step): a forced model (`force_model`, a command's
+   `model:`) > plan mode's `plan` role > difficulty routing (`routing.py`) >
+   the main model. `switch_model()` pins the user's choice and turns routing
+   off (`set_routing(True)` restores). `_turn_model` is the non-plan choice, so
+   `exit_plan_mode` mid-turn returns to it. Routing refuses a target that lacks
+   tools/vision or whose window the history no longer fits — never summarize to
+   save money. Pools resolve only at named points (`Config.resolve_target`,
+   `pick_from_pool`, `model_for_role`), never inside `get_model` on a hot path;
+   `Agent._pool` makes the siblings fallbacks. Endpoints are process-wide
+   (`llm.endpoint_for`), so health and learned-unsupported-params survive a
+   switch. Cost accrues per answering model (`Session.record_usage(usage, model)`).
+
+9. **Models per role**: `Config.model_for_role()` picks the model for
+   `subagent`, `compact`, `review`, `verdict`, `plan` (`Agent.set_mode` swaps to
+   the `plan` model via `use_model()` and back to `_main_model` on exit;
+   `switch_model()` is the user's choice and sets `_main_model`); `Config.fallbacks_for()` resolves
+   a model's `fallback` aliases for `LLMClient`.
+
+10. **Skills & plugins install** (`plugins.py`): `coded skill|plugin …` fetch a
+    source into a temp dir (`sources.Fetched`), validate it, show a summary and
+    ask, then `install_tree` swaps it into `<home>/skills|plugins/<name>` and
+    records the source in `<home>/installed.json` (`home` = `~/.config/coded`
+    or `./.coded` with `--project`). Enabled plugins are merged at load time:
+    `skill_search_dirs` (built-in < plugin < user < project), `command_dirs`
+    (`/<plugin>:<cmd>`), and `load_config` → `apply_plugins_to_config` (hooks
+    appended, MCP servers/outside agents added unless the user defines the name).
+
+11. **Prompts are files** (`prompt_files.py`): `build_system_prompt` joins
+    `system` + `coder` + `tools` + `security`, then an Environment section built
+    in code, project instructions and extras. `build_subagent_prompt` uses a
+    fixed sub-agent opener (tests rely on its first line) + `coder` + `tools` +
+    `security`. A skill whose body is `<!-- coded:prompt NAME -->` loads prompt
+    file NAME (planner/reviewer/debugger), so there is one source of truth.
+
+12. **Per-model scaling** (`limits.py`): `limits_for(model)` scales the base
+    (128k) limits by `context_window`, adds the per-result/per-step caps and the
+    repo-overview budget, then applies the model's `limits` overrides. Each
+    Agent (sub-agents too) computes its own and exposes them to tools as
+    `ctx.extra["limits"]` (read with `get_limits(ctx)`), alongside
+    `ctx.extra["model"]`. Prompt loading takes the model (`load_prompt(name,
+    cwd, model)`): precedence built-in < built-in profile < user < project <
+    model `prompts_dir`. `Agent.refresh_system_prompt()` rebuilds messages[0]
+    (called by `create_agent` and `switch_model`).
+
 ## Key conventions
 
 - **Adding a tool**: subclass `Tool` in `coded/tools/`, set `name`,
@@ -120,6 +210,35 @@ config.example.json     # sample configuration
   in `tools/__init__.build_registry()`. Set `requires_permission = True` for
   anything that mutates the filesystem or runs commands, and override
   `permission_detail()` to describe the action shown in the approval prompt.
+- **Tool flags**: `parallel_safe = True` only for read-only tools with no
+  permission prompt (or override `is_parallel_safe(args, ctx)`, as `task` does
+  for worktree isolation). `untrusted_output = True` for tools returning
+  third-party content (web, GitHub, MCP) so it's fenced and taints the turn.
+  `auto_allowed(args, ctx)` lets a call skip the prompt (sandboxed bash);
+  deny rules, plan mode and the strict injection guard still apply.
+- **Shared agent state reaches tools via `ToolContext.extra`**: `todos`,
+  `shells`, `get_mode`/`set_mode`. Sub-agents share the parent's
+  `PermissionManager`, tracer and shells, but not todos/skills/Stop hooks.
+- **Prompts from worker threads**: `PermissionManager.set_prompt(fn,
+  threadsafe=True)` (TUI, ACP) allows tools that may prompt to run in parallel;
+  prompts are serialized by a lock either way. `ask()` is a raw yes/no question
+  (used by `exit_plan_mode`).
+- **The system and role prompts live in `coded/builtin_prompts/*.md`.** (Short
+  operational prompts — the sub-agent opener, `PLAN_MODE_REMINDER`, review-phase
+  framing, compaction/verdict/`/init` prompts — are still in code.) Never
+  `str.format` prompt files (users' overrides may contain braces); put
+  dynamic values in code-built sections. New prompt files must be added to
+  `PROMPT_NAMES`, and stay covered by the `builtin_prompts/*.md` package-data
+  glob. Watch the size: coded targets small local models too.
+- **A 128k model must behave exactly as before.** New size-dependent behaviour
+  goes through `limits_for`; `test_128k_limits_equal_the_historical_constants`
+  pins the base values. Tools never hard-code output sizes: use `get_limits(ctx)`.
+  Every prompt profile must keep the untrusted-content and secrets rules (tested).
+- **No install tool for the model.** Installing skills/plugins grants code
+  execution (hooks run unprompted), so it stays a user-run CLI action. Never
+  write plugin contributions into the user's config.json; they're merged at load
+  time so `disable`/`remove` are clean. The install summary must list every hook
+  and MCP command verbatim; non-TTY installs require `--yes`.
 - **Tools must never raise into the loop**: return `ToolResult.error(...)` for
   expected failures. `Agent._run_tool` also catches unexpected exceptions and
   feeds them back to the model as text, so the agent can recover.
@@ -159,6 +278,12 @@ config.example.json     # sample configuration
   `ssl_verify()` resolves `ca_bundle` → `$CODED_CA_BUNDLE` → `verify_ssl`. The
   `--ca-bundle`/`--insecure` CLI flags override the selected model; disabling
   verification warns. Route new endpoint clients through this helper.
+- **Look**: purple theme (`ui.ACCENT`/`ACCENT_DEEP`/`ACCENT_SOFT`) and coded's own
+  logo (`ui.LOGO`: code brackets around a diamond). Never hard-code colors or
+  reuse another product's logo/branding. Tool calls display as `● Edit(app.py)`
+  with results under `⎿` (`ui.tool_call_text` / `tool_result_text` / `diff_text`
+  / `welcome`); the REPL and the TUI both render through these so they match.
+  A new tool gets a readable title by adding it to `ui._TOOL_TITLES`.
 - **UI**: use the helpers in `coded/ui.py` and its single shared `console`.
   Displayed tool output is truncated for readability; the **model** always
   receives the full tool result (truncation is display-only). Colors come from
@@ -166,8 +291,9 @@ config.example.json     # sample configuration
   used by the streaming path. The REPL (`repl.py`) adds a prompt_toolkit
   `bottom_toolbar` status bar, `AutoSuggestFromHistory`, and a shared `_PT_STYLE`.
 - **Agent display is decoupled via events**: `Agent.on_event` (set by the TUI)
-  receives structured events — `assistant_start/_delta/_end`, `tool_call`,
-  `tool_result`, `diff`, `status`. When it's set, the agent emits instead of
+  receives structured events — `assistant_start/_delta/_end`, `reasoning_delta`,
+  `tool_call`/`tool_result`/`diff` (with the tool-call `id`), `todos`, `status`.
+  The TUI and the ACP server (`acp.py`) are both event consumers. When it's set, the agent emits instead of
   printing via `ui` (see `_emit`, `_show_tool_*`, `_call_with_events`). New
   display sites must route through these helpers, not call `ui` directly, so
   both front-ends stay in sync.
@@ -176,12 +302,43 @@ config.example.json     # sample configuration
   with `call_from_thread`. The permission callback pushes a `PermissionModal`
   and blocks the worker on a `threading.Event` until the user answers. Guard the
   Textual import — the app must run fine without it installed.
-- **Streaming**: `LLMClient._stream` accumulates text and tool-call deltas.
-  `stream_options={"include_usage": true}` is requested but retried without it
-  if the endpoint rejects it — keep this graceful-degradation habit for
-  endpoints that implement only part of the OpenAI API.
+- **Streaming**: `LLMClient._consume_stream` accumulates text, reasoning
+  (`reasoning_content`/`reasoning`) and tool-call deltas. Optional params
+  (`stream_options`, `reasoning_effort`, …) that an endpoint rejects with a 400
+  are dropped and remembered per endpoint (`_OPTIONAL_PARAMS`). Keep this
+  graceful-degradation habit for endpoints that implement only part of the
+  OpenAI API. SDK retries are off (`max_retries=0`); `LLMClient._create` owns
+  retry/backoff, and `complete()` owns fallback. A stream that fails is retried
+  only if no text/reasoning was emitted yet (otherwise it would display twice).
+- **Model chain**: an endpoint that fails over is skipped for
+  `fallback_cooldown` seconds (`_Endpoint.down_until`; cooling endpoints are
+  tried last). `LLMClient.next_model()` is the model the next request goes to;
+  `Agent._sync_sizing()` (each step, and on overflow) makes `self.limits` and
+  compaction follow it via `_sized_model`, shrinking history when it is
+  smaller. Use `_sized_model`, not `self.model`, for anything window-dependent
+  in the loop. `Config.model_warnings()` reports unknown aliases.
+- **Cross-platform**: anything that runs a command goes through `shells.run` /
+  `command_argv` (POSIX keeps the historical `shell=True` string path; Windows
+  gets an argv list for the resolved shell) and `popen_kwargs`/`kill_tree` for
+  process groups. Capture output with `**text_kwargs()`, never bare `text=True`
+  (Windows would decode with the ANSI code page). Editing a file goes through
+  `textio.read_text`/`write_text` so line endings survive; never `Path.write_text`
+  for user files. Platform logic takes `which`/`exists`/`env` arguments so it is
+  testable on any OS (`tests/test_windows.py`). The shell is settled once, by
+  `load_config` → `shells.ensure_shell` (or `--shell`, which pins it), before
+  plugin hook paths or the system prompt are built. Decoding a file is strict:
+  edits refuse non-UTF-8 files (`textio.NOT_UTF8`) rather than rewriting them
+  from a lossy read. Windows shells differ in more than quoting: PowerShell
+  commands go through `-EncodedCommand` (and its CLIXML error stream is decoded
+  back to text by `shells.clean_clixml`), cmd goes through subprocess's own
+  `shell=True`, and `prompts._environment` tells the model which syntax to write
+  (sub-agents included). An unknown `shell` name is a ConfigError, never a silent
+  fallback. Arguments passed to a `.bat`/`.cmd` shim are re-parsed by cmd, so
+  `external_agents.cmd_shim_risk` refuses prompts it could execute.
 - **Config is layered**: presets → user file → project file → CLI flags. Don't
-  hard-code paths or keys; go through `config.py`.
+  hard-code paths or keys; go through `config.py`. Dict-valued settings
+  (`hooks`, `sandbox`, `telemetry`, `external_agents`, `model_roles`) merge
+  key-by-key across layers.
 - Follow the style already in the code: type hints, `from __future__ import
   annotations`, dataclasses for state, concise docstrings, minimal inline
   comments (only where they add real value).
@@ -227,8 +384,17 @@ one (e.g. `ruff`, `black`), record the commands here.
 
 - **argparse + free-form prompt**: the top-level parser has a `nargs="*"`
   positional `prompt`, which conflicts with argparse subparsers. Subcommands
-  (`config`, `models`) are therefore dispatched manually by the first token in
+  (`config`, `models`, `index`, `review`, `sessions`, `commit`, `skill`,
+  `plugin`, `prompts`, `acp`, `mcp-serve`) are therefore dispatched manually by the first token in
   `cli.main()` — keep new subcommands on that path, not on `add_subparsers`.
+- **ACP / MCP server modes keep stdout clean** (`ui.set_quiet(True)`): stdout
+  carries only protocol messages.
+- **Sandbox `/tmp` is private** (bwrap `--tmpfs /tmp`): writes there vanish
+  after the command. The working directory is bind-mounted writable, so tests
+  using `tmp_path` as cwd still work.
+- **Parallel batches display after they finish**: the parallel path calls
+  `_run_tool(tc, display=False)` and then shows calls/results in order; keep
+  new display code inside `_run_tool`'s `display` guard.
 - **MCP runs on a background thread** with its own asyncio loop
   (`mcp_client.MCPManager`); calls into it are made with
   `run_coroutine_threadsafe`. Always `stop()` it (the CLI does so in a
@@ -246,8 +412,7 @@ one (e.g. `ruff`, `black`), record the commands here.
 
 ## Git & branching
 
-- Development branch for AI-assisted changes in this session:
-  `claude/claude-md-docs-n4n6zc`.
+- Develop on the branch assigned to your session.
 - Clear, descriptive commit messages. Do not open a pull request unless asked.
 - Never commit real API keys. Project-level config lives in `./.coded/`, which
   is gitignored.

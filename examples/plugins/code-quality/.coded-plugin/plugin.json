@@ -1,0 +1,7 @@
+{
+  "name": "code-quality",
+  "version": "1.0.0",
+  "description": "Changelog skill, a /code-quality:tidy command, and a hook that flags trailing whitespace after edits.",
+  "author": {"name": "coded contributors"},
+  "license": "MIT"
+}

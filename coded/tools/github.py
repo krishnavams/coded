@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+
+from coded.shells import text_kwargs
 from typing import Any, Dict, Optional
 
 import httpx
@@ -25,7 +27,7 @@ def _detect_repo(cwd: str) -> Optional[str]:
     try:
         out = subprocess.run(
             ["git", "remote", "get-url", "origin"], cwd=cwd,
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, timeout=10, **text_kwargs(),
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return None
@@ -35,6 +37,7 @@ def _detect_repo(cwd: str) -> Optional[str]:
 
 class GitHubTool(Tool):
     name = "github"
+    untrusted_output = True
     description = """Interact with GitHub pull requests. Actions: list_prs, get_pr, \
 create_pr (title, head, base, body), comment_pr (number, body). Needs GITHUB_TOKEN. \
 Repo is auto-detected from the git remote unless you pass repo='owner/name'."""

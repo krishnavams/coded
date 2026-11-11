@@ -2,11 +2,25 @@
 
 from __future__ import annotations
 
+import pytest
+
 from coded import ui
 from coded.agent import create_agent
 from coded.config import Config, ModelConfig
 from coded.permissions import PermissionManager
 from coded.repl import Repl
+
+
+@pytest.fixture
+def headless():
+    """prompt_toolkit needs an app session with no real console (Windows CI)."""
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    with create_pipe_input() as pipe:
+        with create_app_session(input=pipe, output=DummyOutput()):
+            yield
 
 
 def test_ui_helpers_render_without_error():
@@ -33,7 +47,7 @@ def test_thinking_spinner_is_context_manager():
         ui.set_quiet(False)
 
 
-def test_repl_bottom_toolbar():
+def test_repl_bottom_toolbar(headless):
     from prompt_toolkit.formatted_text import to_formatted_text
 
     cfg = Config()
@@ -48,5 +62,59 @@ def test_repl_bottom_toolbar():
     repl = Repl(agent, cfg)
     text = "".join(t[1] for t in to_formatted_text(repl._bottom_toolbar()))
     assert "gpt-4o" in text
-    assert "turns 2" in text
+    assert "2 turns" in text
     assert "2.0k" in text  # 2000 tokens
+
+
+def test_tool_titles_are_readable_and_relative():
+    assert ui.tool_title("edit", {"path": "/proj/src/app.py", "old_string": "x"}, "/proj") == \
+        ("Edit", "src/app.py")
+    assert ui.tool_title("bash", {"command": "pytest -q\n  tests"}) == ("Bash", "pytest -q tests")
+    assert ui.tool_title("todo_write", {"todos": []}) == ("Update tasks", "")
+    label, summary = ui.tool_title("mcp__db__query", {"sql": "select 1", "limit": 5})
+    assert label == "mcp__db__query" and "sql: select 1" in summary and "limit: 5" in summary
+    assert ui.tool_call_text("read", {"path": "a.py"}).plain == "● Read(a.py)"
+
+
+def test_tool_result_display_is_short_and_project_relative():
+    out = ui.tool_result_text("1\tx\n2\ty\n3\tz", name="read").plain
+    assert out.strip() == "⎿  Read 3 lines"
+    out = ui.tool_result_text("Edited /proj/app.py (1 replacement(s)).", cwd="/proj").plain
+    assert "Edited app.py" in out and "/proj" not in out
+    long = ui.tool_result_text("\n".join(map(str, range(40)))).plain
+    assert "… +28 lines" in long
+
+
+def test_diff_display_has_line_numbers_and_no_file_headers():
+    d = "--- a/app.py\n+++ b/app.py\n@@ -3,3 +3,3 @@\n for i in items:\n-    s += 1\n+    s += 2\n return s\n"
+    out = ui.diff_text(d).plain
+    assert "a/app.py" not in out and "@@" not in out
+    assert "   4 -     s += 1" in out and "   4 +     s += 2" in out and "   5   return s" in out
+
+
+def test_logo_is_coded_own_mark():
+    assert len(ui.LOGO) == 3 and len({len(r) for r in ui.LOGO}) == 1
+    assert "◆" in ui.logo_text().plain
+
+
+def test_repl_shift_tab_is_bound_to_plan_mode(headless):
+    from prompt_toolkit.formatted_text import to_formatted_text
+
+    cfg = Config()
+    m = ModelConfig(name="m", model="m", base_url="http://x/v1", api_key="k")
+    cfg.add_model(m, make_default=True)
+    agent = create_agent(model=m, config=cfg, cwd=".", permissions=PermissionManager(),
+                         stream=False, verbose=False)
+    repl = Repl(agent, cfg)
+    binding = [b for b in repl.prompt.key_bindings.bindings
+               if [getattr(k, "value", k) for k in b.keys] == ["s-tab"]]
+    assert len(binding) == 1
+
+    class _Event:
+        app = type("A", (), {"invalidate": lambda self: None})()
+
+    binding[0].handler(_Event())
+    assert agent.mode == "plan"
+    assert "plan mode" in "".join(t[1] for t in to_formatted_text(repl._bottom_toolbar()))
+    binding[0].handler(_Event())
+    assert agent.mode == "default"

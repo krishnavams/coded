@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
+from coded.limits import get_limits
+from coded.textio import NOT_UTF8, newline_of, read_text, write_text
 from coded.tools.base import Tool, ToolContext, ToolResult
 
 
@@ -36,6 +38,7 @@ def _checkpoint(ctx: ToolContext, *paths: Path) -> None:
 
 class ReadTool(Tool):
     name = "read"
+    parallel_safe = True
     description = """Read a file from the filesystem. Returns the file contents with \
 1-indexed line numbers in `cat -n` format. Use `offset` and `limit` for large files. \
 Prefer this over `cat`/`head` via the shell."""
@@ -64,18 +67,27 @@ Prefer this over `cat`/`head` via the shell."""
         text = data.decode("utf-8", errors="replace")
         lines = text.splitlines()
         offset = max(1, int(args.get("offset", 1)))
-        limit = int(args.get("limit", _MAX_READ_LINES))
+        cap = get_limits(ctx).read_lines
+        limit = max(1, min(int(args.get("limit", cap)), cap))
         chunk = lines[offset - 1 : offset - 1 + limit]
         if not chunk:
             return ToolResult.ok(f"(file has {len(lines)} lines; offset {offset} is past the end)")
         out = []
+        budget = get_limits(ctx).tool_result_chars - 200
+        used = 0
+        last = offset - 1
         for i, line in enumerate(chunk, start=offset):
             if len(line) > _MAX_LINE_LEN:
                 line = line[:_MAX_LINE_LEN] + "… (truncated)"
-            out.append(f"{i:6d}\t{line}")
+            row = f"{i:6d}\t{line}"
+            if out and used + len(row) + 1 > budget:
+                break  # stop at a whole line within this model's result budget
+            out.append(row)
+            used += len(row) + 1
+            last = i
         footer = ""
-        if offset - 1 + limit < len(lines):
-            footer = f"\n… ({len(lines) - (offset - 1 + limit)} more lines)"
+        if last < len(lines):
+            footer = f"\n… ({len(lines) - last} more lines; continue with offset={last + 1})"
         return ToolResult.ok("\n".join(out) + footer)
 
 
@@ -105,8 +117,8 @@ overwriting it entirely. For small edits to an existing file, prefer `edit`."""
         old = ""
         if p.is_file():
             try:
-                old = p.read_text(encoding="utf-8")
-            except OSError:
+                old = read_text(p)[0]
+            except (OSError, UnicodeDecodeError):
                 return None
         return _unified_diff(old, args.get("content", ""), args["path"])
 
@@ -116,7 +128,7 @@ overwriting it entirely. For small edits to an existing file, prefer `edit`."""
             _checkpoint(ctx, p)
             p.parent.mkdir(parents=True, exist_ok=True)
             existed = p.exists()
-            p.write_text(args["content"], encoding="utf-8")
+            write_text(p, args["content"], newline_of(p))
         except OSError as exc:
             return ToolResult.error(f"Could not write {p}: {exc}")
         verb = "Updated" if existed else "Created"
@@ -154,8 +166,8 @@ Read the file first so your match is accurate."""
         if not p.is_file():
             return None
         try:
-            text = p.read_text(encoding="utf-8")
-        except OSError:
+            text = read_text(p)[0]
+        except (OSError, UnicodeDecodeError):
             return None
         old, new = args.get("old_string", ""), args.get("new_string", "")
         if old not in text:
@@ -172,7 +184,9 @@ Read the file first so your match is accurate."""
         if old == new:
             return ToolResult.error("old_string and new_string are identical.")
         try:
-            text = p.read_text(encoding="utf-8")
+            text, newline = read_text(p)
+        except UnicodeDecodeError:
+            return ToolResult.error(f"{p} {NOT_UTF8}")
         except OSError as exc:
             return ToolResult.error(f"Could not read {p}: {exc}")
         count = text.count(old)
@@ -188,7 +202,7 @@ Read the file first so your match is accurate."""
         new_text = text.replace(old, new) if args.get("replace_all") else text.replace(old, new, 1)
         try:
             _checkpoint(ctx, p)
-            p.write_text(new_text, encoding="utf-8")
+            write_text(p, new_text, newline)
         except OSError as exc:
             return ToolResult.error(f"Could not write {p}: {exc}")
         return ToolResult.ok(f"Edited {p} ({count if args.get('replace_all') else 1} replacement(s)).")
@@ -196,6 +210,7 @@ Read the file first so your match is accurate."""
 
 class LsTool(Tool):
     name = "ls"
+    parallel_safe = True
     description = "List the entries of a directory (non-recursive). Defaults to the working directory."
     parameters = {
         "type": "object",

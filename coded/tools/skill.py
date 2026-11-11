@@ -36,7 +36,7 @@ skill's bundled files (in its directory) can be read with `read` or run with `ba
             available = ", ".join(self._skills) or "(none)"
             return ToolResult.error(f"Unknown skill '{name}'. Available skills: {available}")
         try:
-            body = skill.load_body()
+            body = skill.load_body(ctx.extra.get("model"))
         except OSError as exc:
             return ToolResult.error(f"Could not read skill '{name}': {exc}")
 

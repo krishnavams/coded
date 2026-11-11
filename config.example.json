@@ -9,7 +9,15 @@
       "max_tokens": 16384,
       "temperature": 0.2,
       "input_cost": 2.5,
-      "output_cost": 10.0
+      "output_cost": 10.0,
+      "max_retries": 4,
+      "fallback": ["gpt-4o-openrouter", "claude-sonnet"]
+    },
+    "gpt-4o-openrouter": {
+      "provider": "openrouter",
+      "model": "openai/gpt-4o",
+      "context_window": 128000,
+      "max_tokens": 16384
     },
     "gpt-4o-mini": {
       "provider": "openai",
@@ -32,6 +40,7 @@
       "model": "o3-mini",
       "context_window": 200000,
       "max_tokens": 100000,
+      "reasoning_effort": "medium",
       "input_cost": 1.1,
       "output_cost": 4.4
     },
@@ -235,6 +244,28 @@
       "api_key_env": "INTERNAL_API_KEY",
       "ca_bundle": "/etc/ssl/corp-ca.pem"
     },
+    "big-700b": {
+      "provider": "openai-compatible",
+      "base_url": "https://llm.internal.example.com/v1",
+      "api_key_env": "INTERNAL_API_KEY",
+      "model": "your-700b-model",
+      "context_window": 300000,
+      "timeout": 900,
+      "fallback_cooldown": 120,
+      "max_tokens": 32000,
+      "max_turns": 400,
+      "prompt_profile": "full",
+      "repo_overview": true,
+      "limits": {"read_lines": 8000, "shell_output_chars": 120000},
+      "fallback": ["gpt-4.1"]
+    },
+    "small-local": {
+      "provider": "ollama",
+      "model": "qwen2.5-coder:7b",
+      "context_window": 32768,
+      "prompt_profile": "compact",
+      "prompts_dir": ".coded/prompts-small"
+    },
     "self-signed": {
       "provider": "openai-compatible",
       "model": "local-llm",
@@ -264,6 +295,55 @@
   "permissions": {
     "allow": ["bash(git *)", "bash(pytest*)"],
     "deny": ["bash(rm -rf*)"]
+  },
+
+  "model_roles": {
+    "subagent": "gpt-4o-mini",
+    "compact": "gpt-4o-mini",
+    "review": "gpt-4o",
+    "verdict": "gpt-4o",
+    "plan": "gpt-4o"
+  },
+
+  "// pools": "Interchangeable models behind one name; usable anywhere an alias is.",
+  "pools": {
+    "frontier": ["gpt-4o", "claude-sonnet"]
+  },
+
+  "// routing": "Pick the model per request by how hard it looks (off by default).",
+  "routing": {
+    "enabled": false,
+    "simple": "gpt-4o-mini",
+    "medium": "gpt-4o",
+    "hard": "frontier",
+    "sticky": true,
+    "rules": [{"match": "(?i)^deploy\\b", "level": "hard"}]
+  },
+
+  "hooks": {
+    "PostToolUse": [
+      {"matcher": "edit|multi_edit|write|apply_patch", "command": "git diff --stat"}
+    ]
+  },
+
+  "sandbox": {
+    "enabled": false,
+    "network": false,
+    "writable": ["~/.cache"]
+  },
+
+  "telemetry": {
+    "jsonl": "~/.cache/coded/trace.jsonl",
+    "otel": false
+  },
+
+  "injection_guard": "warn",
+  "show_reasoning": false,
+  "parallel_tools": true,
+
+  "detect_external_agents": true,
+  "external_agents": {
+    "claude": {"command": ["claude", "-p", "{prompt}"], "timeout": 1800}
   },
 
   "auto_approve": false,

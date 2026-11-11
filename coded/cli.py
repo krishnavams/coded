@@ -20,6 +20,8 @@ from coded.config import (
     write_sample_config,
 )
 from coded.permissions import PermissionManager
+from coded.shells import configure_stdio, resolve_shell, set_active_shell
+from coded.telemetry import tracer_from_config
 
 
 SUBCOMMANDS = {"config", "models"}
@@ -34,7 +36,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="coded",
         description="A Claude Code-style coding agent for OpenAI-compatible models.",
-        epilog="Subcommands: `coded config init|path|show`, `coded models`.",
+        epilog="Subcommands: `coded config init|path|show`, `coded models [--check]`, "
+               "`coded skill install|list|remove|update|info`, `coded prompts list|show|init`, "
+               "`coded plugin install|list|remove|update|enable|disable|info|search|marketplace`, "
+               "`coded review`, `coded commit`, `coded index`, `coded sessions`, "
+               "`coded acp` (Agent Client Protocol server), `coded mcp-serve` (MCP server).",
     )
     p.add_argument("prompt", nargs="*", help="Initial request. If omitted, starts the interactive REPL.")
     p.add_argument("-m", "--model", help="Model alias to use (from config).")
@@ -59,6 +65,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--resume", metavar="ID", help="Resume a specific saved session by id.")
     p.add_argument("--output-format", choices=["text", "json"], default="text",
                    help="Output format for --print mode (json emits content + usage + cost).")
+    p.add_argument("--plan", action="store_true",
+                   help="Start in plan mode (read-only research until you approve a plan).")
+    p.add_argument("--shell", metavar="NAME",
+                   help="Windows only: shell for the bash tool (bash, pwsh, powershell, cmd, "
+                        "or a path). Default: Git Bash if installed, else PowerShell.")
+    p.add_argument("--sandbox", action="store_true",
+                   help="Run bash in an OS sandbox (bwrap/sandbox-exec): writes limited to cwd, no network.")
+    p.add_argument("--sandbox-network", action="store_true",
+                   help="With --sandbox, allow network access.")
+    p.add_argument("--trace", metavar="FILE", help="Write JSONL trace spans (turns, LLM calls, tools) to FILE.")
+    p.add_argument("--reasoning-effort", choices=["minimal", "low", "medium", "high"],
+                   help="Reasoning effort for reasoning models.")
+    p.add_argument("--show-reasoning", action="store_true", help="Display streamed reasoning text.")
+    p.add_argument("--injection-guard", choices=["off", "warn", "strict"],
+                   help="Prompt-injection guard after untrusted content (default: warn).")
     p.add_argument("--version", action="version", version=f"coded {__version__}")
 
     # Ad-hoc model overrides (no config file needed).
@@ -84,6 +105,8 @@ def build_config_parser() -> argparse.ArgumentParser:
 
 
 def _apply_overrides(cfg: Config, args: argparse.Namespace) -> None:
+    if getattr(args, "shell", None):
+        cfg.shell = args.shell
     if args.auto_approve:
         cfg.auto_approve = True
     if args.no_stream:
@@ -91,7 +114,15 @@ def _apply_overrides(cfg: Config, args: argparse.Namespace) -> None:
     if args.no_compact:
         cfg.auto_compact = False
     if args.max_turns:
-        cfg.max_turns = args.max_turns
+        cfg.max_turns_override = args.max_turns
+    if getattr(args, "sandbox", False):
+        cfg.sandbox = dict(cfg.sandbox, enabled=True)
+    if getattr(args, "sandbox_network", False):
+        cfg.sandbox = dict(cfg.sandbox, network=True)
+    if getattr(args, "show_reasoning", False):
+        cfg.show_reasoning = True
+    if getattr(args, "injection_guard", None):
+        cfg.injection_guard = args.injection_guard
 
     # If ad-hoc endpoint flags are given, register a CLI model and make it default.
     if any([args.base_url, args.api_key, args.model_name, args.provider]):
@@ -105,8 +136,25 @@ def _apply_overrides(cfg: Config, args: argparse.Namespace) -> None:
         args.model = args.model or "cli"
 
 
-def _select_model(cfg: Config, name: Optional[str]) -> ModelConfig:
-    return cfg.get_model(name)
+def _select_model(cfg: Config, name: Optional[str]) -> tuple:
+    """(model, pool name). `name` may be a pool: one member is picked here."""
+    wanted = name or cfg.default_model
+    if wanted and wanted not in cfg.models and cfg.pool_members(wanted):
+        model, pool = cfg.resolve_target(wanted)
+        return model, pool
+    return cfg.get_model(name), None
+
+
+def _warn_sandbox(cfg: Config) -> None:
+    from coded.sandbox import sandbox_state
+
+    settings, backend = sandbox_state(cfg)
+    if settings.enabled and backend is None:
+        how = "refusing to run bash" if settings.fail_if_unavailable else \
+            "bash will run unsandboxed and ask for permission"
+        ui.warn("Sandbox enabled but no backend found (install bubblewrap on Linux; "
+                "macOS has sandbox-exec built in; Windows has no backend — use WSL) "
+                f"— {how}.")
 
 
 def _apply_tls_overrides(model: ModelConfig, args: argparse.Namespace) -> None:
@@ -171,15 +219,75 @@ def _handle_models_command(argv: List[str]) -> int:
     p = argparse.ArgumentParser(prog="coded models", description="List configured models.")
     p.add_argument("--config", help="Path to a specific config file.")
     p.add_argument("--cwd", help="Working directory.")
+    p.add_argument("--check", nargs="*", metavar="ALIAS",
+                   help="Send a tiny request to each model (or the named ones) and report status.")
     args = p.parse_args(argv)
     cfg = load_config(cwd=args.cwd, config_path=args.config)
     if not cfg.models:
         ui.info("No models configured. Run `coded config init` or set OPENAI_API_KEY.")
         return 0
-    for name, mc in cfg.models.items():
-        marker = "*" if name == cfg.default_model else " "
-        print(f"{marker} {name:<16} {mc.provider:<12} {mc.model}")
-    return 0
+    roles = {}
+    for role, alias in cfg.model_roles.items():
+        roles.setdefault(alias, []).append(role)
+    if args.check is None:
+        for name, mc in cfg.models.items():
+            marker = "*" if name == cfg.default_model else " "
+            extra = []
+            from coded.prompt_files import prompt_profile
+
+            extra.append(f"{mc.context_window // 1000}k ctx, {prompt_profile(mc)} prompts")
+            if mc.fallback:
+                extra.append("fallback→" + ",".join(mc.fallback))
+            if name in roles:
+                extra.append("roles: " + ",".join(roles[name]))
+            try:
+                url = mc.resolved_base_url()
+            except ConfigError:
+                url = "(no base_url)"
+            print(f"{marker} {name:<16} {mc.provider:<12} {mc.model:<32} {url}"
+                  + (f"   [{'; '.join(extra)}]" if extra else ""))
+        for name, members in (cfg.pools or {}).items():
+            picked = cfg.pool_members(name)
+            print(f"  {name:<16} pool         {', '.join(picked) or '(no valid members)'}")
+        routing = cfg.routing_settings()
+        if routing.configured:
+            levels = ", ".join(f"{lvl}→{routing.target(lvl)}"
+                               for lvl in ("simple", "medium", "hard") if routing.target(lvl))
+            print(f"  routing          {'on ' if routing.enabled else 'off'}          {levels}")
+        for w in cfg.model_warnings():
+            ui.warn(w)
+        return 0
+    wanted = args.check or list(cfg.models)
+    expanded: List[str] = []
+    for name in wanted:  # checking a pool checks every member
+        members = cfg.pool_members(name)
+        expanded += members or [name]
+    return _check_models(cfg, list(dict.fromkeys(expanded)))
+
+
+def _check_models(cfg: Config, names: List[str]) -> int:
+    import time
+
+    from coded.llm import LLMClient
+
+    failures = 0
+    for name in names:
+        if name not in cfg.models:
+            print(f"  {name:<16} unknown alias")
+            failures += 1
+            continue
+        mc = cfg.models[name]
+        probe = ModelConfig(**{**mc.__dict__, "max_retries": 0, "max_tokens": 8})
+        start = time.time()
+        try:
+            out = LLMClient(probe).complete([{"role": "user", "content": "Reply with: ok"}],
+                                            stream=False)
+            ms = (time.time() - start) * 1000
+            print(f"✓ {name:<16} {ms:7.0f} ms   {(out.content or '').strip()[:40]!r}")
+        except Exception as exc:  # noqa: BLE001
+            failures += 1
+            print(f"✗ {name:<16} {type(exc).__name__}: {str(exc).splitlines()[0][:120] if str(exc) else ''}")
+    return 1 if failures else 0
 
 
 def _handle_index_command(argv: List[str]) -> int:
@@ -364,6 +472,7 @@ def _handle_review_command(argv: List[str]) -> int:
 
 def main(argv: Optional[List[str]] = None) -> int:
     os.environ.setdefault("CODED_DATE", _dt.date.today().isoformat())
+    configure_stdio()  # legacy Windows code pages can't print the UI
     if argv is None:
         argv = sys.argv[1:]
 
@@ -381,6 +490,26 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _handle_sessions_command(argv[1:])
     if argv and argv[0] == "commit":
         return _handle_commit_command(argv[1:])
+    if argv and argv[0] == "skill":
+        from coded.manage_cli import skill_main
+
+        return skill_main(argv[1:])
+    if argv and argv[0] == "plugin":
+        from coded.manage_cli import plugin_main
+
+        return plugin_main(argv[1:])
+    if argv and argv[0] == "prompts":
+        from coded.prompt_files import prompts_main
+
+        return prompts_main(argv[1:])
+    if argv and argv[0] == "acp":
+        from coded.acp import main as acp_main
+
+        return acp_main(argv[1:])
+    if argv and argv[0] == "mcp-serve":
+        from coded.mcp_server import main as mcp_main
+
+        return mcp_main(argv[1:])
 
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -388,6 +517,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     # In JSON print mode, keep stdout clean — send all log output to stderr.
     if args.print_mode and args.output_format == "json":
         ui.set_quiet(True)
+
+    if args.shell:  # before load_config: plugin hooks and prompts need the shell
+        set_active_shell(resolve_shell(args.shell), pinned=True)
 
     cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
 
@@ -399,7 +531,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
 
     try:
-        model = _select_model(cfg, args.model)
+        model, model_pool = _select_model(cfg, args.model)
     except ConfigError as exc:
         ui.error(str(exc))
         ui.info("Tip: `coded config init` to create a config, or pass "
@@ -407,8 +539,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
 
     _apply_tls_overrides(model, args)
+    if args.reasoning_effort:
+        model.reasoning_effort = args.reasoning_effort
+    _warn_sandbox(cfg)
+    from coded.limits import LIMIT_KEYS, unknown_limit_keys
 
-    permissions = PermissionManager(auto_approve=cfg.auto_approve, rules=cfg.permissions)
+    for mc in cfg.models.values():
+        bad = unknown_limit_keys(mc)
+        if bad:
+            ui.warn(f"Model '{mc.name}': unknown limits key(s) {', '.join(bad)} (ignored). "
+                    f"Valid keys: {', '.join(LIMIT_KEYS)}")
+    for w in cfg.model_warnings():
+        ui.warn(w)
+    for w in cfg.plugin_warnings:
+        ui.warn(w)
+    if cfg.plugins:
+        ui.info(f"Plugins: {', '.join(cfg.plugins)}")
+
+    permissions = PermissionManager(auto_approve=cfg.auto_approve, rules=cfg.permissions,
+                                    injection_guard=cfg.injection_guard)
     mcp_manager, extra_tools = _init_mcp(cfg, disabled=args.no_mcp)
 
     skills = {}
@@ -429,7 +578,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         skills=skills,
         stream=cfg.stream,
         verbose=True,
+        tracer=tracer_from_config(cfg, args.trace),
+        pool=model_pool,
     )
+    if args.model:
+        agent.set_routing(False)  # an explicit -m pins the model
+    if args.plan:
+        agent.set_mode("plan", announce=False)
 
     # Session persistence: resume a saved session, or start a fresh id.
     from coded.sessions_store import SessionStore
@@ -474,7 +629,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 0
         from coded.repl import Repl
 
-        Repl(agent, cfg, on_turn=autosave).run(initial=initial_prompt, images=images)
+        try:
+            repl = Repl(agent, cfg, on_turn=autosave)
+        except ConfigError as exc:
+            ui.error(str(exc))
+            return 1
+        repl.run(initial=initial_prompt, images=images)
         autosave()
         return 0
     finally:
@@ -508,8 +668,8 @@ def _run_print_mode(agent, prompt: Optional[str], images=None, *,
             "usage": {"input_tokens": u.prompt_tokens, "output_tokens": u.completion_tokens},
             "cost": round(agent.session.estimated_cost(agent.model), 6),
         }, indent=2))
-    elif result and not agent.stream:
-        ui.assistant_markdown(result)
+    elif result and not agent.stream and not agent.verbose:
+        ui.assistant_markdown(result)  # a verbose non-streaming loop already printed it
     return 0
 
 

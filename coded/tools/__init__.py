@@ -6,10 +6,12 @@ from coded.tools.base import Tool, ToolContext, ToolRegistry, ToolResult
 from coded.tools.files import DeleteTool, EditTool, LsTool, MoveTool, ReadTool, WriteTool
 from coded.tools.git import GitTool
 from coded.tools.github import GitHubTool
+from coded.tools.patch import ApplyPatchTool, MultiEditTool
 from coded.tools.search import GlobTool, GrepTool
 from coded.tools.semantic_search import SemanticSearchTool
-from coded.tools.shell import BashTool
+from coded.tools.shell import BashOutputTool, BashTool, KillShellTool
 from coded.tools.task import TaskTool
+from coded.tools.todo import ExitPlanModeTool, TodoWriteTool
 from coded.tools.web import WebFetchTool, WebSearchTool
 
 __all__ = [
@@ -28,12 +30,16 @@ def build_registry(include_task: bool = True) -> ToolRegistry:
     """
     reg = ToolRegistry()
     tools = [
-        ReadTool(), WriteTool(), EditTool(), LsTool(), MoveTool(), DeleteTool(),
-        GlobTool(), GrepTool(), SemanticSearchTool(), BashTool(),
+        ReadTool(), WriteTool(), EditTool(), MultiEditTool(), ApplyPatchTool(),
+        LsTool(), MoveTool(), DeleteTool(),
+        GlobTool(), GrepTool(), SemanticSearchTool(),
+        BashTool(), BashOutputTool(), KillShellTool(),
         GitTool(), GitHubTool(), WebSearchTool(), WebFetchTool(),
+        TodoWriteTool(),
     ]
     for tool in tools:
         reg.register(tool)
     if include_task:
         reg.register(TaskTool())
+        reg.register(ExitPlanModeTool())
     return reg
