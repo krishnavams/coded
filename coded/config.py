@@ -111,6 +111,15 @@ class ModelConfig:
     prompts_dir: Optional[str] = None
     # Repository overview in the system prompt: "auto" (on at >= 200k context) | true | false.
     repo_overview: Any = "auto"
+    # Tools this model is not offered (added to the top-level `disabled_tools`).
+    disabled_tools: list = field(default_factory=list)
+
+    def resolved_base_url_safe(self) -> str:
+        """`resolved_base_url` without raising for a model that has none."""
+        try:
+            return self.resolved_base_url()
+        except ConfigError:
+            return ""
 
     def resolved_base_url(self) -> str:
         if self.base_url:
@@ -198,6 +207,12 @@ class Config:
     max_turns_override: Optional[int] = None  # --max-turns (beats per-model max_turns)
     stream: bool = True
     auto_compact: bool = True  # summarize old messages near the context limit
+    # When a model's own fallbacks are exhausted (or it has none), try the other
+    # configured models rather than ending the turn with an error.
+    auto_fallback: bool = True
+    # Verification gates for a turn that changed something (see verify.py):
+    # {"command": "pytest -q", "second_opinion": true, "max_rounds": 2}
+    verify: Dict[str, Any] = field(default_factory=dict)
     compact_ratio: float = 0.8  # fraction of context_window that triggers it
     permissions: Optional[Dict[str, Any]] = None  # {"allow": [...], "deny": [...]}
     # Lifecycle hooks: {"PreToolUse": [{"matcher": "bash", "command": "..."}], ...}.
@@ -206,6 +221,10 @@ class Config:
     sandbox: Dict[str, Any] = field(default_factory=dict)
     show_reasoning: bool = False  # display streamed reasoning/thinking text
     parallel_tools: bool = True  # run independent read-only tool calls concurrently
+    # Tools never offered to the model, by name or pattern ("github",
+    # "mcp__slack__*"). Each tool's definition is sent with every request, so
+    # unused ones cost time on every step.
+    disabled_tools: list = field(default_factory=list)
     # Tracing: {"jsonl": "path/to/trace.jsonl", "otel": false}.
     telemetry: Dict[str, Any] = field(default_factory=dict)
     # Prompt-injection guard after untrusted content: "off" | "warn" | "strict".
@@ -224,8 +243,9 @@ class Config:
         name = name or self.default_model
         if not name:
             raise ConfigError(
-                "No model configured. Run `coded config init` to create a config "
-                "file, set OPENAI_API_KEY, or pass --model/--base-url/--api-key."
+                "No model configured. Run `coded config setup` to configure one "
+                "interactively (`coded config init` writes a sample instead), set "
+                "OPENAI_API_KEY, or pass --model/--base-url/--api-key."
             )
         if name not in self.models:
             picked = self.pick_from_pool(name)
@@ -299,6 +319,34 @@ class Config:
             if alias in self.models and alias != model.name and alias not in names:
                 names.append(alias)
         return [self.models[a] for a in names]
+
+    def last_resort_models(self, model: ModelConfig, pool: Optional[str] = None) -> list:
+        """Other configured models to try once the declared chain is exhausted.
+
+        Nothing is configured for this: it is what "if one model is down, use
+        another" means when the user has several endpoints. Closest substitutes
+        first: same endpoint, then the largest context window. Whether a given
+        one can serve a given request (tools, vision, window) depends on the
+        request, so `LLMClient._chain` decides that, not this list.
+        """
+        if not self.auto_fallback:
+            return []
+        declared = {model.name, *(m.name for m in self.fallbacks_for(model, pool))}
+        out = []
+        for name, other in self.models.items():
+            if name in declared:
+                continue
+            out.append(other)
+        here = model.resolved_base_url_safe()
+        return sorted(out, key=lambda m: (0 if m.resolved_base_url_safe() == here else 1,
+                                          -(m.context_window or 0), m.name))
+
+    def disabled_tools_for(self, model: Optional[ModelConfig] = None) -> List[str]:
+        """Patterns of tools not offered to `model` (global + the model's own)."""
+        out = [str(x) for x in (self.disabled_tools or [])]
+        if model is not None:
+            out += [str(x) for x in (getattr(model, "disabled_tools", None) or [])]
+        return out
 
     def model_warnings(self) -> list:
         """Config mistakes that would otherwise be skipped silently: unknown
@@ -396,14 +444,15 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
     if data.get("permissions"):
         cfg.permissions = data["permissions"]
     for key in ("hooks", "sandbox", "telemetry", "external_agents", "model_roles",
-                "pools", "routing"):
+                "pools", "routing", "verify"):
         if data.get(key):
             merged = dict(getattr(cfg, key))
             merged.update(data[key])
             setattr(cfg, key, merged)
-    for key in ("auto_approve", "max_turns", "stream", "auto_compact", "compact_ratio",
+    for key in ("auto_approve", "max_turns", "stream", "auto_compact", "auto_fallback",
+                "compact_ratio",
                 "show_reasoning", "parallel_tools", "injection_guard",
-                "detect_external_agents", "shell"):
+                "detect_external_agents", "shell", "disabled_tools"):
         if key in data:
             setattr(cfg, key, data[key])
 

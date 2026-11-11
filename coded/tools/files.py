@@ -38,16 +38,25 @@ def _checkpoint(ctx: ToolContext, *paths: Path) -> None:
 
 class ReadTool(Tool):
     name = "read"
+    brief = 'Read a file with line numbers; use offset/limit for large files. Also reads PDF, .docx, .xlsx and .pptx; `pages` picks pages, slides or sheets ("3", "2-5", a sheet name).'
     parallel_safe = True
     description = """Read a file from the filesystem. Returns the file contents with \
 1-indexed line numbers in `cat -n` format. Use `offset` and `limit` for large files. \
-Prefer this over `cat`/`head` via the shell."""
+Prefer this over `cat`/`head` via the shell.
+
+Also reads documents as text: PDF (per page), Word .docx (headings, paragraphs and \
+tables in order), Excel .xlsx (each sheet as numbered rows of cell values) and \
+PowerPoint .pptx (per slide, with speaker notes). For those, `pages` picks pages, \
+slides or sheets — "3", "2-5", "1,4" or a sheet name — before `offset`/`limit` apply."""
     parameters = {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Path to the file (absolute or relative to cwd)."},
             "offset": {"type": "integer", "description": "1-indexed line to start at."},
             "limit": {"type": "integer", "description": "Max number of lines to read."},
+            "pages": {"type": "string",
+                      "description": "Documents only: pages/slides/sheets to read, e.g. "
+                                     "'3', '2-5', '1,4,9' or a sheet name."},
         },
         "required": ["path"],
     }
@@ -62,16 +71,41 @@ Prefer this over `cat`/`head` via the shell."""
             data = p.read_bytes()
         except OSError as exc:
             return ToolResult.error(f"Could not read {p}: {exc}")
-        if b"\x00" in data[:4096]:
-            return ToolResult.error(f"{p} appears to be a binary file.")
-        text = data.decode("utf-8", errors="replace")
-        lines = text.splitlines()
+        from coded import documents
+
+        header = ""
+        kind = documents.kind_of(p, data[:8])
+        if kind is not None:
+            try:
+                doc = documents.load(p, kind)
+                lines, header = documents.render(doc, args.get("pages"))
+            except documents.DocumentError as exc:
+                return ToolResult.error(str(exc))
+        else:
+            reason = documents.unsupported_reason(p)
+            if reason:
+                return ToolResult.error(f"{p.name} is {reason}.")
+            if b"\x00" in data[:4096]:
+                return ToolResult.error(f"{p} appears to be a binary file.")
+            text = data.decode("utf-8", errors="replace")
+            # Not text after all (a binary format without NUL bytes up front):
+            # refuse rather than hand the model a page of replacement characters.
+            sample = text[:20_000]
+            if sample and sample.count("\ufffd") > max(8, len(sample) // 50):
+                return ToolResult.error(
+                    f"{p} does not decode as text — it is a binary format this tool "
+                    "cannot read.")
+            if args.get("pages"):
+                return ToolResult.error("`pages` applies to PDF, Word, Excel and "
+                                        "PowerPoint files; use offset/limit for text.")
+            lines = text.splitlines()
         offset = max(1, int(args.get("offset", 1)))
         cap = get_limits(ctx).read_lines
         limit = max(1, min(int(args.get("limit", cap)), cap))
         chunk = lines[offset - 1 : offset - 1 + limit]
         if not chunk:
-            return ToolResult.ok(f"(file has {len(lines)} lines; offset {offset} is past the end)")
+            return ToolResult.ok((header + "\n" if header else "")
+                                 + f"(file has {len(lines)} lines; offset {offset} is past the end)")
         out = []
         budget = get_limits(ctx).tool_result_chars - 200
         used = 0
@@ -88,7 +122,7 @@ Prefer this over `cat`/`head` via the shell."""
         footer = ""
         if last < len(lines):
             footer = f"\n… ({len(lines) - last} more lines; continue with offset={last + 1})"
-        return ToolResult.ok("\n".join(out) + footer)
+        return ToolResult.ok((header + "\n" if header else "") + "\n".join(out) + footer)
 
 
 class WriteTool(Tool):

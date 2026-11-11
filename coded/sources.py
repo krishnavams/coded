@@ -5,6 +5,8 @@ Supported sources:
   - a local or remote .zip:     ./skill.zip  https://example.com/plugin.zip
   - a git URL:                  https://github.com/o/r.git  git@host:o/r.git  file:///repo
   - GitHub shorthand:           owner/repo   owner/repo/sub/path   owner/repo@v1.2
+  - a GitHub folder link:       https://github.com/o/r/tree/main/skills/x
+  - a skills.sh page:           https://skills.sh/o/r/skill-name (see skills_sh_page)
 
 Everything is fetched into a fresh temporary directory first; callers validate
 it there before moving anything into place.
@@ -23,7 +25,7 @@ import tempfile
 import zipfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 MAX_ZIP_BYTES = 200 * 1024 * 1024
 MAX_ZIP_FILES = 20_000
@@ -73,6 +75,13 @@ def parse_source(source: str, ref: Optional[str] = None, subpath: Optional[str] 
         if local.is_file() and kind != "zip":
             raise SourceError(f"{source} is a file; expected a directory or a .zip archive.")
         return SourceInfo(kind, str(local.resolve()), ref, subpath)
+    tree = _GH_TREE.match(source)
+    if tree:  # a folder link copied from the browser
+        return SourceInfo("github", f"https://github.com/{tree.group('owner')}/{tree.group('repo')}.git",
+                          ref or tree.group("ref"), subpath or (tree.group("path") or "").strip("/") or None)
+    page = skills_sh_page(source)
+    if page:
+        return parse_source(page[0], ref, subpath)
     if re.match(r"^https?://", source) and source.lower().split("?")[0].endswith(".zip"):
         return SourceInfo("zip-url", source, ref, subpath)
     if re.match(r"^(https?|ssh|git|file)://", source) or source.startswith("git@") or source.endswith(".git"):
@@ -83,6 +92,23 @@ def parse_source(source: str, ref: Optional[str] = None, subpath: Optional[str] 
         return SourceInfo("github", f"https://github.com/{m.group('owner')}/{m.group('repo')}.git",
                           ref or m.group("ref"), subpath or path)
     raise SourceError(f"Source not found: {source} (not a local path, .zip, git URL, or owner/repo).")
+
+
+_GH_TREE = re.compile(r"^https?://(www\.)?github\.com/(?P<owner>[\w.-]+)/(?P<repo>[\w.-]+?)"
+                      r"/(tree|blob)/(?P<ref>[^/]+)(?P<path>/.*)?$")
+_SKILLS_SH = re.compile(r"^(https?://)?(www\.)?skills\.sh/(?P<owner>[\w.-]+)/(?P<repo>[\w.-]+)"
+                        r"(/(?P<skill>[\w.-]+))?/?(\?.*)?$")
+
+
+def skills_sh_page(source: str) -> Optional[Tuple[str, Optional[str]]]:
+    """A skills.sh page link → (GitHub owner/repo, skill name or None).
+
+    skills.sh is a directory of skills that live in GitHub repositories, so the
+    page names the repository (and, for one skill, its name — not a folder)."""
+    m = _SKILLS_SH.match(source.strip())
+    if not m:
+        return None
+    return f"{m.group('owner')}/{m.group('repo')}", m.group("skill")
 
 
 def safe_extract_zip(archive: Path, dest: Path) -> None:
@@ -177,6 +203,7 @@ class Fetched:
         self.info = info
         self._tmp = Path(tempfile.mkdtemp(prefix="coded-fetch-"))
         self.root = self._tmp
+        self.links: List[Path] = []  # symlinks removed from the fetched copy
 
     def __enter__(self) -> "Fetched":
         try:
@@ -201,7 +228,7 @@ class Fetched:
             src = Path(info.location)
             dest = self._tmp / "src"
             # Keep links as links (never follow them while copying); they're
-            # rejected below before anything is shown or installed.
+            # removed below before anything is read, shown or installed.
             shutil.copytree(src, dest, symlinks=True,
                             ignore=shutil.ignore_patterns(".git", "__pycache__"))
             self.root = dest
@@ -221,7 +248,11 @@ class Fetched:
             self.root = dest
         else:
             raise SourceError(f"Unknown source type {info.type!r}.")
-        reject_symlinks(self._tmp)
+        # Many repositories carry a harmless link at the top (CLAUDE.md ->
+        # AGENTS.md), so a link is not a reason to refuse the whole source.
+        # Every link is deleted unread; `refuse_links_in` then refuses only an
+        # install whose own files contained one.
+        self.links = strip_symlinks(self._tmp)
         if info.subpath:
             sub = (self.root / info.subpath).resolve()
             if self.root.resolve() not in sub.parents and sub != self.root.resolve():
@@ -229,6 +260,29 @@ class Fetched:
             if not sub.is_dir():
                 raise SourceError(f"Sub-path not found in source: {info.subpath}")
             self.root = sub
+
+
+    def refuse_links_in(self, directory: Path) -> None:
+        """Refuse to install `directory` if a symlink was removed from inside it."""
+        directory = Path(directory)
+        for link in self.links:
+            if link == directory or directory in link.parents:
+                rel = link.relative_to(self.root).as_posix() if self.root in link.parents \
+                    else link.name
+                raise SourceError(f"Source contains a symlink ({rel}); symlinks are not allowed.")
+
+
+def strip_symlinks(root: Path) -> List[Path]:
+    """Delete every symlink under `root` without following any; return where they were."""
+    found: List[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        for name in dirnames + filenames:
+            p = Path(dirpath) / name
+            if p.is_symlink():
+                found.append(p)
+    for p in found:
+        p.unlink()
+    return found
 
 
 def reject_symlinks(root: Path) -> None:

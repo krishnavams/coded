@@ -29,6 +29,7 @@ class TodoStore:
 
 class TodoWriteTool(Tool):
     name = "todo_write"
+    brief = 'Task list for work with 3+ steps: write the whole list, keep one item in_progress, mark items completed as soon as they are done. Each call replaces the list.'
     description = """Create and update a structured task list for the current work. Use it \
 for any task with 3+ steps or when the user gives several requests: write the full list \
 up front, keep exactly one item `in_progress`, and mark items `completed` as soon as they \
@@ -87,6 +88,7 @@ PLAN_MODE_REMINDER = (
 
 class ExitPlanModeTool(Tool):
     name = "exit_plan_mode"
+    brief = 'Plan mode only: present your finished plan for approval. If approved, implement it.'
     description = """Use only in plan mode: present your finished implementation plan \
 (Markdown, concise, step by step) for the user's approval. If approved, plan mode ends and \
 you should implement it; if rejected, revise the plan as the user asks."""

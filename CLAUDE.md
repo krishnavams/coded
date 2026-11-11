@@ -41,11 +41,16 @@ coded/
 ├── prompt_files.py     # prompt-file loading/overrides/profiles + `coded prompts` CLI
 ├── limits.py           # per-model limits scaled by context_window; result/step caps
 ├── repo_overview.py    # repository overview for large-context models
+├── repomap.py          # ranked symbol map (ast + regex, PageRank over references)
+├── memory.py           # project memory store (./.coded/memory.json)
+├── speed.py            # `coded models --speed`: first token, total, tok/s per model
+├── verify.py           # post-turn gates: project checks + a second model
 ├── routing.py          # difficulty classifier + model pools (round-robin, health)
 ├── builtin_prompts/    # system, coder, tools, security, skills, planner, reviewer, debugger (.md);
 │                       # compact/ and full/ hold per-profile variants
 ├── repl.py             # interactive REPL and slash commands
 ├── tui.py              # full-screen Textual app (coded --tui), optional
+├── sidebar.py          # the TUI's right panel: session, tasks, changed files, queue, shells
 ├── ui.py               # rich-based rendering helpers (single Console)
 ├── skills.py           # skill discovery, frontmatter parsing, prompt section
 ├── review.py           # /review pipeline: reviewer→qa→security sub-agents
@@ -57,6 +62,7 @@ coded/
 ├── index.py            # CodeIndex: chunk/embed/store + cosine search
 ├── websearch.py        # web-search backends + HTML→text fetch
 ├── images.py           # image → base64 data URL for vision models
+├── documents.py        # PDF/DOCX/XLSX/PPTX → text sections for the read tool
 ├── mcp_client.py       # optional MCP stdio client (background asyncio loop)
 ├── hooks.py            # HookRunner: PreToolUse/PostToolUse/UserPromptSubmit/SessionStart/Stop
 ├── sandbox.py          # bwrap / sandbox-exec wrapping for bash (no Windows backend)
@@ -81,6 +87,8 @@ coded/
     ├── todo.py         # todo_write (TodoStore), exit_plan_mode
     ├── external_agent.py  # external_agent (delegate to an outside CLI agent)
     ├── search.py       # glob, grep
+    ├── repo_map.py     # repo_map (ranked outline of the codebase)
+    ├── memory.py       # memory (remember/forget/list, gated per call)
     ├── semantic_search.py  # semantic_search (uses the embedded index)
     ├── shell.py        # bash (sandbox/background), bash_output, kill_shell
     ├── git.py          # git (read-only free, mutations gated)
@@ -93,6 +101,7 @@ tests/
 ├── conftest.py         # FakeServer + EmbeddingsServer + RouteServer (all offline)
 ├── test_agent_e2e.py   # full agent loop (tool call, streaming, permission)
 ├── test_tui.py         # Textual TUI via Pilot (turn, permission modal, clear)
+├── test_sidebar.py     # the side panel: file counts, sections, width, Ctrl+B
 ├── test_review.py      # /review pipeline + coded review verdict/exit code
 ├── test_compaction.py  # context compaction trigger + tail preservation
 ├── test_permissions_sessions.py  # allow/deny rules, diff preview, sessions, json
@@ -100,8 +109,15 @@ tests/
 ├── test_git_tools.py   # git tool + github tool (fake API)
 ├── test_semantic_and_web.py  # index/search, web_fetch/search, image encoding
 ├── test_skills.py      # skill discovery, frontmatter, skill tool
+├── test_agents_command.py  # `coded agents`: states, install hints per platform, --check
+├── test_skill_sources.py  # real-world collections: links, nesting, YAML, prompt budget
 ├── test_tools.py       # tool + config unit tests
 ├── test_routing.py     # difficulty routing, pools, endpoint reuse, per-model cost
+├── test_repomap.py     # symbol extraction, ranking, budgets, the repo_map tool
+├── test_memory.py      # memory store, the permission gate, prompt injection
+├── test_documents.py   # reading PDF/Word/Excel/PowerPoint, refusals, no-extra path
+├── test_speed.py       # lazy SDK import, disabled_tools, compact tool schema, --speed
+├── test_verify.py      # the verification loop: checks, second opinion, rounds
 ├── test_model_chain.py # failover cooldown, sizing for a smaller fallback, stream retry,
 │                       # per-model timeout, unknown-alias warnings
 ├── test_big_models.py  # scaled limits, caps, overflow retry, max_turns, profiles, repo overview
@@ -234,6 +250,22 @@ config.example.json     # sample configuration
   goes through `limits_for`; `test_128k_limits_equal_the_historical_constants`
   pins the base values. Tools never hard-code output sizes: use `get_limits(ctx)`.
   Every prompt profile must keep the untrusted-content and secrets rules (tested).
+- **`coded agents`** (`external_agents.agent_statuses`/`install_hint`, `AGENT_INFO`):
+  status of every preset/configured outside agent and the install command for
+  missing presets. Install commands are **printed, never run** (same reason as
+  "no install tool"). `which`/`platform` are injectable, so tests don't depend
+  on what is installed; keep `AGENT_INFO` keys equal to `PRESETS` (tested), and
+  check new install commands against the real registry before adding them.
+- **Skill sources** (`sources.py`, `plugins.find_skills`): a fetched source has
+  every symlink deleted unread (`strip_symlinks`); `Fetched.refuse_links_in`
+  then refuses only an install whose own files held one (a skill dir, or a
+  whole plugin/marketplace root). Skills are searched at the root,
+  `skills/*/`, `*/`, then up to `_MAX_DEPTH` deep without entering a skill's
+  own folders; duplicate names are an error. skills.sh page links and GitHub
+  `tree/` links are parsed into GitHub sources. The frontmatter parser is
+  indentation-based (block lists, one-level maps, `>`/`|` and plain multi-line
+  scalars) — still no pyyaml. `skills_prompt_section(budget=limits.skills_chars)`
+  shortens a big list; under budget it must be byte-identical to unbudgeted.
 - **No install tool for the model.** Installing skills/plugins grants code
   execution (hooks run unprompted), so it stays a user-run CLI action. Never
   write plugin contributions into the user's config.json; they're merged at load
@@ -302,6 +334,10 @@ config.example.json     # sample configuration
   with `call_from_thread`. The permission callback pushes a `PermissionModal`
   and blocks the worker on a `threading.Event` until the user answers. Guard the
   Textual import — the app must run fine without it installed.
+  The right-hand panel is drawn by `sidebar.render` (no Textual import, so it is
+  testable alone) from agent state; changed-file counts come from the current
+  checkpoint group (`sidebar.file_changes`) and read disk, so they are
+  recomputed only after a tool result, a turn or `/undo` — never per token.
 - **Streaming**: `LLMClient._consume_stream` accumulates text, reasoning
   (`reasoning_content`/`reasoning`) and tool-call deltas. Optional params
   (`stream_options`, `reasoning_effort`, …) that an endpoint rejects with a 400
@@ -310,6 +346,64 @@ config.example.json     # sample configuration
   OpenAI API. SDK retries are off (`max_retries=0`); `LLMClient._create` owns
   retry/backoff, and `complete()` owns fallback. A stream that fails is retried
   only if no text/reasoning was emitted yet (otherwise it would display twice).
+- **Failures are explained, not dumped**: every error that ends a turn goes
+  through `llm.explain_failure` (REPL, TUI and `--print`), which names the model
+  and base_url and gives the next step. A 5xx gets one last attempt with the
+  optional params (`_OPTIONAL_PARAMS`) removed, since some gateways answer an
+  unimplemented param with a 500; `tools` is never dropped automatically.
+  `coded models --check` probes a failing endpoint in stages
+  (`llm.probe_stages`/`probe_hint`) to say which part of the request it refuses.
+- **Startup and per-request size**: `openai`/`httpx` are lazy in `llm.py`
+  (`_LazyModule`, warmed by `llm.prewarm()` on a thread from `cli.main`), so
+  importing `coded.cli`/`coded.agent` must not import them — a test checks.
+  Don't add top-level imports of heavy libraries; import inside the function.
+  Tool definitions go out with every request: `Agent._tool_schema()` applies
+  `Config.disabled_tools_for(model)` (fnmatch patterns, global + per model)
+  and, for the compact prompt profile, `Tool.brief` plus argument descriptions
+  cut to a sentence (`base._compact_parameters`). The standard profile's schema
+  must stay byte-identical. A disabled tool is also refused in `_run_tool`.
+  `coded models --speed` (`speed.py`) times the real turn shape.
+- **Documents** (`documents.py`, through the `read` tool): PDF/DOCX/XLSX/PPTX
+  become sections (pages, slides, sheets) of text lines, then go through the
+  same offset/limit/budget code as text. The parsers are the `docs` extra and
+  are imported lazily; a missing one is a `DocumentError` naming the install,
+  and a binary file must **never** be decoded as text (a PDF is recognised by
+  magic, and text with too many replacement characters is refused). Parsers
+  raise anything, so `documents.load` converts every exception.
+- **Repository map** (`repomap.py`, the `repo_map` tool): `ast` for Python plus
+  conservative regexes elsewhere — an outline, not a parse tree, and never a
+  new dependency. Ranking is PageRank over a file graph built from "names a
+  symbol another file defines"; methods and names with more than `_MAX_DEFINERS`
+  definers are excluded, or ubiquitous names decide the ranking. Everything is
+  bounded (files, bytes, seconds, output) and nothing raises. It is a **tool**,
+  not a prompt section: the system prompt stays names-only, and a 128k model
+  must behave exactly as before.
+- **Project memory** (`memory.py`, the `memory` tool, `/memory`): short notes in
+  `./.coded/memory.json`, injected by `build_system_prompt` as labelled data
+  within `limits.memory_chars`. The model writes only the **project** store and
+  only through `ctx.permissions.request` (per-call, like git — never
+  `requires_permission`, which would also drag the turn through the verify
+  gate), and not at all while `permissions.tainted`. Every write re-reads first,
+  so a concurrent session's note is not clobbered. Sub-agents get no memory
+  tool. An empty store must leave the system prompt byte-identical.
+- **Verification** (`verify.py`, `Agent._verify_turn`): after a turn that
+  changed something, the project's `verify.command` and/or the `verify` role
+  model gate the answer; a complaint goes back as a `[verify]` user message,
+  bounded by `max_rounds`, then released with a visible note. The gate is "did
+  a tool with `requires_permission` or `mutates` run", **not** the checkpoint
+  group — `bash` edits are not checkpointed. Checkpoints only supply the diff.
+  Never runs for sub-agents, plan mode or an unchanged turn; an unparseable
+  verdict and a reviewer outage both release the turn. The second opinion needs
+  `model_roles.verify` set explicitly: never auto-assign a critic.
+- **Last-resort fallback** (`Config.auto_fallback`, on): when a model's own
+  chain is exhausted, `Config.last_resort_models` offers the other configured
+  models (same endpoint first, then the widest window) and `LLMClient._chain`
+  drops the ones that cannot serve *this* request — no vision for an image, no
+  tools for a tool turn, no window smaller than the conversation (never compact
+  to survive someone else's outage). Declared fallbacks are never filtered.
+  Each gets one attempt, a host that refuses a connection is skipped for its
+  other models, and the error raised is the **primary's**, carrying
+  `coded_also_tried`.
 - **Model chain**: an endpoint that fails over is skipped for
   `fallback_cooldown` seconds (`_Endpoint.down_until`; cooling endpoints are
   tried last). `LLMClient.next_model()` is the model the next request goes to;
@@ -335,6 +429,21 @@ config.example.json     # sample configuration
   (sub-agents included). An unknown `shell` name is a ConfigError, never a silent
   fallback. Arguments passed to a `.bat`/`.cmd` shim are re-parsed by cmd, so
   `external_agents.cmd_shim_risk` refuses prompts it could execute.
+- **Interactive config** (`config_wizard.py`, `coded config setup`, REPL
+  `/setup`): edits **one config file's raw JSON**, never a merged `Config` —
+  otherwise another layer's models and plugin contributions would be written
+  into the user's file. Unknown keys survive; writes are atomic and confirmed;
+  API keys default to an env-var name and a literal key only ever reaches the
+  user file (mode 600), never the project one. All prompting goes through
+  `Prompter`, so the flow is testable without a TTY.
+- **A long turn must stay legible and interruptible**: task progress goes
+  through `ui.todo_progress`/`todo_bar`/`todo_title`/`current_todo` (panel, REPL
+  toolbar and TUI status line all use them), and input typed mid-turn is queued
+  by `typeahead.TypeAhead` (REPL) or `CodedTUI._queued` and run as the next
+  message. The type-ahead reader owns stdin during a turn, so a prompt that
+  needs an answer asks it via `TypeAhead.ask()` instead of reading stdin itself.
+  Polling (never a blocking read) is what lets the reader stop with the turn
+  instead of stealing the next prompt's first line.
 - **Config is layered**: presets → user file → project file → CLI flags. Don't
   hard-code paths or keys; go through `config.py`. Dict-valued settings
   (`hooks`, `sandbox`, `telemetry`, `external_agents`, `model_roles`) merge
@@ -350,6 +459,7 @@ config.example.json     # sample configuration
 ```bash
 pip install -e '.[dev]'        # editable install + pytest
 pip install -e '.[mcp]'        # add MCP support
+pip install -e '.[docs]'       # read PDF/Word/Excel/PowerPoint
 ```
 
 ### Run
@@ -384,7 +494,7 @@ one (e.g. `ruff`, `black`), record the commands here.
 
 - **argparse + free-form prompt**: the top-level parser has a `nargs="*"`
   positional `prompt`, which conflicts with argparse subparsers. Subcommands
-  (`config`, `models`, `index`, `review`, `sessions`, `commit`, `skill`,
+  (`config`, `models`, `agents`, `index`, `review`, `sessions`, `commit`, `skill`,
   `plugin`, `prompts`, `acp`, `mcp-serve`) are therefore dispatched manually by the first token in
   `cli.main()` — keep new subcommands on that path, not on `add_subparsers`.
 - **ACP / MCP server modes keep stdout clean** (`ui.set_quiet(True)`): stdout

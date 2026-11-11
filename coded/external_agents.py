@@ -45,6 +45,30 @@ PRESETS: Dict[str, Dict[str, Any]] = {
               "description": "Block Goose CLI"},
 }
 
+# What `coded agents` tells the user about each preset. Install commands are
+# shown, never run: installing a program is the user's decision.
+_NPM = "npm install -g {}"
+AGENT_INFO: Dict[str, Dict[str, Any]] = {
+    "aider": {"open_source": True, "homepage": "https://aider.chat",
+              "install": "python -m pip install aider-install && aider-install", "needs": "python"},
+    "opencode": {"open_source": True, "homepage": "https://opencode.ai",
+                 "install": _NPM.format("opencode-ai"), "needs": "npm"},
+    "goose": {"open_source": True, "homepage": "https://github.com/block/goose",
+              "install": "curl -fsSL https://github.com/block/goose/releases/download/stable/"
+                         "download_cli.sh | bash",
+              "install_mac": "brew install block-goose-cli",
+              "install_windows": "see https://block.github.io/goose/docs/getting-started/installation"},
+    "codex": {"open_source": True, "homepage": "https://github.com/openai/codex",
+              "install": _NPM.format("@openai/codex"), "needs": "npm"},
+    "gemini": {"open_source": True, "homepage": "https://github.com/google-gemini/gemini-cli",
+               "install": _NPM.format("@google/gemini-cli"), "needs": "npm"},
+    "claude": {"open_source": False, "homepage": "https://docs.anthropic.com/en/docs/claude-code",
+               "install": _NPM.format("@anthropic-ai/claude-code"), "needs": "npm"},
+    "cursor": {"open_source": False, "homepage": "https://cursor.com/cli",
+               "install": "curl https://cursor.com/install -fsS | bash",
+               "install_windows": "see https://cursor.com/cli"},
+}
+
 _DEFAULT_TIMEOUT = 1800
 _MAX_OUTPUT = 40_000
 
@@ -155,3 +179,95 @@ def describe(agents: Dict[str, ExternalAgent]) -> str:
 
 def which(agent: ExternalAgent) -> Optional[str]:
     return shutil.which(agent.command[0])
+
+
+# ---------------------------------------------------------------------------
+# `coded agents`: which outside agents are usable, and how to get the others
+# ---------------------------------------------------------------------------
+@dataclass
+class AgentStatus:
+    name: str
+    state: str              # ready | not installed | disabled | detection off
+    command: List[str]
+    description: str = ""
+    path: Optional[str] = None
+    configured: bool = False     # defined or changed in the user's config
+    open_source: Optional[bool] = None
+    homepage: str = ""
+    install: str = ""            # a command for the user to run, or a pointer
+    note: str = ""               # e.g. "needs Node.js (npm not found)"
+
+
+def install_hint(name: str, platform: str = "", which=None) -> tuple:
+    """(command to show, note) for installing a preset agent on this platform."""
+    import sys
+
+    which = which or shutil.which
+    platform = platform or sys.platform
+    info = AGENT_INFO.get(name) or {}
+    if platform.startswith("win") and info.get("install_windows"):
+        cmd = info["install_windows"]
+    elif platform == "darwin" and info.get("install_mac"):
+        cmd = info["install_mac"]
+    else:
+        cmd = info.get("install", "")
+    note = ""
+    needs = info.get("needs")
+    if needs == "npm" and cmd.startswith("npm ") and which("npm") is None:
+        note = "needs Node.js 18+ (npm not found)"
+    elif needs == "python" and which("python") is None and which("python3") is None:
+        note = "needs Python 3 (python not found)"
+    if needs == "python" and which("python") is None and which("python3") is not None:
+        cmd = cmd.replace("python -m", "python3 -m")
+    return cmd, note
+
+
+def agent_statuses(config: Any, which=None, platform: str = "") -> List[AgentStatus]:
+    """Every preset and configured agent, whether the model can use it, and why not."""
+    which = which or shutil.which
+    configured: Dict[str, Any] = dict(getattr(config, "external_agents", None) or {})
+    detect = getattr(config, "detect_external_agents", True)
+    out: List[AgentStatus] = []
+    for name in list(PRESETS) + [n for n in configured if n not in PRESETS]:
+        user = configured.get(name)
+        spec = {**PRESETS.get(name, {}), **(user or {})}
+        command = spec.get("command") or []
+        if isinstance(command, str):
+            command = command.split()
+        info = AGENT_INFO.get(name, {})
+        status = AgentStatus(name=name, state="ready", command=list(command),
+                             description=str(spec.get("description", "")),
+                             configured=user is not None,
+                             open_source=info.get("open_source"),
+                             homepage=info.get("homepage", ""))
+        status.path = which(command[0]) if command else None
+        if user is not None and not user.get("enabled", True):
+            status.state = "disabled"
+        elif not command:
+            status.state = "not installed"
+            status.note = "no `command` in config"
+        elif status.path is None:
+            status.state = "not installed"
+            if name in AGENT_INFO and not (user and user.get("command")):
+                status.install, status.note = install_hint(name, platform, which)
+            else:
+                status.note = f"`{command[0]}` is not on PATH"
+        elif user is None and not detect:
+            status.state = "detection off"
+        out.append(status)
+    return out
+
+
+def version_of(path: str, timeout: float = 15.0) -> tuple:
+    """(ok, first line of `<agent> --version`): proves the program starts."""
+    try:
+        proc = run_command([path, "--version"], timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, f"no answer to --version within {timeout:.0f}s"
+    except OSError as exc:
+        return False, f"could not start: {exc}"
+    text = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    first = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    if proc.returncode != 0:
+        return False, f"exit {proc.returncode}: {first[:120]}" if first else f"exit {proc.returncode}"
+    return True, first[:120] or "(started, printed no version)"

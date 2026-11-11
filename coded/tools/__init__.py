@@ -6,7 +6,9 @@ from coded.tools.base import Tool, ToolContext, ToolRegistry, ToolResult
 from coded.tools.files import DeleteTool, EditTool, LsTool, MoveTool, ReadTool, WriteTool
 from coded.tools.git import GitTool
 from coded.tools.github import GitHubTool
+from coded.tools.memory import MemoryTool
 from coded.tools.patch import ApplyPatchTool, MultiEditTool
+from coded.tools.repo_map import RepoMapTool
 from coded.tools.search import GlobTool, GrepTool
 from coded.tools.semantic_search import SemanticSearchTool
 from coded.tools.shell import BashOutputTool, BashTool, KillShellTool
@@ -32,7 +34,7 @@ def build_registry(include_task: bool = True) -> ToolRegistry:
     tools = [
         ReadTool(), WriteTool(), EditTool(), MultiEditTool(), ApplyPatchTool(),
         LsTool(), MoveTool(), DeleteTool(),
-        GlobTool(), GrepTool(), SemanticSearchTool(),
+        GlobTool(), GrepTool(), SemanticSearchTool(), RepoMapTool(),
         BashTool(), BashOutputTool(), KillShellTool(),
         GitTool(), GitHubTool(), WebSearchTool(), WebFetchTool(),
         TodoWriteTool(),
@@ -40,6 +42,7 @@ def build_registry(include_task: bool = True) -> ToolRegistry:
     for tool in tools:
         reg.register(tool)
     if include_task:
+        reg.register(MemoryTool())  # main agent only: a sub-agent has no session to recall
         reg.register(TaskTool())
         reg.register(ExitPlanModeTool())
     return reg

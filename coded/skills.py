@@ -39,30 +39,54 @@ def _scalar(v: str) -> Any:
 
 
 def _parse_yaml_block(lines: List[str]) -> Dict[str, Any]:
-    """A deliberately small YAML subset: scalars, inline lists, block lists."""
-    meta: Dict[str, Any] = {}
-    key: str | None = None
+    """A deliberately small YAML subset, enough for real SKILL.md files.
+
+    Top-level keys start at column 0; indented lines belong to the key above:
+    a block list (``- item``), a one-level mapping (``metadata:`` then
+    ``  author: x``), a block scalar (``description: >`` / ``|``) or a plain
+    scalar continued over several lines. Values may be inline lists.
+    """
+    entries: List[Tuple[str, str, List[str]]] = []  # (key, inline value, indented lines)
     for raw in lines:
         if not raw.strip() or raw.lstrip().startswith("#"):
+            if entries and raw.strip() == "":
+                entries[-1][2].append("")  # keeps paragraph breaks in `|` scalars
             continue
-        # Block-list item under the current key.
-        if raw[:1] in (" ", "\t") and raw.lstrip().startswith("- ") and key is not None:
-            meta.setdefault(key, [])
-            if isinstance(meta[key], list):
-                meta[key].append(_scalar(raw.lstrip()[2:]))
-            continue
-        if ":" in raw:
+        if raw[:1] not in (" ", "\t") and ":" in raw:
             k, _, v = raw.partition(":")
-            key = k.strip()
-            v = v.strip()
-            if v == "":
-                meta[key] = ""  # a block list may follow
-            elif v.startswith("[") and v.endswith("]"):
-                inner = v[1:-1]
-                meta[key] = [_scalar(x) for x in inner.split(",") if x.strip()]
-            else:
-                meta[key] = _scalar(v)
+            entries.append((k.strip(), v.strip(), []))
+        elif entries:
+            entries[-1][2].append(raw)
+    meta: Dict[str, Any] = {}
+    for key, value, more in entries:
+        meta[key] = _yaml_value(value, more)
     return meta
+
+
+def _yaml_value(value: str, more: List[str]) -> Any:
+    body = [m for m in more]
+    while body and body[-1] == "":
+        body.pop()
+    stripped = [m.strip() for m in body]
+    if value[:1] in ("|", ">"):
+        if value[0] == "|":
+            return "\n".join(stripped).strip()
+        return " ".join(x for x in stripped if x).strip()
+    if value.startswith("[") and value.endswith("]"):
+        return [_scalar(x) for x in value[1:-1].split(",") if x.strip()]
+    if value == "" and stripped and all(x.startswith("- ") or x == "-" or not x
+                                        for x in stripped):
+        return [_scalar(x[2:]) for x in stripped if x.startswith("- ")]
+    if value == "" and stripped and re.match(r"^[\w.-]+:(\s|$)", stripped[0]):
+        mapping: Dict[str, Any] = {}
+        for x in stripped:
+            if ":" in x:
+                k, _, v = x.partition(":")
+                mapping[k.strip()] = _scalar(v.strip()) if v.strip() else ""
+        return mapping
+    parts = [value] + [x for x in stripped if x]
+    text = " ".join(p for p in parts if p).strip()
+    return _scalar(text) if text else ""
 
 
 def parse_frontmatter(text: str) -> Tuple[Dict[str, Any], str]:
@@ -163,14 +187,43 @@ def discover_skills(cwd: str) -> Dict[str, Skill]:
 
 
 def skills_prompt_section(skills: Dict[str, Skill], cwd: Optional[str] = None,
-                          model: Any = None) -> str:
-    """Level-1 disclosure: the skills.md intro, then names + descriptions."""
+                          model: Any = None, budget: int = 0) -> str:
+    """Level-1 disclosure: the skills.md intro, then names + descriptions.
+
+    `budget` (characters, 0 = none) keeps a large collection from crowding a
+    small model's window: past it, descriptions are cut to about 200
+    characters, and what still does not fit is listed by name only — every
+    skill stays loadable through the skill tool either way.
+    """
     if not skills:
         return ""
     from coded.prompt_files import load_prompt
 
     intro = load_prompt("skills", cwd, model)
-    out = [intro, ""] if intro else ["# Available skills", ""]
+    head = [intro, ""] if intro else ["# Available skills", ""]
+    full = [f"- **{s.name}**: {s.description}" for s in skills.values()]
+    text = "\n".join(head + full) + "\n"
+    if not budget or len(text) <= budget:
+        return text
+    used = len("\n".join(head)) + 1
+    lines: List[str] = []
+    rest: List[str] = []
     for s in skills.values():
-        out.append(f"- **{s.name}**: {s.description}")
-    return "\n".join(out) + "\n"
+        line = f"- **{s.name}**: {_shorten(s.description)}"
+        if not rest and used + len(line) + 1 <= budget * 0.9:
+            lines.append(line)
+            used += len(line) + 1
+        else:
+            rest.append(s.name)
+    if rest:
+        lines.append(f"- Also installed ({len(rest)}, load by name with the skill tool when "
+                     f"one fits the task): {', '.join(rest)}")
+    return "\n".join(head + lines) + "\n"
+
+
+def _shorten(text: str, limit: int = 200) -> str:
+    """Cut on a word boundary; the "Use when…" clause often comes second."""
+    text = " ".join(str(text).split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rsplit(" ", 1)[0].rstrip(",;:") + "…"

@@ -83,6 +83,14 @@ class Agent:
         # (assistant/reasoning deltas, tool calls/results, diffs, todos, status)
         # instead of printing via `ui` — used by the TUI and ACP server. See _emit().
         self.on_event: Optional[Callable[[dict], None]] = None
+        # Verification state (see _verify_turn): whether this turn touched
+        # anything, whether it did so through the shell, and how many times it
+        # has been sent back.
+        self._turn_changed_things = False
+        self._turn_ran_shell = False
+        self._verify_rounds = 0
+        self._verify_last = ""
+        self._last_request = ""
         self._interrupted = False
         self._session_started = False
         self._instruction_dirs: set = set()
@@ -97,7 +105,8 @@ class Agent:
     def _make_llm(self, model: ModelConfig) -> LLMClient:
         pool = self._pool or self.config.pool_of(model.name)
         return LLMClient(model, fallbacks=self.config.fallbacks_for(model, pool),
-                         on_status=self._status_note)
+                         on_status=self._status_note,
+                         last_resort=self.config.last_resort_models(model, pool))
 
     def _status_note(self, text: str) -> None:
         if not self._emit("status", text=text) and self.verbose:
@@ -140,6 +149,10 @@ class Agent:
                     self._plan_intro_sent = True
                     text += "\n\n" + load_prompt("planner", self.cwd, self.model)
                 text += "\n\n" + PLAN_MODE_REMINDER
+        self._turn_changed_things = False
+        self._turn_ran_shell = False
+        self._verify_rounds = 0
+        self._last_request = str(user_message)
         if self.checkpoints is not None:
             self.checkpoints.begin(str(user_message)[:60])
         if images:
@@ -194,7 +207,9 @@ class Agent:
         repository overview, skills list, --system extras)."""
         from coded.skills import skills_prompt_section
 
-        section = skills_prompt_section(self.skills, self.cwd, self.model) if self.skills else ""
+        section = (skills_prompt_section(self.skills, self.cwd, self.model,
+                                         budget=self.limits.skills_chars)
+                   if self.skills else "")
         combined = "\n\n".join(x for x in (self.system_extra, section) if x) or None
         return build_system_prompt(self.cwd, extra=combined, model=self.model, limits=self.limits)
 
@@ -271,6 +286,10 @@ class Agent:
 
             if not completion.tool_calls:
                 final_text = completion.content
+                feedback = self._verify_turn(final_text)
+                if feedback:
+                    self.session.add_user(feedback)
+                    continue
                 if not self.is_subagent and stop_continuations < _MAX_STOP_CONTINUATIONS:
                     stop = self.hooks.run("Stop", {"last_message": final_text})
                     self._hook_warnings(stop)
@@ -294,6 +313,63 @@ class Agent:
                 if self.verbose:
                     ui.warn(f"Reached max turns ({self.max_turns}); stopping.")
         return final_text
+
+    def _verify_turn(self, final_text: Optional[str]) -> Optional[str]:
+        """Run the project's checks and/or a second model over this turn's change.
+
+        Returns feedback to send the agent back to work, or None to let the
+        answer through. Never runs for sub-agents, in plan mode, or for a turn
+        that changed nothing: an unconfigured session behaves exactly as before.
+        """
+        from coded.verify import (VerifySettings, checks_feedback, exhausted_note,
+                                  review_feedback, run_checks, second_opinion, turn_diff,
+                                  NEEDS_CHANGES)
+
+        if self.is_subagent or self.mode == "plan" or not self._turn_changed_things:
+            return None
+        settings = VerifySettings.from_config(self.config.verify)
+        has_reviewer = bool(self.config.model_roles.get("verify"))
+        if not (settings.runs_checks() or settings.runs_review(has_reviewer)):
+            return None
+        if self._verify_rounds >= settings.max_rounds:
+            # The last round's fix has not been checked yet: run the checks once
+            # more so a change that did pass is not reported as unverified.
+            if settings.runs_checks():
+                final = run_checks(settings.command, self.cwd, settings.timeout,
+                                   limit=self.limits.tool_result_chars)
+                if final.ok:
+                    self._status_note("Checks passed.")
+                    self._verify_rounds = 0
+                    return None
+            self._status_note(exhausted_note(settings.max_rounds, self._verify_last or "unresolved"))
+            return None
+        self._verify_rounds += 1
+
+        checks = None
+        if settings.runs_checks():
+            self._status_note(f"Verifying: {settings.command}")
+            checks = run_checks(settings.command, self.cwd, settings.timeout,
+                                limit=self.limits.tool_result_chars)
+            if not checks.ok:
+                self._verify_last = f"`{settings.command}` failed"
+                self._status_note(f"Checks failed; sending the turn back "
+                                  f"(round {self._verify_rounds}/{settings.max_rounds}).")
+                return checks_feedback(checks)
+            self._status_note("Checks passed.")
+
+        if settings.runs_review(has_reviewer):
+            diff, paths = turn_diff(self.checkpoints, self.cwd)
+            self._status_note("Asking the verify model for a second opinion…")
+            verdict, notes = second_opinion(self, self._last_request, diff, paths,
+                                            self._turn_ran_shell, checks)
+            if verdict == NEEDS_CHANGES:
+                self._verify_last = "the second opinion asked for changes"
+                self._status_note(f"Second opinion: changes requested "
+                                  f"(round {self._verify_rounds}/{settings.max_rounds}).")
+                return review_feedback(notes)
+            self._status_note(f"Second opinion: {verdict.lower()}.")
+        self._verify_rounds = 0  # this turn is clean; a later one starts fresh
+        return None
 
     def _run_tool_calls(self, tool_calls) -> List[Tuple[Any, str]]:
         """Run the model's tool calls, batching consecutive parallel-safe ones."""
@@ -327,6 +403,10 @@ class Agent:
     def _parallel_ok(self, tc) -> bool:
         tool = self.registry.get(tc.name)
         if tool is None:
+            return False
+        from coded.tools.base import tool_disabled
+
+        if tool_disabled(tc.name, self.config.disabled_tools_for(self.model)):
             return False
         try:
             args = json.loads(tc.arguments or "{}")
@@ -467,7 +547,11 @@ class Agent:
         fallback while the main model is cooling down, the main model otherwise
         (or `target`, the model that just refused a request as too long).
         Returns True if the conversation had to be shrunk to fit."""
-        target = target or self.llm.next_model()
+        if target is None:
+            from coded.compaction import current_input_tokens, estimate_tokens
+
+            now = max(current_input_tokens(self.session), estimate_tokens(self.session.messages))
+            target = self.llm.next_model(size=int(now * 1.25))
         if target is self._sized_model:
             return False
         smaller = target.context_window < self._sized_model.context_window
@@ -505,8 +589,18 @@ class Agent:
                 return
             self._maybe_compact(force=True, keep_recent=keep)
 
+    def _tool_schema(self) -> Optional[list]:
+        """The tool definitions sent with each request to the current model."""
+        if not self.model.supports_tools:
+            return None
+        from coded.prompt_files import prompt_profile
+
+        return self.registry.openai_schema(
+            compact=prompt_profile(self.model) == "compact",
+            exclude=self.config.disabled_tools_for(self.model))
+
     def _call_model(self) -> Completion:
-        tools = self.registry.openai_schema() if self.model.supports_tools else None
+        tools = self._tool_schema()
         with self.tracer.span("llm", model=self.model.name, model_id=self.model.model,
                               messages=len(self.session.messages)) as attrs:
             if self.on_event is not None:
@@ -654,6 +748,14 @@ class Agent:
             if display:
                 self._show_tool_result(f"Unknown tool '{tc.name}'.", True, tc.id, tc.name)
             return f"Error: unknown tool '{tc.name}'.", True, args
+        from coded.tools.base import tool_disabled
+
+        if tool_disabled(tc.name, self.config.disabled_tools_for(self.model)):
+            msg = (f"The '{tc.name}' tool is disabled in this configuration "
+                   f"(disabled_tools). Do the work with the tools you were given.")
+            if display:
+                self._show_tool_result(msg, True, tc.id, tc.name)
+            return f"Error: {msg}", True, args
 
         ctx = self._ctx()
 
@@ -694,6 +796,14 @@ class Agent:
                     self._show_tool_result("Denied.", True, tc.id, tc.name)
                 return ("The user denied permission to run this action. Do not retry it; ask "
                         "how to proceed or try another approach.", True, args)
+
+        if tool.requires_permission or getattr(tool, "mutates", False):
+            # Something outside the conversation may have changed, so this turn
+            # has to be verified before it can claim success. Checkpoints are not
+            # the signal: `bash` edits are deliberately not checkpointed.
+            self._turn_changed_things = True
+            if tc.name == "bash":
+                self._turn_ran_shell = True
 
         with self.tracer.span("tool", tool=tc.name) as attrs:
             try:

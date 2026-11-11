@@ -173,6 +173,8 @@ _TOOL_TITLES = {
     "web_search": ("WebSearch", "query"), "web_fetch": ("Fetch", "url"),
     "task": ("Task", "description"), "skill": ("Skill", "name"),
     "external_agent": ("Agent", "agent"), "apply_patch": ("Patch", None),
+    "repo_map": ("Map repo", None),
+    "memory": ("Memory", None),
     "todo_write": ("Update tasks", None), "exit_plan_mode": ("Plan ready", None),
 }
 _PATH_KEYS = {"path", "source", "destination", "cwd"}
@@ -332,16 +334,56 @@ def diff(text: str) -> None:
 _TODO_MARK = {"pending": ("☐", MUTED), "in_progress": ("◐", WARN), "completed": ("☑", ACCENT2)}
 
 
+def todo_progress(items: list) -> tuple:
+    """(done, total, percent) for a task list."""
+    total = len(items)
+    done = sum(1 for i in items if i.get("status") == "completed")
+    return done, total, int(round(100 * done / total)) if total else 0
+
+
+def todo_bar(items: list, width: int = 12) -> str:
+    """A text progress bar: filled for done, a half block for work in progress."""
+    done, total, _ = todo_progress(items)
+    if not total:
+        return ""
+    active = any(i.get("status") == "in_progress" for i in items)
+    filled = int(width * done / total)
+    bar = "▰" * filled
+    if active and filled < width:
+        bar += "▨"  # the running item, distinct from both done and pending
+    return bar.ljust(width, "▱")
+
+
+def todo_title(items: list) -> str:
+    """"Tasks 2/5 ▰▰▰▱▱ 40%" — the same summary everywhere it is shown."""
+    done, total, pct = todo_progress(items)
+    if not total:
+        return "Tasks"
+    return f"Tasks  {done}/{total}  {todo_bar(items)}  {pct}%"
+
+
+def current_todo(items: list) -> str:
+    """What the agent says it is doing right now, for a status line."""
+    for item in items:
+        if item.get("status") == "in_progress":
+            return item.get("content", "")
+    return ""
+
+
 def todos(items: list) -> None:
     """Render the agent's task list (todo_write)."""
     if _quiet:
         return
     t = Text()
-    for item in items:
-        mark, color = _TODO_MARK.get(item.get("status", "pending"), ("☐", MUTED))
-        style = f"{MUTED} strike" if item.get("status") == "completed" else (
-            "bold" if item.get("status") == "in_progress" else "")
+    for i, item in enumerate(items, 1):
+        status = item.get("status", "pending")
+        mark, color = _TODO_MARK.get(status, ("☐", MUTED))
+        style = f"{MUTED} strike" if status == "completed" else (
+            "bold" if status == "in_progress" else "")
         t.append(f"  {mark} ", style=color)
-        t.append(item.get("content", "") + "\n", style=style)
-    console.print(Panel(t, title="Tasks", title_align="left", border_style=MUTED, box=ROUNDED,
-                        expand=False))
+        t.append(item.get("content", ""), style=style)
+        if status == "in_progress":
+            t.append("   ← now", style=WARN)
+        t.append("\n")
+    console.print(Panel(t, title=todo_title(items), title_align="left", border_style=MUTED,
+                        box=ROUNDED, expand=False))

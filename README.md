@@ -204,10 +204,21 @@ coded --provider groq --model-name llama-3.3-70b-versatile
 Create a config file with your models:
 
 ```bash
-coded config init          # writes ~/.config/coded/config.json
+coded config setup         # interactive: add, test and wire up models
+coded config init          # writes a sample ~/.config/coded/config.json
 coded config path          # print the path
 coded config show          # show the effective, merged config
 ```
+
+`coded config setup` (also `/setup` inside the REPL) is the quickest way in. It
+asks for the endpoint once, asks the endpoint which models it serves, and lets
+you pick several by number; then it names them, sends a test request, and sets
+the default model, per-role models, pools and difficulty routing. Keys default
+to an **environment variable name** — a literal key is read without echo, never
+printed back, and written only to your user config with mode 600. Nothing is
+written until you choose "save and quit", the file is replaced atomically, and
+keys the wizard doesn't know about (hooks, MCP servers, per-model `limits`)
+are left exactly as they were.
 
 Config is layered (later overrides earlier):
 
@@ -345,7 +356,16 @@ coded sessions                 # list saved sessions
 streamed assistant Markdown, tool calls shown as `● Edit(app.py)` with their
 results, line-numbered diffs), the task list while the agent has one, an input
 box with a **status line** under it (model, mode, turns, tokens, cost), and a **permission modal** for gated actions. Keys: `Enter` send,
-`Ctrl+L` clear, `Ctrl+U` undo edits, `Ctrl+C` quit. It reuses the same agent,
+`Ctrl+B` side panel, `Ctrl+L` clear, `Ctrl+U` undo edits, `Ctrl+C` quit.
+
+A **side panel** on the right shows, each part only when it has something:
+the session (model, plan mode, how full the context window is and where it
+compacts, turns/tokens/cost), the task list with its progress bar, the files
+changed this turn with `+added −removed` line counts, messages queued while the
+agent works, and background shells with their state. It opens by itself when
+the terminal is at least 110 columns wide; `Ctrl+B` opens or closes it at any
+width. Files changed by `bash` commands are not listed (they are not tracked
+for `/undo` either). It reuses the same agent,
 tools, permissions, and session persistence as the REPL. Install the extra:
 
 ```bash
@@ -359,6 +379,7 @@ pip install -e '.[tui]'      # adds Textual
 | `/help` | List commands |
 | `/model [name]` | Show or switch the active model |
 | `/models` | List configured models |
+| `/setup` | Configure models interactively (then reloads the session) |
 | `/tools` | List available tools |
 | `/skills` | List available skills |
 | `/skill <name> [task]` | Invoke a skill now |
@@ -405,6 +426,15 @@ by pattern. Patterns are `tool` or `tool(glob)` matched against the command/path
 
 ### Context & sessions
 
+Auto-compaction is **on by default**: when the conversation reaches 80% of the
+model's `context_window` (`compact_ratio`), the older messages are summarized in
+place and coded says so ("Summarized earlier conversation to fit context"). The
+task list survives it, and the cut is made at a user-message boundary so a tool
+call is never split from its result. `/compact` forces it; `{"auto_compact":
+false}` turns it off. The threshold follows whichever model answers, so it
+shrinks if a smaller fallback takes over — a model with no `context_window` set
+is assumed to be 128k.
+
 Long conversations are **auto-compacted**: as the estimated input nears the
 model's `context_window`, older messages are summarized into a briefing while a
 recent, consistent tail is kept verbatim. Force it with `/compact`; disable with
@@ -417,6 +447,82 @@ coded --continue        # resume the most recent session for this directory
 coded --resume <id>     # resume a specific one
 coded sessions          # list them
 ```
+
+### Documents: PDF, Word, Excel, PowerPoint
+
+```bash
+pip install 'coded[docs]'      # pypdf, openpyxl, python-docx, python-pptx
+```
+
+With the extra installed, the `read` tool reads documents as text, paged
+through with the same `offset`/`limit` and per-model budgets as source files:
+
+| File | Read as |
+|---|---|
+| `.pdf` | text per page (`===== page 3 =====`) |
+| `.docx` | headings, paragraphs and tables in document order |
+| `.xlsx` | each sheet as numbered rows of cell values |
+| `.pptx` | per slide — title, bullets, tables and speaker notes |
+
+`pages` picks part of a document first: `"3"`, `"2-5"`, `"1,4,9"`, or a sheet
+name. Spreadsheets show the values Excel last calculated; a formula that was
+never calculated (a file written by a script) is shown as the formula rather
+than a blank.
+
+Out of scope, and reported as such rather than guessed at: **scanned PDFs**
+(pages that are images need OCR — the tool says so), charts and pictures inside
+Office files, password-protected files, and the pre-2007 binary formats
+(`.doc`, `.xls`, `.ppt` — the error gives the `soffice` command to convert
+them). Without the extra, reading a document fails with the exact `pip install`
+line; it never falls back to decoding a binary file as text.
+
+### Repository map
+
+```
+repo_map                      # the whole repo, ranked
+repo_map path=src/api         # one subtree
+repo_map focus=PermissionManager
+```
+
+`repo_map` is an outline of the codebase — each file's classes, functions and
+types — with the files **the rest of the code depends on most** first. Grep
+answers "where does this string appear"; this answers "what is this made of,
+and which part matters", which is the question a model with a small context
+window has to answer before it can act.
+
+Ranking is PageRank over a graph whose edges are "this file names a symbol that
+file defines", so a small, widely imported module outranks a large one nobody
+references. Method names (`run`, `save`) and names defined in many files are
+excluded from the graph — otherwise whichever file has the most of them looks
+like the heart of the project.
+
+Extraction is Python's own `ast` plus conservative per-language regexes (Go,
+Rust, JS/TS, Java/Kotlin, Ruby, PHP, C/C++, Swift, Lua, shell) — no tree-sitter
+and no extra dependency, so it is an *outline*, not a parse tree. It lists
+definitions only, never code, and everything is bounded: files scanned, bytes
+per file, wall time, output. Binary, minified and generated files are skipped.
+
+### Project memory
+
+```
+/memory                                   # list
+/memory add gotcha: the e2e suite needs Docker
+/memory forget m3
+```
+
+What a session learns about a repository normally dies with `/clear`. Project
+memory keeps a few short notes — conventions, decisions, gotchas, facts — in
+`./.coded/memory.json` (gitignored), and puts them in the system prompt at the
+start of every future session in that project, labelled as recorded
+observations that may be out of date, never as instructions.
+
+The agent can add notes with the `memory` tool, but every write **asks you
+first and shows the exact text**, and a turn with untrusted content in context
+(web, GitHub or MCP output) cannot write at all — a page should not be able to
+plant a durable instruction. The model can only ever write the *project* store,
+never your user-level config, so one hostile repository can't follow you
+elsewhere. The store is capped, your own notes outlive the agent's, and
+`/memory` is the authority: list, add, forget, clear.
 
 ### Semantic code search
 
@@ -592,12 +698,62 @@ same permission gate.
 
 For multi-step work the agent keeps a visible task list (`todo_write`), shown in
 the REPL as it changes and above the TUI input box (`/todos` to show it again).
+Each update shows progress — `Tasks 2/5 ▰▰▰▰▱▱▱▱▱▱ 40%`, the running item marked
+`← now` — and the status bar carries the same count and the current item while
+the agent works, so a long turn is never a silent one.
+
+**You can type while it works.** A question or follow-up typed mid-turn is
+queued (`⏎ queued (1): …`) and run as the next message instead of being
+swallowed by the busy terminal; several queue in order. Ctrl-C drops the queue
+along with the turn. The permission prompt takes the next line you type, so the
+two never fight over the same keystrokes. This works in the REPL and the TUI;
+without a terminal (piped input, `--print`) it simply stays off.
 
 **Plan mode** (`coded --plan`, or `/plan` / **Shift+Tab** in the REPL/TUI) makes the agent
 research with read-only tools only. When it has a plan it calls
 `exit_plan_mode`; you approve (implementation starts) or reject (it revises).
 Every risky action is refused while plan mode is on, including `git`/`github`
 writes and sub-agents' actions.
+
+### Verification: don't claim success you haven't earned
+
+A turn that changed something can be made to prove it before you see the answer:
+
+```json
+{
+  "verify": {"command": "pytest -q", "second_opinion": true, "max_rounds": 2},
+  "model_roles": {"verify": "big"}
+}
+```
+
+Two gates, both off until configured:
+
+1. **The project's own checks.** `verify.command` runs after any turn that
+   touched something (file tools, `bash`, `git` — not just checkpointed edits).
+   A non-zero exit sends the turn back to the agent with the output, telling it
+   to fix the cause and **never** to weaken, skip or delete a test — and to say
+   so and stop if the failure predates its change.
+2. **A second opinion.** With `model_roles.verify` set, a *different* model
+   reads your request and the diff and answers `PASS` or `NEEDS_CHANGES`. One
+   model marking its own homework is a known weak spot; a reviewer that didn't
+   write the code is the cheapest correction available when you have more than
+   one endpoint — and in coded they can be from different vendors. The agent is
+   told the reviewer may be wrong, so it can push back in its answer instead of
+   obeying.
+
+Either complaint costs a round; after `max_rounds` the answer is delivered with
+a visible "unverified" note rather than a silent pass. The second opinion runs
+only when a verify model is *named* — it is never auto-assigned, so a small
+local model is not promoted to critic by accident — and an unparseable verdict
+or a reviewer outage releases the turn instead of blocking it. Sub-agents, plan
+mode and unchanged turns are never verified, so an unconfigured session sends
+exactly the requests it did before.
+
+`/verify` runs the gate on demand, and `coded config setup` offers to configure
+it. The command runs through the same shell as the `bash` tool, so on Windows
+write it the way that shell expects — Git Bash treats a backslash as an escape,
+so `C:/tools/python.exe -m pytest` works where the backslashed path silently
+does not.
 
 ### Hooks
 
@@ -924,6 +1080,18 @@ Each call needs permission (it runs another program), and can use
 `/agents` shows what's available; `"detect_external_agents": false` turns
 auto-detection off.
 
+`coded agents` shows every supported agent: whether it is installed and ready,
+whether it is open source, and — for the ones you don't have — the command to
+install it on your platform (and a missing prerequisite such as Node.js).
+coded prints these commands for you to run; it never installs anything itself.
+
+```bash
+coded agents                 # status + install commands for the missing ones
+coded agents --check         # start each installed agent with --version to prove it runs
+coded agents aider goose     # just these
+coded agents --json          # for scripts
+```
+
 ### Worktree isolation
 
 `task` and `external_agent` accept `isolation: "worktree"`. The work happens in
@@ -978,6 +1146,12 @@ coded skill install ~/Downloads/skills.zip --all    # several skills in one arch
 coded skill install acme/agent-skills/skills/lint@v1.2
 coded skill list | update [name…] | remove <name> | info <name>
 
+# From skills.sh: paste the page link, or the repository it points to
+coded skill install https://skills.sh/vercel-labs/agent-skills/vercel-react-best-practices
+coded skill install anthropics/skills --all               # a whole collection
+coded skill install anthropics/skills pdf docx            # just some of it
+coded skill install https://github.com/anthropics/skills/tree/main/skills/pdf
+
 coded plugin install examples/plugins/code-quality
 coded plugin install https://github.com/acme/coded-plugin.git --ref main
 coded plugin list | info <name> | update [name…] | enable <name> | disable <name> | remove <name>
@@ -988,6 +1162,16 @@ coded plugin install code-quality@coded-examples
 coded plugin marketplace list | update | remove <name>
 ```
 
+- **Skill collections (skills.sh and GitHub):** a skills.sh page is a link
+  to a GitHub repository, so either link works; a page for one skill installs
+  just that skill. Skills are found at the root, under `skills/*/`, `*/`, or
+  nested deeper (`plugins/<p>/skills/<name>/`, `.claude/skills/<name>/`).
+  Multi-line YAML descriptions and `metadata:` blocks are read correctly. A
+  symlink elsewhere in the repository (such as `CLAUDE.md → AGENTS.md`) is
+  dropped and ignored; one inside a skill you are installing is still refused.
+  With many skills installed, the list in the system prompt is shortened to
+  fit (`limits.skills_chars`): descriptions are cut, and past that the rest are
+  listed by name — every skill can still be loaded by name.
 - **What a plugin can contain:** skills, slash commands (shown as
   `/<plugin>:<command>`), hooks, MCP servers and outside agents. See
   [`examples/plugins/`](./examples/plugins/) for the layout and an example.
@@ -1076,6 +1260,106 @@ risky actions:
   MCP client, e.g. `claude mcp add coded -- coded mcp-serve`. Risky actions are
   denied unless started with `--yolo` (nobody is there to approve them) or
   allowed by permission rules.
+
+## Making it faster
+
+Most of the wait is the model. The parts coded controls:
+
+- **Measure first.** `coded models --speed` times every configured model (or
+  the ones you name) on the request a real turn sends — coded's system prompt,
+  the tool definitions and a question — and shows time to the first token, total
+  time, output tokens per second and prompt size. `--runs 3` takes the median;
+  `--minimal` sends only the question, to see the bare model.
+
+  ```
+  ┃ model      ┃ first token ┃ total ┃     speed ┃ prompt ┃ output ┃
+  │ big-model  │       1.22s │ 4.10s │  22 tok/s │  7,900 │     64 │
+  │ small-fast │       0.16s │ 0.90s │ 86 tok/s  │  7,900 │     64 │
+  ```
+
+- **Don't send tools you never use.** Every tool's definition goes with every
+  request (about 4k tokens for all of them). Names or patterns, globally or per
+  model:
+
+  ```json
+  {
+    "disabled_tools": ["github", "web_*", "semantic_search", "mcp__slack__*"],
+    "models": { "local-7b": { "disabled_tools": ["task", "repo_map", "memory"] } }
+  }
+  ```
+
+  A disabled tool is not offered, and a call to one is refused with a reason.
+- **Compact prompt profile** (`"prompt_profile": "compact"`, automatic at
+  32k context or less) now also sends shorter tool descriptions — about 20%
+  fewer tool tokens, with the rules that prevent mistakes kept.
+- **Faster failover:** `"max_retries": 1` on a flaky model, plus a `fallback`.
+- **Route by difficulty** to a quick model for simple requests (see routing),
+  using the `--speed` numbers to choose.
+- **Lower reasoning effort** (`--reasoning-effort low`) on reasoning models.
+- **Server-side prefix caching** (vLLM `--enable-prefix-caching`; llama.cpp
+  caches by default): coded's system prompt and tools are identical between
+  requests, so a caching server only reads them once.
+- **Startup:** the model SDK now loads in the background, so `coded --version`,
+  `coded agents`, `coded skill …` and the first prompt appear in ~0.2 s instead
+  of ~0.7 s.
+
+## When a model errors
+
+If a turn ends with something like `InternalServerError: Error code: 500`, that
+status came from the endpoint. coded names the model and its base URL and
+retries first (`max_retries`, with backoff and `Retry-After`), then any
+`fallback` models. To find out what the endpoint will actually accept:
+
+```bash
+coded models --check glm-5-3-flash
+```
+
+The check is a staged probe, not one ping: a gateway that answers "hi" can
+still fail on streaming, on `stream_options` or on tool definitions — and some
+answer a parameter they don't implement with a 500 rather than a 400, which
+looks exactly like an outage. It stops at the first shape refused and says what
+to change:
+
+```
+✗ glm-5-3-flash         74 ms
+      ✓ minimal request
+      ✓ streaming
+      ✓ stream_options
+      ✗ tools: InternalServerError: Error code: 500 - An unexpected error occurred
+      → this endpoint cannot take tool definitions. Set "supports_tools": false
+        for this model — coded will then run it without tools.
+```
+
+The last stage sends the shape a real turn uses (system prompt + streaming +
+tools), because each part can pass alone and fail together.
+
+During a turn coded does a narrower version of this by itself: once the retries
+for a 5xx are exhausted it tries once more with the optional parameters
+(`stream_options`, `reasoning_effort`, `parallel_tool_calls`) removed, says so,
+and remembers them as unsupported if that works. It never drops `tools`
+automatically — an agent that silently loses its tools is worse than an error.
+
+**If a model doesn't work, coded tries another.** After its own retries, and
+after any `fallback` models you declared, it sweeps the rest of your configured
+models rather than ending the turn — closest first (same endpoint, then the
+widest context window), one attempt each, and it says which one answered. A
+model that can't serve the request is skipped: no vision model for an image, no
+tool-less model for a turn that needs tools, and nothing whose context window
+would force the conversation to be summarized. The error you finally see names
+the model *you* chose and lists what else was tried.
+
+This can send a request to a different provider than the one you picked (local
+→ cloud, say). To stay strictly on the models you declared:
+
+```json
+{"auto_fallback": false}
+```
+
+To control the order instead, declare the fallback yourself:
+
+```json
+{"models": {"glm-5-3-flash": {"fallback": ["gpt-oss-120b"]}}}
+```
 
 ## Development
 

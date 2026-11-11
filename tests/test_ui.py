@@ -11,18 +11,6 @@ from coded.permissions import PermissionManager
 from coded.repl import Repl
 
 
-@pytest.fixture
-def headless():
-    """prompt_toolkit needs an app session with no real console (Windows CI)."""
-    from prompt_toolkit.application import create_app_session
-    from prompt_toolkit.input import create_pipe_input
-    from prompt_toolkit.output import DummyOutput
-
-    with create_pipe_input() as pipe:
-        with create_app_session(input=pipe, output=DummyOutput()):
-            yield
-
-
 def test_ui_helpers_render_without_error():
     ui.banner("gpt-4o", "/some/very/long/path/" + "x" * 80)
     ui.echo_user("hello [not-markup] world")

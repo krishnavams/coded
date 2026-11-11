@@ -138,6 +138,9 @@ def find_skills(root: Path) -> List[SkillCandidate]:
             dirs = [p.parent for p in sorted(root.glob(pattern))]
             if dirs:
                 break
+    if not dirs:
+        # Collections nest deeper: plugins/<p>/skills/<name>/, .claude/skills/<name>/.
+        dirs = _deep_skill_dirs(root)
     out = []
     for d in dirs:
         meta, _ = parse_frontmatter((d / "SKILL.md").read_text(encoding="utf-8"))
@@ -148,6 +151,25 @@ def find_skills(root: Path) -> List[SkillCandidate]:
             tools = [t.strip() for t in tools.split(",") if t.strip()]
         out.append(SkillCandidate(name, desc, d, list(tools)))
     return out
+
+
+_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build"}
+_MAX_DEPTH = 5
+
+
+def _deep_skill_dirs(root: Path) -> List[Path]:
+    """Directories holding a SKILL.md up to `_MAX_DEPTH` below `root`. A skill's
+    own sub-folders are not searched (its examples are not more skills)."""
+    found: List[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        here = Path(dirpath)
+        depth = len(here.relative_to(root).parts)
+        if "SKILL.md" in filenames and here != root:
+            found.append(here)
+            dirnames[:] = []
+            continue
+        dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS) if depth < _MAX_DEPTH else []
+    return found
 
 
 def _skill_summary(cands: List[SkillCandidate], info: SourceInfo, dest: Path) -> str:
@@ -172,13 +194,28 @@ def install_skills(source: str, *, names: Optional[List[str]] = None, install_al
                    subpath: Optional[str] = None, confirm: Optional[ConfirmFn] = None,
                    force: bool = False, _info: Optional[SourceInfo] = None) -> List[str]:
     """Install skill(s) from a source. Returns the installed names."""
+    from coded.sources import skills_sh_page
+
+    page = None if _info else skills_sh_page(source)
+    if page:  # a skills.sh link names the repository and, maybe, one skill in it
+        source = page[0]
+        if page[1] and not names and not install_all:
+            names = [page[1]]
     info = _info or parse_source(source, ref, subpath)
     home = scope_home(scope, cwd)
     with Fetched(info) as fetched:
         cands = find_skills(fetched.root)
         if not cands:
-            raise InstallError("No SKILL.md found (looked at the root, skills/*/ and */).")
+            raise InstallError(f"No SKILL.md found in this source (searched {_MAX_DEPTH} "
+                               "folders deep). Use --path to point at the skill's folder.")
+        seen: Dict[str, Path] = {}
         for c in cands:
+            if c.name in seen:
+                raise InstallError(
+                    f"Two skills in this source are both named '{c.name}' "
+                    f"({seen[c.name].relative_to(fetched.root).as_posix()} and "
+                    f"{c.directory.relative_to(fetched.root).as_posix()}). Pick one with --path.")
+            seen[c.name] = c.directory
             _check_name(c.name, "skill")
             if not c.description:
                 raise InstallError(f"Skill '{c.name}' has no description in its frontmatter; "
@@ -195,6 +232,7 @@ def install_skills(source: str, *, names: Optional[List[str]] = None, install_al
                                + ". Pass their names, or --all.")
         reg = Registry(home)
         for c in cands:
+            fetched.refuse_links_in(c.directory)
             if (home / "skills" / c.name).exists() and not force and c.name not in reg.section("skills"):
                 raise InstallError(f"A skill named '{c.name}' already exists in {home / 'skills'} "
                                    "(installed by hand). Use --force to replace it.")
@@ -527,6 +565,7 @@ def install_plugin(source: str, *, scope: str = "user", cwd: Optional[str] = Non
     home = scope_home(scope, cwd)
     reg = Registry(home)
     with Fetched(info) as fetched:
+        fetched.refuse_links_in(fetched.root)  # a plugin is installed whole
         plugin = load_plugin(fetched.root, scope)
         if plugin.name in reg.section("plugins") and not _replace:
             raise InstallError(f"Plugin '{plugin.name}' is already installed; use "
@@ -684,6 +723,7 @@ def add_marketplace(source: str, *, name: Optional[str] = None, scope: str = "us
     home = scope_home(scope, cwd)
     reg = Registry(home)
     with Fetched(info) as fetched:
+        fetched.refuse_links_in(fetched.root)
         index = _load_market_index(fetched.root)
         mname = _check_name(name or str(index.get("name") or ""), "marketplace")
         if mname in reg.section("marketplaces") and not _replace:

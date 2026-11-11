@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
@@ -17,7 +17,9 @@ from rich.table import Table
 
 from coded import ui
 from coded.agent import Agent
-from coded.config import Config, ConfigError
+from coded.config import Config, ConfigError, load_config
+from coded.typeahead import TypeAhead, default_poll
+from coded.llm import explain_failure
 
 # prompt_toolkit color theme (matches ui.py accents).
 _PT_STYLE = Style.from_dict({
@@ -75,6 +77,9 @@ SLASH_COMMANDS = {
     "/clear": "Clear conversation history (keep the system prompt).",
     "/reset": "Alias for /clear.",
     "/config": "Show which config files are loaded.",
+    "/setup": "Configure models interactively (adds, tests, roles, pools, routing).",
+    "/verify": "Run the project's checks (and the verify model) over the last change.",
+    "/memory": "Project memory: /memory [list|add <note>|forget <id>|clear].",
     "/exit": "Quit (also /quit).",
 }
 
@@ -99,6 +104,8 @@ class Repl:
     def __init__(self, agent: Agent, config: Config, on_turn=None):
         self.agent = agent
         self.config = config
+        self._typeahead = None  # set while a turn runs
+        self._prefill = ""  # a line half-typed when the last turn ended
         self._on_turn = on_turn  # called after each completed turn (autosave)
         self._pending_images: Optional[list] = None
         from coded.commands import discover_commands
@@ -143,17 +150,43 @@ class Repl:
         compact = "  ⟳ compacted" if getattr(s, "compactions", 0) else ""
         mode = ("  ·  <style fg='%s'><b>⏸ plan mode</b></style>" % ui.WARN
                 if self.agent.mode == "plan" else "")
+        done, total, _ = ui.todo_progress(self.agent.todos.items)
+        if not total:
+            tasks = ""
+        elif done == total:
+            tasks = f"  ·  <style fg='{ui.MUTED}'>tasks {done}/{total} done</style>"
+        else:
+            tasks = (f"  ·  <style fg='{ui.ACCENT_SOFT}'>tasks {done}/{total} "
+                     f"{ui.todo_bar(self.agent.todos.items, 8)}</style>")
         return HTML(
             f"  <style fg='{ui.ACCENT}'><b>◆ {self.agent.model.name}</b></style>{mode}"
             f"  ·  {s.turns} turns"
             f"  ·  {tok_str} tokens"
-            f"  ·  ~${cost:.4f}{compact}"
+            f"  ·  ~${cost:.4f}{compact}{tasks}"
             f"  ·  shift+tab plan  ·  /help"
         )
 
     def _permission_prompt(self, title: str, detail: str) -> str:
         ui.console.print()
         ui.permission_panel(title, detail)
+        if self._typeahead is not None and self._typeahead.available:
+            # A turn is running and the type-ahead reader owns stdin; asking it
+            # for the line keeps the two from racing for the same keystrokes.
+            # Only a real answer counts here: a follow-up the user happened to
+            # send at this moment must not approve an action, nor be lost.
+            while True:
+                ui.console.print("  [bold]Allow?[/bold] [green]y[/green]es  "
+                                 "[red]n[/red]o  [cyan]a[/cyan]lways")
+                answer = self._typeahead.ask()
+                if answer is None:
+                    return "no"
+                answer = answer.strip()
+                if answer.lower() in ("y", "yes", "n", "no", "a", "always"):
+                    return answer
+                if answer:
+                    self._typeahead.requeue(answer)
+                    ui.console.print(f"[{ui.ACCENT_SOFT}]  (queued as a message — "
+                                     f"answer y, n or a first)[/]")
         try:
             answer = self.prompt.prompt(
                 HTML("  <b>Allow?</b> <ansigreen>y</ansigreen>es  "
@@ -165,20 +198,25 @@ class Repl:
         return answer or "no"
 
     # -- main loop ----------------------------------------------------------
+    def _queued_note(self, text: str, waiting: int) -> None:
+        short = text if len(text) <= 60 else text[:57] + "…"
+        ui.console.print(f"[{ui.ACCENT_SOFT}]  ⏎ queued ({waiting}): {short}[/]")
+
     def run(self, initial: Optional[str] = None, images: Optional[list] = None) -> None:
         ui.banner(self.agent.model.name, self.agent.cwd)
-        pending = initial
+        queued: List[str] = [initial] if initial else []
         self._pending_images = images
         while True:
-            if pending is not None:
-                text = pending
-                pending = None
+            if queued:
+                text = queued.pop(0)
                 ui.echo_user(text)
             else:
                 try:
                     ui.console.print()
                     ui.console.rule(style=ui.ACCENT_DEEP)
-                    text = self.prompt.prompt(HTML("<prompt>&gt;</prompt> "))
+                    text = self.prompt.prompt(HTML("<prompt>&gt;</prompt> "),
+                                              default=self._prefill)
+                    self._prefill = ""
                 except KeyboardInterrupt:
                     continue
                 except EOFError:
@@ -192,16 +230,28 @@ class Repl:
                 continue
             try:
                 ui.user_prefix()
-                self.agent.run(text, images=self._pending_images)
+                # Keep reading stdin during the turn: anything typed is queued
+                # and run next, instead of being swallowed by the busy terminal.
+                with TypeAhead(default_poll(), on_queue=self._queued_note) as ta:
+                    self._typeahead = ta
+                    try:
+                        self.agent.run(text, images=self._pending_images)
+                    finally:
+                        self._typeahead = None
+                        queued += ta.drain()
+                        self._prefill = ta.partial  # a half-typed line (Windows)
                 self._pending_images = None
                 if self._on_turn:
                     self._on_turn()
             except KeyboardInterrupt:
                 ui.warn("Interrupted.")
+                queued.clear()
             except ConfigError as exc:
                 ui.error(str(exc))
             except Exception as exc:  # noqa: BLE001
-                ui.error(f"{type(exc).__name__}: {exc}")
+                ui.error(explain_failure(exc))
+            if queued:
+                ui.info(f"{len(queued)} queued message(s) — running the next one.")
         ui.info("Goodbye.")
 
     # -- slash commands -----------------------------------------------------
@@ -216,6 +266,12 @@ class Repl:
             self._cmd_help()
         elif cmd == "/models":
             self._cmd_models()
+        elif cmd == "/setup":
+            self._cmd_setup()
+        elif cmd == "/verify":
+            self._cmd_verify()
+        elif cmd == "/memory":
+            self._cmd_memory(args)
         elif cmd == "/model":
             self._cmd_model(args)
         elif cmd == "/tools":
@@ -314,8 +370,9 @@ class Repl:
     def _cmd_agents(self) -> None:
         tool = self.agent.registry.get("external_agent")
         if tool is None:
-            ui.info("No outside agents found. Install e.g. Claude Code (claude), Codex (codex), "
-                    "Gemini CLI (gemini) or Aider (aider), or add `external_agents` to config.")
+            ui.info("No outside agents found. Run `coded agents` in a shell to see which are "
+                    "supported and the command to install each, or add `external_agents` "
+                    "to config.")
             return
         table = Table(title="Outside agents (external_agent tool)")
         table.add_column("agent", style="cyan")
@@ -324,6 +381,7 @@ class Repl:
         for a in tool.agents.values():
             table.add_row(a.name, " ".join(a.command), a.description)
         ui.console.print(table)
+        ui.info("`coded agents` (in a shell) lists the others and how to install them.")
 
     def _cmd_plugins(self) -> None:
         from coded.plugins import installed_plugins
@@ -374,6 +432,116 @@ class Repl:
             active = "● active" if name == self.agent.model.name else ""
             table.add_row(name, mc.model, mc.provider, active)
         ui.console.print(table)
+
+    def _cmd_setup(self) -> None:
+        """Run the wizard, then fold the result into the live session.
+
+        The model-related fields are updated **in place** on the Config the
+        agent already holds: replacing the object would drop the CLI overrides
+        (--yolo, --max-turns, --config …) applied at startup, and anything
+        still holding the old one would not see the change.
+        """
+        from coded.config_wizard import run_wizard
+
+        run_wizard(cwd=self.agent.cwd)
+        try:
+            fresh = load_config(cwd=self.agent.cwd)
+        except ConfigError as exc:
+            ui.error(f"Could not reload the config: {exc}")
+            return
+        for attr in ("models", "default_model", "model_roles", "pools", "routing", "verify"):
+            setattr(self.config, attr, getattr(fresh, attr))
+        for warning in self.config.model_warnings():
+            ui.warn(warning)
+        active = self.agent.model.name
+        if active in self.config.models:
+            # Re-select without pinning, so routing configured in the wizard stays on.
+            self.agent.switch_model(self.config.models[active], pin=False)
+        else:
+            ui.warn(f"The active model '{active}' is no longer configured; "
+                    "switch with /model.")
+        ui.info("Config reloaded. /models shows the result.")
+
+    def _cmd_verify(self) -> None:
+        """Run the verification gate now, on whatever the last turn changed."""
+        from coded.verify import VerifySettings
+
+        settings = VerifySettings.from_config(self.config.verify)
+        has_reviewer = bool(self.config.model_roles.get("verify"))
+        if not (settings.runs_checks() or settings.runs_review(has_reviewer)):
+            ui.info('Verification is not configured. Set "verify": {"command": "pytest -q"} '
+                    'in your config (and model_roles.verify for a second opinion), or run '
+                    "/setup.")
+            return
+        changed = self.agent._turn_changed_things
+        self.agent._turn_changed_things = True   # verify on demand, change or not
+        self.agent._verify_rounds = 0
+        try:
+            feedback = self.agent._verify_turn(None)
+        finally:
+            self.agent._turn_changed_things = changed
+        if not feedback:
+            ui.success("Verification passed.")
+            return
+        ui.warn("Verification found something:")
+        ui.console.print(feedback)
+        if self.agent.permissions.ask("Send this back to the agent to fix?", feedback[:400]) \
+                in ("y", "yes"):
+            ui.user_prefix()
+            self.agent.run(feedback)
+
+    def _cmd_memory(self, args) -> None:
+        """Project memory, under the user's hand: list, add, forget, clear."""
+        from coded.memory import KINDS, MemoryStore
+
+        store = MemoryStore.for_project(self.agent.cwd)
+        action = (args[0].lower() if args else "list")
+        rest = " ".join(args[1:]).strip()
+        if action == "list":
+            entries = store.load()
+            if not entries:
+                ui.info(f"No project memory yet ({store.path}). "
+                        "Add one with /memory add <note>.")
+                return
+            table = Table(title=f"Project memory ({len(entries)})")
+            table.add_column("id", style="cyan")
+            table.add_column("kind")
+            table.add_column("note")
+            table.add_column("by", style="dim")
+            for e in entries:
+                table.add_row(e.id, e.kind, e.text, e.source)
+            ui.console.print(table)
+        elif action == "add":
+            if not rest:
+                ui.error("Nothing to add: /memory add <note>  (prefix with "
+                         f"{'|'.join(KINDS)}: to set the kind)")
+                return
+            kind = "fact"
+            for k in KINDS:
+                if rest.lower().startswith(k + ":"):
+                    kind, rest = k, rest[len(k) + 1:].strip()
+                    break
+            entry = store.add(rest, kind, source="user")
+            if entry is None:
+                ui.info("Already known; nothing added.")
+            else:
+                ui.success(f"Remembered as {entry.id}. "
+                           "It reaches the model at the start of the next session.")
+                self.agent.refresh_system_prompt()
+        elif action == "forget":
+            if not rest:
+                ui.error("Which one? /memory forget <id>")
+            elif store.forget(rest):
+                ui.success(f"Forgot {rest}.")
+                self.agent.refresh_system_prompt()
+            else:
+                ui.error(f"No note '{rest}'.")
+        elif action == "clear":
+            count = store.clear()
+            ui.success(f"Cleared {count} note(s).")
+            self.agent.refresh_system_prompt()
+        else:
+            ui.error("Usage: /memory [list|add <note>|forget <id>|clear]")
 
     def _cmd_model(self, args) -> None:
         if not args:

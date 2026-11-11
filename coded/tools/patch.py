@@ -45,6 +45,7 @@ def apply_edits(text: str, edits: List[Dict[str, Any]]) -> Tuple[str, int]:
 
 class MultiEditTool(Tool):
     name = "multi_edit"
+    brief = 'Several exact-string replacements in one file, applied in order; all or nothing. Same matching rules as edit.'
     description = """Make several exact-string replacements in ONE file in a single, atomic \
 call. Edits apply in order (each sees the previous one's result); if any edit fails, none \
 are applied. Same matching rules as `edit`. Prefer this over repeated `edit` calls on the \

@@ -36,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="coded",
         description="A Claude Code-style coding agent for OpenAI-compatible models.",
-        epilog="Subcommands: `coded config init|path|show`, `coded models [--check]`, "
+        epilog="Subcommands: `coded config setup|init|path|show`, `coded models [--check]`, "
                "`coded skill install|list|remove|update|info`, `coded prompts list|show|init`, "
                "`coded plugin install|list|remove|update|enable|disable|info|search|marketplace`, "
                "`coded review`, `coded commit`, `coded index`, `coded sessions`, "
@@ -98,9 +98,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def build_config_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="coded config", description="Manage configuration.")
-    p.add_argument("config_command", choices=["init", "path", "show"], help="Config action.")
+    p.add_argument("config_command", choices=["setup", "init", "path", "show"],
+                   help="Config action ('setup' is the interactive model wizard).")
     p.add_argument("--config", help="Path to a specific config file.")
     p.add_argument("--cwd", help="Working directory.")
+    p.add_argument("--project", action="store_true",
+                   help="Edit the project config (./.coded/config.json) instead of the user one.")
     return p
 
 
@@ -189,6 +192,10 @@ def _init_mcp(cfg: Config, disabled: bool):
 
 
 def _handle_config_command(args: argparse.Namespace) -> int:
+    if args.config_command == "setup":
+        from coded.config_wizard import run_wizard
+
+        return run_wizard(project=args.project, config_path=args.config, cwd=args.cwd)
     if args.config_command == "init":
         try:
             path = write_sample_config()
@@ -196,7 +203,8 @@ def _handle_config_command(args: argparse.Namespace) -> int:
             ui.error(str(exc))
             return 1
         ui.success(f"Wrote sample config to {path}")
-        ui.info("Edit it to add your models and API keys.")
+        ui.info("Edit it to add your models and API keys, "
+                "or run `coded config setup` to do it interactively.")
         return 0
     if args.config_command == "path":
         from coded.config import user_config_path
@@ -211,8 +219,99 @@ def _handle_config_command(args: argparse.Namespace) -> int:
         ui.info(f"auto_approve={cfg.auto_approve}  max_turns={cfg.max_turns}  stream={cfg.stream}")
         ui.info(f"Sources: {', '.join(cfg.source_paths) or '(defaults/env)'}")
         return 0
-    ui.error("Unknown config subcommand. Try: coded config init")
+    ui.error("Unknown config subcommand. Try: coded config setup|init|path|show")
     return 1
+
+
+def _handle_agents_command(argv: List[str]) -> int:
+    """`coded agents`: which outside agent CLIs coded can delegate to, and the
+    install command for the rest. Nothing is ever installed from here."""
+    import json as _json
+
+    from coded.external_agents import agent_statuses, version_of
+
+    p = argparse.ArgumentParser(
+        prog="coded agents",
+        description="Show which outside coding agents (Aider, OpenCode, Goose, Codex, Gemini "
+                    "CLI, …) are installed for the external_agent tool, and how to install "
+                    "the others. Install commands are printed for you to run, never run.")
+    p.add_argument("names", nargs="*", help="Only these agents.")
+    p.add_argument("--check", action="store_true",
+                   help="Start each installed agent with --version to prove it runs.")
+    p.add_argument("--json", action="store_true", help="Machine-readable output.")
+    p.add_argument("--config", help="Path to a specific config file.")
+    p.add_argument("--cwd", help="Working directory.")
+    args = p.parse_args(argv)
+    cfg = load_config(cwd=args.cwd, config_path=args.config)
+    statuses = agent_statuses(cfg)
+    if args.names:
+        unknown = [n for n in args.names if n not in {s.name for s in statuses}]
+        if unknown:
+            ui.error(f"Unknown agent(s): {', '.join(unknown)}. Known: "
+                     + ", ".join(s.name for s in statuses))
+            return 2
+        statuses = [s for s in statuses if s.name in args.names]
+    checks = {}
+    if args.check:
+        for s in statuses:
+            if s.path and s.state in ("ready", "detection off"):
+                checks[s.name] = version_of(s.path)
+
+    if args.json:
+        rows = []
+        for s in statuses:
+            row = {k: v for k, v in s.__dict__.items()}
+            if s.name in checks:
+                row["check"] = {"ok": checks[s.name][0], "output": checks[s.name][1]}
+            rows.append(row)
+        print(_json.dumps(rows, indent=2))
+        return 0 if all(c[0] for c in checks.values()) else 1
+
+    from rich.table import Table
+
+    table = Table(title="Outside agents (delegated to with the external_agent tool)",
+                  title_style=f"bold {ui.ACCENT}", show_lines=False)
+    table.add_column("agent", style="bold")
+    table.add_column("status")
+    table.add_column("open source", justify="center")
+    table.add_column("details", overflow="fold")
+    marks = {"ready": f"[{ui.ACCENT2}]✓ ready[/]", "not installed": f"[{ui.MUTED}]– not installed[/]",
+             "disabled": f"[{ui.WARN}]disabled in config[/]",
+             "detection off": f"[{ui.WARN}]installed, detection off[/]"}
+    missing = []
+    for s in statuses:
+        oss = "" if s.open_source is None else ("yes" if s.open_source else "no")
+        if s.state == "not installed":
+            detail = s.note or ""
+            if s.install:
+                missing.append(s)
+                detail = "see below" + (f" — {s.note}" if s.note else "")
+        else:
+            detail = s.path or ""
+            if s.name in checks:
+                ok, out = checks[s.name]
+                detail += f"\n{'✓' if ok else '✗'} {out}"
+            if s.state == "detection off":
+                detail += "\nadd it under `external_agents` to offer it"
+        table.add_row(s.name + (" *" if s.configured else ""), marks.get(s.state, s.state),
+                      oss, detail)
+    ui.console.print(table)
+    if any(s.configured for s in statuses):
+        ui.console.print(f"[{ui.MUTED}]* defined or changed in your config[/]")
+    if missing:
+        ui.console.print(f"\n[bold {ui.ACCENT}]To install[/] [{ui.MUTED}](run these yourself; "
+                         "check each project's page first):[/]")
+        for s in missing:
+            ui.console.print(f"  [bold]{s.name}[/]  [{ui.MUTED}]{s.homepage}[/]")
+            ui.console.print(f"    {s.install}", markup=False, highlight=False, soft_wrap=True)
+            if s.note:
+                ui.console.print(f"    [{ui.WARN}]{s.note}[/]")
+        ui.console.print(f"[{ui.MUTED}]Once installed, coded finds it on PATH automatically "
+                         "(start a new session). Point an open-source agent at your own models "
+                         "with `env` under `external_agents` in config.json.[/]")
+    if checks and not all(c[0] for c in checks.values()):
+        return 1
+    return 0
 
 
 def _handle_models_command(argv: List[str]) -> int:
@@ -221,14 +320,24 @@ def _handle_models_command(argv: List[str]) -> int:
     p.add_argument("--cwd", help="Working directory.")
     p.add_argument("--check", nargs="*", metavar="ALIAS",
                    help="Send a tiny request to each model (or the named ones) and report status.")
+    p.add_argument("--speed", nargs="*", metavar="ALIAS",
+                   help="Time each model (or the named ones) on the request a real turn sends: "
+                        "time to first token, total, tokens/s.")
+    p.add_argument("--runs", type=int, default=1, help="With --speed: requests per model "
+                   "(the median is shown).")
+    p.add_argument("--minimal", action="store_true",
+                   help="With --speed: a bare question, without coded's system prompt and tools.")
     args = p.parse_args(argv)
     cfg = load_config(cwd=args.cwd, config_path=args.config)
     if not cfg.models:
-        ui.info("No models configured. Run `coded config init` or set OPENAI_API_KEY.")
+        ui.info("No models configured. Run `coded config setup` to add one, or set OPENAI_API_KEY.")
         return 0
     roles = {}
     for role, alias in cfg.model_roles.items():
         roles.setdefault(alias, []).append(role)
+    if args.speed is not None:
+        return _speed_models(cfg, args.speed or list(cfg.models), args.runs, args.minimal,
+                             args.cwd or os.getcwd())
     if args.check is None:
         for name, mc in cfg.models.items():
             marker = "*" if name == cfg.default_model else " "
@@ -249,6 +358,8 @@ def _handle_models_command(argv: List[str]) -> int:
         for name, members in (cfg.pools or {}).items():
             picked = cfg.pool_members(name)
             print(f"  {name:<16} pool         {', '.join(picked) or '(no valid members)'}")
+        if not cfg.auto_fallback:
+            print("  auto-fallback   off          a failing model will not try the others")
         routing = cfg.routing_settings()
         if routing.configured:
             levels = ", ".join(f"{lvl}→{routing.target(lvl)}"
@@ -265,10 +376,62 @@ def _handle_models_command(argv: List[str]) -> int:
     return _check_models(cfg, list(dict.fromkeys(expanded)))
 
 
+def _speed_models(cfg: Config, names: List[str], runs: int, minimal: bool, cwd: str) -> int:
+    from rich.table import Table
+
+    from coded.speed import advice, measure, request_for
+
+    expanded: List[str] = []
+    for name in names:
+        expanded += cfg.pool_members(name) or [name]
+    unknown = [n for n in expanded if n not in cfg.models]
+    if unknown:
+        ui.error(f"Unknown model(s): {', '.join(unknown)}. Known: {', '.join(cfg.models)}")
+        return 2
+    shape = "a bare question" if minimal else "coded's system prompt + tools + a question"
+    ui.info(f"Timing {len(expanded)} model(s) on {shape}, {runs} run(s) each…")
+    results = []
+    for name in dict.fromkeys(expanded):
+        model = cfg.models[name]
+        with ui.thinking(f"{name}…"):
+            try:
+                messages, tools = request_for(model, cfg, cwd, minimal)
+            except Exception as exc:  # noqa: BLE001
+                from coded.speed import SpeedResult
+
+                results.append(SpeedResult(name, False, error=str(exc)))
+                continue
+            results.append(measure(model, messages, tools, runs))
+    table = Table(title_style=f"bold {ui.ACCENT}", title="Model speed (median)")
+    for col, justify in (("model", "left"), ("first token", "right"), ("total", "right"),
+                         ("speed", "right"), ("prompt", "right"), ("output", "right")):
+        table.add_column(col, justify=justify)
+    for r in results:
+        if not r.ok:
+            table.add_row(r.name, f"[{ui.ERR}]failed[/]", "", "", "", r.error[:60])
+            continue
+        mark = "~" if r.estimated else ""
+        table.add_row(r.name, f"{r.first_token:.2f}s", f"{r.total:.2f}s",
+                      f"{r.tokens_per_second:.0f} tok/s" if r.tokens_per_second else "–",
+                      f"{mark}{r.prompt_tokens:,}", f"{mark}{r.output_tokens:,}")
+    ui.console.print(table)
+    if any(r.estimated for r in results if r.ok):
+        ui.console.print(f"[{ui.MUTED}]~ estimated: the server did not report token usage[/]")
+    for line in advice(results):
+        ui.console.print(f"[{ui.MUTED}]{line}[/]")
+    return 0 if all(r.ok for r in results) else 1
+
+
 def _check_models(cfg: Config, names: List[str]) -> int:
+    """Probe each model with progressively richer requests.
+
+    A single minimal request is not enough: an endpoint that answers "hi" can
+    still 500 on streaming, on `stream_options` or on tool definitions, which is
+    exactly the request a real turn sends.
+    """
     import time
 
-    from coded.llm import LLMClient
+    from coded.llm import probe_hint, probe_stages
 
     failures = 0
     for name in names:
@@ -277,16 +440,28 @@ def _check_models(cfg: Config, names: List[str]) -> int:
             failures += 1
             continue
         mc = cfg.models[name]
-        probe = ModelConfig(**{**mc.__dict__, "max_retries": 0, "max_tokens": 8})
         start = time.time()
         try:
-            out = LLMClient(probe).complete([{"role": "user", "content": "Reply with: ok"}],
-                                            stream=False)
-            ms = (time.time() - start) * 1000
-            print(f"✓ {name:<16} {ms:7.0f} ms   {(out.content or '').strip()[:40]!r}")
-        except Exception as exc:  # noqa: BLE001
+            stages = probe_stages(mc)
+        except Exception as exc:  # noqa: BLE001 - e.g. a missing key
             failures += 1
-            print(f"✗ {name:<16} {type(exc).__name__}: {str(exc).splitlines()[0][:120] if str(exc) else ''}")
+            print(f"\u2717 {name:<16} {type(exc).__name__}: {exc}")
+            continue
+        ms = (time.time() - start) * 1000
+        bad = [(label, exc) for label, exc in stages if exc is not None]
+        if not bad:
+            print(f"\u2713 {name:<16} {ms:7.0f} ms   "
+                  f"{len(stages)} request shapes accepted")
+            continue
+        failures += 1
+        print(f"\u2717 {name:<16} {ms:7.0f} ms")
+        for label, exc in stages:
+            if exc is None:
+                print(f"      \u2713 {label}")
+            else:
+                detail = str(exc).splitlines()[0][:200] if str(exc) else type(exc).__name__
+                print(f"      \u2717 {label}: {type(exc).__name__}: {detail}")
+                print(f"      \u2192 {probe_hint(label, exc)}")
     return 1 if failures else 0
 
 
@@ -482,6 +657,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _handle_config_command(cfg_args)
     if argv and argv[0] == "models":
         return _handle_models_command(argv[1:])
+    if argv and argv[0] == "agents":
+        return _handle_agents_command(argv[1:])
     if argv and argv[0] == "index":
         return _handle_index_command(argv[1:])
     if argv and argv[0] == "review":
@@ -513,6 +690,11 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     parser = build_parser()
     args = parser.parse_args(argv)
+    # Load the model SDK while config, MCP and the prompt are being set up (and
+    # while the user types the first message). `--version` has exited by now.
+    from coded.llm import prewarm
+
+    prewarm()
 
     # In JSON print mode, keep stdout clean — send all log output to stderr.
     if args.print_mode and args.output_format == "json":
@@ -534,7 +716,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         model, model_pool = _select_model(cfg, args.model)
     except ConfigError as exc:
         ui.error(str(exc))
-        ui.info("Tip: `coded config init` to create a config, or pass "
+        ui.info("Tip: `coded config setup` configures models interactively, "
+                "`coded config init` writes a sample, or pass "
                 "--base-url/--api-key/--model-name for a one-off endpoint.")
         return 1
 
@@ -655,7 +838,13 @@ def _run_print_mode(agent, prompt: Optional[str], images=None, *,
         agent.stream = False
         agent.verbose = False
     # In print mode we auto-approve nothing by default; keep it non-interactive.
-    result = agent.run(prompt, images=images)
+    try:
+        result = agent.run(prompt, images=images)
+    except Exception as exc:  # noqa: BLE001 - report it readably, don't traceback
+        from coded.llm import explain_failure
+
+        ui.error(explain_failure(exc))
+        return 1
     if on_done:
         on_done()
     if output_format == "json":

@@ -23,6 +23,7 @@ def _truncate(out: str, limit: int = _MAX_OUTPUT) -> str:
 
 class BashTool(Tool):
     name = "bash"
+    brief = 'Run a shell command; returns output and exit code. Prefer read/edit/grep/glob over shell equivalents. Never run interactive commands. For servers or long jobs set run_in_background=true, then use bash_output and kill_shell.'
     description = """Run a shell command in the working directory and return its combined \
 stdout/stderr and exit code. Use for builds, tests, git status, package managers, etc. \
 Prefer the dedicated read/write/edit/grep/glob tools over shell equivalents. Avoid \
@@ -117,6 +118,7 @@ them (the user will be asked)."""
 
 class BashOutputTool(Tool):
     name = "bash_output"
+    brief = 'Read new output from a background shell and whether it is still running. Optional `filter` regex.'
     description = """Read new output from a background shell started with \
 bash(run_in_background=true), plus whether it is still running. Only output produced since \
 the last read is returned. Optional `filter` keeps only lines matching a regex."""

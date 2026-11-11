@@ -8,7 +8,11 @@ from coded.tools.base import Tool, ToolContext, ToolResult
 
 
 class TaskTool(Tool):
+    # A sub-agent edits files with the parent's permissions, so a turn that
+    # delegated has changed things and must be verified like any other.
+    mutates = True
     name = "task"
+    brief = 'Delegate a self-contained task to a sub-agent with its own context. Give a complete instruction: it cannot ask questions. Returns a report. isolation="worktree" keeps its edits on a separate branch.'
     description = """Delegate a self-contained task to a sub-agent that has the same file \
 and shell tools and its own separate context. Use this for large searches or multi-step \
 subtasks so your own context stays focused. Give a complete, standalone instruction — the \

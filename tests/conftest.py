@@ -98,6 +98,16 @@ class FakeServer:
 
 
 @pytest.fixture(autouse=True)
+def _loud_ui():
+    """`ui.set_quiet(True)` is process-wide (ACP/MCP/json modes set it); a test
+    that leaks it would silence every later test's output assertions."""
+    from coded import ui
+
+    yield
+    ui.set_quiet(False)
+
+
+@pytest.fixture(autouse=True)
 def _fresh_model_state():
     """Endpoints and pool rotation are process-wide; reset them per test so an
     ephemeral port reused by another server can't inherit stale state."""
@@ -222,3 +232,15 @@ class RouteServer:
 @pytest.fixture
 def route_server():
     return RouteServer
+
+
+@pytest.fixture
+def headless():
+    """prompt_toolkit needs an app session with no real console (Windows CI)."""
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    with create_pipe_input() as pipe:
+        with create_app_session(input=pipe, output=DummyOutput()):
+            yield
