@@ -155,9 +155,14 @@ class CodedTUI(App):
         self.agent = agent
         self._on_turn = on_turn
         self.agent.on_event = self._agent_event  # called from the worker thread
-        self.agent.permissions.set_prompt(self._permission_prompt)
+        self.agent.permissions.set_prompt(self._permission_prompt, threadsafe=True)
         self._assistant_md: Optional[Markdown] = None
         self._assistant_buf = ""
+        self._thought: Optional[Static] = None
+        self._thought_buf = ""
+        from coded.commands import discover_commands
+
+        self.commands = discover_commands(agent.cwd)
 
     # -- layout -------------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -186,6 +191,15 @@ class CodedTUI(App):
         t.append(f"turns   {s.turns}\n")
         t.append(f"tokens  {tok:,}\n")
         t.append(f"cost    ~${cost:.4f}\n")
+        if self.agent.mode == "plan":
+            t.append("mode    PLAN (read-only)\n", style="#e0af68 bold")
+        if self.agent.todos.items:
+            t.append("\nTASKS\n", style="#7c9cff bold")
+            marks = {"pending": "☐", "in_progress": "◐", "completed": "☑"}
+            for item in self.agent.todos.items:
+                style = "#e0af68" if item["status"] == "in_progress" else (
+                    "#5ad1a0" if item["status"] == "completed" else "#8a94a7")
+                t.append(f"{marks.get(item['status'], '☐')} {item['content']}\n", style=style)
         if getattr(s, "compactions", 0):
             t.append(f"compacted {s.compactions}×\n")
         t.append("\nTOOLS\n", style="#7c9cff bold")
@@ -210,6 +224,8 @@ class CodedTUI(App):
     def _finalize_assistant(self) -> None:
         self._assistant_md = None
         self._assistant_buf = ""
+        self._thought = None
+        self._thought_buf = ""
 
     # -- input --------------------------------------------------------------
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -226,6 +242,15 @@ class CodedTUI(App):
         if text == "/undo":
             self.action_undo()
             return
+        if text.split()[0] == "/plan":
+            self.agent.set_mode("default" if self.agent.mode == "plan" else "plan")
+            text = text[len("/plan"):].strip()
+            self._refresh_sidebar()
+            if not text:
+                return
+        elif text.startswith("/") and text.split()[0][1:] in self.commands:
+            name = text.split()[0][1:]
+            text = self.commands[name].expand(text[len(name) + 1:])
         self._mount(UserMessage(text))
         self.busy = True
         self._run_agent(text)
@@ -252,8 +277,12 @@ class CodedTUI(App):
 
     # -- agent events (called from worker thread) ---------------------------
     def _agent_event(self, ev: dict) -> None:
-        # Marshal onto the UI thread.
-        self.call_from_thread(self._handle_event, ev)
+        # Marshal onto the UI thread (or handle directly if already on it, e.g.
+        # a status note from /plan).
+        try:
+            self.call_from_thread(self._handle_event, ev)
+        except RuntimeError:
+            self._handle_event(ev)
 
     def _handle_event(self, ev: dict) -> None:
         kind = ev.get("type")
@@ -268,6 +297,14 @@ class CodedTUI(App):
             self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
         elif kind == "assistant_end":
             self._finalize_assistant()
+        elif kind == "reasoning_delta" and self.agent.config.show_reasoning:
+            self._thought_buf += ev.get("text", "")
+            if self._thought is None:
+                self._thought = Static("", classes="statusnote")
+                self._mount(self._thought)
+            self._thought.update(Text(self._thought_buf, style="#8a94a7 italic"))
+        elif kind == "todos":
+            pass  # rendered in the sidebar (refreshed below)
         elif kind == "tool_call":
             self._finalize_assistant()
             self._mount(ToolCall(ev["name"], ev.get("args", {})))

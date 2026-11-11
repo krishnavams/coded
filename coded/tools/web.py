@@ -9,6 +9,8 @@ from coded.tools.base import Tool, ToolContext, ToolResult
 
 class WebSearchTool(Tool):
     name = "web_search"
+    parallel_safe = True
+    untrusted_output = True
     description = """Search the web and return titles, URLs, and snippets. Requires a \
 configured backend (Tavily/Brave/SerpAPI/SearXNG). Use web_fetch to read a result."""
     parameters = {
@@ -37,6 +39,8 @@ configured backend (Tavily/Brave/SerpAPI/SearXNG). Use web_fetch to read a resul
 
 class WebFetchTool(Tool):
     name = "web_fetch"
+    parallel_safe = True
+    untrusted_output = True
     description = """Fetch a URL and return its readable text content (HTML tags stripped). \
 Use for reading documentation pages or search results."""
     parameters = {

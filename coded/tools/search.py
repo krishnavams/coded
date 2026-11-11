@@ -34,6 +34,7 @@ def _walk(root: Path):
 
 class GlobTool(Tool):
     name = "glob"
+    parallel_safe = True
     description = """Find files by glob pattern (e.g. `**/*.py`, `src/**/*.ts`). Returns \
 matching paths. Fast; use this to locate files by name."""
     parameters = {
@@ -67,6 +68,7 @@ matching paths. Fast; use this to locate files by name."""
 
 class GrepTool(Tool):
     name = "grep"
+    parallel_safe = True
     description = """Search file contents with a regular expression. Returns matching \
 lines as `path:line: text`. Filter files with `glob` (e.g. '*.py'). Prefer this over \
 shell grep."""

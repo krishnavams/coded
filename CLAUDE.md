@@ -52,13 +52,25 @@ coded/
 ├── websearch.py        # web-search backends + HTML→text fetch
 ├── images.py           # image → base64 data URL for vision models
 ├── mcp_client.py       # optional MCP stdio client (background asyncio loop)
+├── hooks.py            # HookRunner: PreToolUse/PostToolUse/UserPromptSubmit/SessionStart/Stop
+├── sandbox.py          # bwrap / sandbox-exec wrapping for bash
+├── background.py       # BackgroundShells: run_in_background processes
+├── commands.py         # custom slash commands (.coded/commands/*.md)
+├── telemetry.py        # Tracer: JSONL spans + optional OpenTelemetry
+├── worktree.py         # git worktree isolation for task / external_agent
+├── external_agents.py  # outside agent CLIs (claude, codex, gemini, aider, …)
+├── acp.py              # `coded acp`: Agent Client Protocol server (stdio JSON-RPC)
+├── mcp_server.py       # `coded mcp-serve`: coded as an MCP server
 └── tools/
     ├── __init__.py     # build_registry(): assembles the tool suite
     ├── base.py         # Tool, ToolResult, ToolContext, ToolRegistry
     ├── files.py        # read, write, edit, ls, move, delete
+    ├── patch.py        # multi_edit, apply_patch (Codex patch format)
+    ├── todo.py         # todo_write (TodoStore), exit_plan_mode
+    ├── external_agent.py  # external_agent (delegate to an outside CLI agent)
     ├── search.py       # glob, grep
     ├── semantic_search.py  # semantic_search (uses the embedded index)
-    ├── shell.py        # bash
+    ├── shell.py        # bash (sandbox/background), bash_output, kill_shell
     ├── git.py          # git (read-only free, mutations gated)
     ├── github.py       # github (PR list/get/create, comment) via GITHUB_TOKEN
     ├── web.py          # web_search, web_fetch
@@ -76,7 +88,10 @@ tests/
 ├── test_git_tools.py   # git tool + github tool (fake API)
 ├── test_semantic_and_web.py  # index/search, web_fetch/search, image encoding
 ├── test_skills.py      # skill discovery, frontmatter, skill tool
-└── test_tools.py       # tool + config unit tests
+├── test_tools.py       # tool + config unit tests
+└── test_modern_features.py  # todo/plan, hooks, sandbox, AGENTS.md, patch, parallel,
+                        # retry/fallback/roles, reasoning, shells, commands, tracing,
+                        # worktrees, injection guard, external agents, ACP, MCP server
 examples/skills/        # example SKILL.md packs + install guide
 config.example.json     # sample configuration
 ```
@@ -113,6 +128,18 @@ config.example.json     # sample configuration
    model call → APPROVE/NEEDS_CHANGES) and maps NEEDS_CHANGES to exit code 1
    (`--fail-on`, `--yolo`, `--output`, `--no-verdict`).
 
+8. **Turn lifecycle** (`Agent.run`/`_loop`/`_run_tool`): `SessionStart` (first
+   turn) and `UserPromptSubmit` hooks → plan-mode reminder appended → model call
+   (`LLMClient`: retries, dropped unsupported params, `fallback` models) → tool
+   calls, with consecutive parallel-safe calls run on a thread pool → per call:
+   `PreToolUse` hook → plan-mode refusal → diff preview → permission gate
+   (`auto_allowed` for sandboxed bash) → run → untrusted-output fencing/taint →
+   nested `AGENTS.md` injection for file tools → `PostToolUse` hook. A final
+   answer runs the `Stop` hook, which may push the agent to continue.
+9. **Models per role**: `Config.model_for_role()` picks the model for
+   `subagent`, `compact`, `review`, `verdict`; `Config.fallbacks_for()` resolves
+   a model's `fallback` aliases for `LLMClient`.
+
 ## Key conventions
 
 - **Adding a tool**: subclass `Tool` in `coded/tools/`, set `name`,
@@ -120,6 +147,19 @@ config.example.json     # sample configuration
   in `tools/__init__.build_registry()`. Set `requires_permission = True` for
   anything that mutates the filesystem or runs commands, and override
   `permission_detail()` to describe the action shown in the approval prompt.
+- **Tool flags**: `parallel_safe = True` only for read-only tools with no
+  permission prompt (or override `is_parallel_safe(args, ctx)`, as `task` does
+  for worktree isolation). `untrusted_output = True` for tools returning
+  third-party content (web, GitHub, MCP) so it's fenced and taints the turn.
+  `auto_allowed(args, ctx)` lets a call skip the prompt (sandboxed bash);
+  deny rules, plan mode and the strict injection guard still apply.
+- **Shared agent state reaches tools via `ToolContext.extra`**: `todos`,
+  `shells`, `get_mode`/`set_mode`. Sub-agents share the parent's
+  `PermissionManager`, tracer and shells, but not todos/skills/Stop hooks.
+- **Prompts from worker threads**: `PermissionManager.set_prompt(fn,
+  threadsafe=True)` (TUI, ACP) allows tools that may prompt to run in parallel;
+  prompts are serialized by a lock either way. `ask()` is a raw yes/no question
+  (used by `exit_plan_mode`).
 - **Tools must never raise into the loop**: return `ToolResult.error(...)` for
   expected failures. `Agent._run_tool` also catches unexpected exceptions and
   feeds them back to the model as text, so the agent can recover.
@@ -166,8 +206,9 @@ config.example.json     # sample configuration
   used by the streaming path. The REPL (`repl.py`) adds a prompt_toolkit
   `bottom_toolbar` status bar, `AutoSuggestFromHistory`, and a shared `_PT_STYLE`.
 - **Agent display is decoupled via events**: `Agent.on_event` (set by the TUI)
-  receives structured events — `assistant_start/_delta/_end`, `tool_call`,
-  `tool_result`, `diff`, `status`. When it's set, the agent emits instead of
+  receives structured events — `assistant_start/_delta/_end`, `reasoning_delta`,
+  `tool_call`/`tool_result`/`diff` (with the tool-call `id`), `todos`, `status`.
+  The TUI and the ACP server (`acp.py`) are both event consumers. When it's set, the agent emits instead of
   printing via `ui` (see `_emit`, `_show_tool_*`, `_call_with_events`). New
   display sites must route through these helpers, not call `ui` directly, so
   both front-ends stay in sync.
@@ -176,12 +217,17 @@ config.example.json     # sample configuration
   with `call_from_thread`. The permission callback pushes a `PermissionModal`
   and blocks the worker on a `threading.Event` until the user answers. Guard the
   Textual import — the app must run fine without it installed.
-- **Streaming**: `LLMClient._stream` accumulates text and tool-call deltas.
-  `stream_options={"include_usage": true}` is requested but retried without it
-  if the endpoint rejects it — keep this graceful-degradation habit for
-  endpoints that implement only part of the OpenAI API.
+- **Streaming**: `LLMClient._consume_stream` accumulates text, reasoning
+  (`reasoning_content`/`reasoning`) and tool-call deltas. Optional params
+  (`stream_options`, `reasoning_effort`, …) that an endpoint rejects with a 400
+  are dropped and remembered per endpoint (`_OPTIONAL_PARAMS`). Keep this
+  graceful-degradation habit for endpoints that implement only part of the
+  OpenAI API. SDK retries are off (`max_retries=0`); `LLMClient._create` owns
+  retry/backoff, and `complete()` owns fallback.
 - **Config is layered**: presets → user file → project file → CLI flags. Don't
-  hard-code paths or keys; go through `config.py`.
+  hard-code paths or keys; go through `config.py`. Dict-valued settings
+  (`hooks`, `sandbox`, `telemetry`, `external_agents`, `model_roles`) merge
+  key-by-key across layers.
 - Follow the style already in the code: type hints, `from __future__ import
   annotations`, dataclasses for state, concise docstrings, minimal inline
   comments (only where they add real value).
@@ -227,8 +273,17 @@ one (e.g. `ruff`, `black`), record the commands here.
 
 - **argparse + free-form prompt**: the top-level parser has a `nargs="*"`
   positional `prompt`, which conflicts with argparse subparsers. Subcommands
-  (`config`, `models`) are therefore dispatched manually by the first token in
+  (`config`, `models`, `index`, `review`, `sessions`, `commit`, `acp`,
+  `mcp-serve`) are therefore dispatched manually by the first token in
   `cli.main()` — keep new subcommands on that path, not on `add_subparsers`.
+- **ACP / MCP server modes keep stdout clean** (`ui.set_quiet(True)`): stdout
+  carries only protocol messages.
+- **Sandbox `/tmp` is private** (bwrap `--tmpfs /tmp`): writes there vanish
+  after the command. The working directory is bind-mounted writable, so tests
+  using `tmp_path` as cwd still work.
+- **Parallel batches display after they finish**: the parallel path calls
+  `_run_tool(tc, display=False)` and then shows calls/results in order; keep
+  new display code inside `_run_tool`'s `display` guard.
 - **MCP runs on a background thread** with its own asyncio loop
   (`mcp_client.MCPManager`); calls into it are made with
   `run_coroutine_threadsafe`. Always `stop()` it (the CLI does so in a
@@ -246,8 +301,7 @@ one (e.g. `ruff`, `black`), record the commands here.
 
 ## Git & branching
 
-- Development branch for AI-assisted changes in this session:
-  `claude/claude-md-docs-n4n6zc`.
+- Develop on the branch assigned to your session.
 - Clear, descriptive commit messages. Do not open a pull request unless asked.
 - Never commit real API keys. Project-level config lives in `./.coded/`, which
   is gitignored.

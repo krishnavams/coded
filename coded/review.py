@@ -54,7 +54,7 @@ def run_review(agent, target: Optional[str] = None,
             "Return only your findings."
         )
         try:
-            report = agent.run_subagent(prompt)
+            report = agent.run_subagent(prompt, role="review")
         except Exception as exc:  # noqa: BLE001
             report = f"(phase failed: {exc})"
         sections.append((name, report))
@@ -88,7 +88,9 @@ def synthesize_verdict(agent, report: str) -> tuple:
             "Then 2-4 sentences justifying it, listing any blocking issues."},
     ]
     try:
-        completion = agent.llm.complete(messages, tools=None, stream=False)
+        role_model = agent.config.model_for_role("verdict", agent.model)
+        llm = agent.llm if role_model is agent.model else agent._make_llm(role_model)
+        completion = llm.complete(messages, tools=None, stream=False)
     except Exception as exc:  # noqa: BLE001
         return UNKNOWN, f"(verdict synthesis failed: {exc})"
     text = (completion.content or "").strip()

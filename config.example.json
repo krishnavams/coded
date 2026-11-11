@@ -9,7 +9,15 @@
       "max_tokens": 16384,
       "temperature": 0.2,
       "input_cost": 2.5,
-      "output_cost": 10.0
+      "output_cost": 10.0,
+      "max_retries": 4,
+      "fallback": ["gpt-4o-openrouter", "claude-sonnet"]
+    },
+    "gpt-4o-openrouter": {
+      "provider": "openrouter",
+      "model": "openai/gpt-4o",
+      "context_window": 128000,
+      "max_tokens": 16384
     },
     "gpt-4o-mini": {
       "provider": "openai",
@@ -32,6 +40,7 @@
       "model": "o3-mini",
       "context_window": 200000,
       "max_tokens": 100000,
+      "reasoning_effort": "medium",
       "input_cost": 1.1,
       "output_cost": 4.4
     },
@@ -264,6 +273,39 @@
   "permissions": {
     "allow": ["bash(git *)", "bash(pytest*)"],
     "deny": ["bash(rm -rf*)"]
+  },
+
+  "model_roles": {
+    "subagent": "gpt-4o-mini",
+    "compact": "gpt-4o-mini",
+    "review": "gpt-4o",
+    "verdict": "gpt-4o"
+  },
+
+  "hooks": {
+    "PostToolUse": [
+      {"matcher": "edit|multi_edit|write|apply_patch", "command": "git diff --stat"}
+    ]
+  },
+
+  "sandbox": {
+    "enabled": false,
+    "network": false,
+    "writable": ["~/.cache"]
+  },
+
+  "telemetry": {
+    "jsonl": "~/.cache/coded/trace.jsonl",
+    "otel": false
+  },
+
+  "injection_guard": "warn",
+  "show_reasoning": false,
+  "parallel_tools": true,
+
+  "detect_external_agents": true,
+  "external_agents": {
+    "claude": {"command": ["claude", "-p", "{prompt}"], "timeout": 1800}
   },
 
   "auto_approve": false,

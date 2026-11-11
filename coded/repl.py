@@ -37,6 +37,11 @@ SLASH_COMMANDS = {
     "/skills": "List available skills.",
     "/skill": "Invoke a skill now: /skill <name> [task].",
     "/review": "Run reviewer→qa→security sub-agents on the changes: /review [target].",
+    "/plan": "Toggle plan mode (read-only research, then approve a plan).",
+    "/todos": "Show the agent's current task list.",
+    "/shells": "List background shells; /shells kill <id>.",
+    "/agents": "List outside agents available to delegate to (external_agent tool).",
+    "/commands": "List custom slash commands (.coded/commands/*.md).",
     "/init": "Analyze the repo and write a CODED.md project guide.",
     "/image": "Attach image(s) to your next message: /image <path>... [prompt].",
     "/undo": "Undo the last file changes (checkpoint).",
@@ -72,9 +77,14 @@ class Repl:
         self.config = config
         self._on_turn = on_turn  # called after each completed turn (autosave)
         self._pending_images: Optional[list] = None
+        from coded.commands import discover_commands
 
-        words = list(SLASH_COMMANDS) + list(config.models) + list(agent.skills)
+        self.commands = discover_commands(agent.cwd)
+
+        words = (list(SLASH_COMMANDS) + [f"/{n}" for n in self.commands]
+                 + list(config.models) + list(agent.skills))
         meta = dict(SLASH_COMMANDS)
+        meta.update({f"/{n}": f"command · {c.description}"[:60] for n, c in self.commands.items()})
         meta.update({name: f"model · {mc.model}" for name, mc in config.models.items()})
         meta.update({name: "skill" for name in agent.skills})
         completer = WordCompleter(words, meta_dict=meta, sentence=True)
@@ -98,8 +108,9 @@ class Repl:
         tok = u.prompt_tokens + u.completion_tokens
         tok_str = f"{tok/1000:.1f}k" if tok >= 1000 else str(tok)
         compact = "  ⟳ compacted" if getattr(s, "compactions", 0) else ""
+        mode = "   <b>⏸ plan mode</b>" if self.agent.mode == "plan" else ""
         return HTML(
-            f"  <b>{self.agent.model.name}</b>"
+            f"  <b>{self.agent.model.name}</b>{mode}"
             f"   turns {s.turns}"
             f"   tokens {tok_str}"
             f"   ~${cost:.4f}{compact}"
@@ -201,14 +212,94 @@ class Repl:
             ui.success("Conversation cleared.")
         elif cmd == "/config":
             self._cmd_config()
+        elif cmd == "/plan":
+            self.agent.set_mode("default" if self.agent.mode == "plan" else "plan")
+            if args:
+                ui.user_prefix()
+                self.agent.run(" ".join(args))
+        elif cmd == "/todos":
+            items = self.agent.todos.items
+            ui.todos(items) if items else ui.info("No tasks yet.")
+        elif cmd == "/shells":
+            self._cmd_shells(args)
+        elif cmd == "/agents":
+            self._cmd_agents()
+        elif cmd == "/commands":
+            self._cmd_commands()
+        elif cmd[1:] in self.commands:
+            self._run_custom_command(cmd[1:], text[len(cmd):])
         else:
             ui.warn(f"Unknown command: {cmd}. Try /help.")
         return False
+
+    def _run_custom_command(self, name: str, arguments: str) -> None:
+        command = self.commands[name]
+        previous = None
+        if command.model:
+            try:
+                mc = self.config.get_model(command.model)
+            except ConfigError as exc:
+                ui.error(str(exc))
+                return
+            previous = self.agent.model
+            self.agent.switch_model(mc)
+        try:
+            ui.user_prefix()
+            self.agent.run(command.expand(arguments))
+        finally:
+            if previous is not None:
+                self.agent.switch_model(previous)
+
+    def _cmd_shells(self, args) -> None:
+        if args[:1] == ["kill"] and len(args) > 1:
+            ok = self.agent.shells.kill(args[1])
+            (ui.success if ok else ui.error)(f"{'Stopped' if ok else 'No shell'} {args[1]}.")
+            return
+        shells = self.agent.shells.list()
+        if not shells:
+            ui.info("No background shells.")
+            return
+        table = Table(title="Background shells")
+        table.add_column("id", style="cyan")
+        table.add_column("status")
+        table.add_column("command")
+        for sid, cmd, status in shells:
+            table.add_row(sid, status, cmd[:80])
+        ui.console.print(table)
+
+    def _cmd_agents(self) -> None:
+        tool = self.agent.registry.get("external_agent")
+        if tool is None:
+            ui.info("No outside agents found. Install e.g. Claude Code (claude), Codex (codex), "
+                    "Gemini CLI (gemini) or Aider (aider), or add `external_agents` to config.")
+            return
+        table = Table(title="Outside agents (external_agent tool)")
+        table.add_column("agent", style="cyan")
+        table.add_column("command")
+        table.add_column("description")
+        for a in tool.agents.values():
+            table.add_row(a.name, " ".join(a.command), a.description)
+        ui.console.print(table)
+
+    def _cmd_commands(self) -> None:
+        if not self.commands:
+            ui.info("No custom commands. Add Markdown prompts under ./.coded/commands/<name>.md "
+                    "or ~/.config/coded/commands/<name>.md, then run /<name> [args].")
+            return
+        table = Table(title="Custom commands")
+        table.add_column("command", style="cyan")
+        table.add_column("args")
+        table.add_column("description")
+        for n, c in self.commands.items():
+            table.add_row(f"/{n}", c.argument_hint, c.description)
+        ui.console.print(table)
 
     def _cmd_help(self) -> None:
         table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
         for name, desc in SLASH_COMMANDS.items():
             table.add_row(f"[cyan]{name}[/cyan]", desc)
+        for name, c in self.commands.items():
+            table.add_row(f"[cyan]/{name}[/cyan]", f"{c.description} [dim](custom)[/dim]")
         ui.console.print(table)
 
     def _cmd_models(self) -> None:

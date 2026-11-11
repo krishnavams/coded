@@ -83,6 +83,16 @@ class ModelConfig:
     verify_ssl: bool = True
     # Path to a custom CA cert/bundle (PEM) to trust for this endpoint.
     ca_bundle: Optional[str] = None
+    # Reasoning models: "minimal" | "low" | "medium" | "high" (sent as reasoning_effort).
+    reasoning_effort: Optional[str] = None
+    # Provider-specific request fields merged into the request body verbatim.
+    extra_body: Dict[str, Any] = field(default_factory=dict)
+    # Retries for 429/5xx/connection errors, with jittered exponential backoff.
+    max_retries: int = 4
+    retry_base_delay: float = 1.0
+    # Model aliases to fall back to (in order) when this endpoint keeps failing,
+    # e.g. the same model on another provider/key, or a different model.
+    fallback: list = field(default_factory=list)
 
     def resolved_base_url(self) -> str:
         if self.base_url:
@@ -162,6 +172,22 @@ class Config:
     auto_compact: bool = True  # summarize old messages near the context limit
     compact_ratio: float = 0.8  # fraction of context_window that triggers it
     permissions: Optional[Dict[str, Any]] = None  # {"allow": [...], "deny": [...]}
+    # Lifecycle hooks: {"PreToolUse": [{"matcher": "bash", "command": "..."}], ...}.
+    hooks: Dict[str, Any] = field(default_factory=dict)
+    # OS sandbox for bash: {"enabled": true, "network": false, "writable": [...]}.
+    sandbox: Dict[str, Any] = field(default_factory=dict)
+    show_reasoning: bool = False  # display streamed reasoning/thinking text
+    parallel_tools: bool = True  # run independent read-only tool calls concurrently
+    # Tracing: {"jsonl": "path/to/trace.jsonl", "otel": false}.
+    telemetry: Dict[str, Any] = field(default_factory=dict)
+    # Prompt-injection guard after untrusted content: "off" | "warn" | "strict".
+    injection_guard: str = "warn"
+    # Which model alias to use for each role, e.g. {"subagent": "cheap",
+    # "compact": "cheap", "review": "smart", "verdict": "smart"}.
+    model_roles: Dict[str, str] = field(default_factory=dict)
+    # Outside coding agents (Claude Code, Codex, Gemini CLI, Aider, ...).
+    external_agents: Dict[str, Any] = field(default_factory=dict)
+    detect_external_agents: bool = True  # offer installed CLIs automatically
     source_paths: list = field(default_factory=list)  # config files that were loaded
 
     def get_model(self, name: Optional[str] = None) -> ModelConfig:
@@ -176,6 +202,16 @@ class Config:
                 f"Unknown model '{name}'. Known models: {', '.join(self.models) or '(none)'}"
             )
         return self.models[name]
+
+    def model_for_role(self, role: str, default: ModelConfig) -> ModelConfig:
+        """The model configured for `role` (subagent, compact, review, …), else `default`."""
+        alias = self.model_roles.get(role)
+        if alias and alias in self.models:
+            return self.models[alias]
+        return default
+
+    def fallbacks_for(self, model: ModelConfig) -> list:
+        return [self.models[a] for a in model.fallback if a in self.models and a != model.name]
 
     def add_model(self, mc: ModelConfig, make_default: bool = False) -> None:
         self.models[mc.name] = mc
@@ -226,7 +262,14 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
         cfg.web_search = data["web_search"]
     if data.get("permissions"):
         cfg.permissions = data["permissions"]
-    for key in ("auto_approve", "max_turns", "stream", "auto_compact", "compact_ratio"):
+    for key in ("hooks", "sandbox", "telemetry", "external_agents", "model_roles"):
+        if data.get(key):
+            merged = dict(getattr(cfg, key))
+            merged.update(data[key])
+            setattr(cfg, key, merged)
+    for key in ("auto_approve", "max_turns", "stream", "auto_compact", "compact_ratio",
+                "show_reasoning", "parallel_tools", "injection_guard",
+                "detect_external_agents"):
         if key in data:
             setattr(cfg, key, data[key])
 

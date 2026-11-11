@@ -35,6 +35,7 @@ def _detect_repo(cwd: str) -> Optional[str]:
 
 class GitHubTool(Tool):
     name = "github"
+    untrusted_output = True
     description = """Interact with GitHub pull requests. Actions: list_prs, get_pr, \
 create_pr (title, head, base, body), comment_pr (number, body). Needs GITHUB_TOKEN. \
 Repo is auto-detected from the git remote unless you pass repo='owner/name'."""

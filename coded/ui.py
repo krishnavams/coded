@@ -207,3 +207,21 @@ def diff(text: str) -> None:
     if len(lines) > len(shown):
         body.append(f"  … (+{len(lines) - len(shown)} more diff lines)\n", style="dim italic")
     console.print(body, end="")
+
+
+_TODO_MARK = {"pending": ("☐", MUTED), "in_progress": ("◐", WARN), "completed": ("☑", ACCENT2)}
+
+
+def todos(items: list) -> None:
+    """Render the agent's task list (todo_write)."""
+    if _quiet:
+        return
+    t = Text()
+    for item in items:
+        mark, color = _TODO_MARK.get(item.get("status", "pending"), ("☐", MUTED))
+        style = f"{MUTED} strike" if item.get("status") == "completed" else (
+            "bold" if item.get("status") == "in_progress" else "")
+        t.append(f"  {mark} ", style=color)
+        t.append(item.get("content", "") + "\n", style=style)
+    console.print(Panel(t, title="Tasks", title_align="left", border_style=MUTED, box=ROUNDED,
+                        expand=False))

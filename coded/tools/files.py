@@ -36,6 +36,7 @@ def _checkpoint(ctx: ToolContext, *paths: Path) -> None:
 
 class ReadTool(Tool):
     name = "read"
+    parallel_safe = True
     description = """Read a file from the filesystem. Returns the file contents with \
 1-indexed line numbers in `cat -n` format. Use `offset` and `limit` for large files. \
 Prefer this over `cat`/`head` via the shell."""
@@ -196,6 +197,7 @@ Read the file first so your match is accurate."""
 
 class LsTool(Tool):
     name = "ls"
+    parallel_safe = True
     description = "List the entries of a directory (non-recursive). Defaults to the working directory."
     parameters = {
         "type": "object",

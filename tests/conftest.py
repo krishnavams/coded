@@ -52,12 +52,16 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
 
         base = {"id": "chatcmpl-test", "object": "chat.completion.chunk", "model": "fake"}
+        if message.get("reasoning_content"):
+            for piece in _chunks(message["reasoning_content"]):
+                sse({**base, "choices": [{"index": 0, "delta": {"reasoning_content": piece},
+                                          "finish_reason": None}]})
         if message.get("tool_calls"):
-            tc = message["tool_calls"][0]
-            sse({**base, "choices": [{"index": 0, "delta": {"tool_calls": [
-                {"index": 0, "id": tc["id"], "type": "function",
-                 "function": {"name": tc["function"]["name"],
-                              "arguments": tc["function"]["arguments"]}}]}, "finish_reason": None}]})
+            for idx, tc in enumerate(message["tool_calls"]):
+                sse({**base, "choices": [{"index": 0, "delta": {"tool_calls": [
+                    {"index": idx, "id": tc["id"], "type": "function",
+                     "function": {"name": tc["function"]["name"],
+                                  "arguments": tc["function"]["arguments"]}}]}, "finish_reason": None}]})
             sse({**base, "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]})
         else:
             for piece in _chunks(message.get("content", "")):

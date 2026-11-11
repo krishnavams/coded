@@ -10,6 +10,7 @@ from coded.tools.base import Tool, ToolContext, ToolResult
 class MCPTool(Tool):
     # MCP tool calls can have side effects; gate them behind permission.
     requires_permission = True
+    untrusted_output = True
 
     def __init__(self, server_name: str, tool_name: str, description: str,
                  schema: Dict[str, Any], manager: Any):

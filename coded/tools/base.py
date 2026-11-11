@@ -31,7 +31,8 @@ class ToolContext:
     spawn_subagent: Optional[Callable[[str], str]] = None
     # Records pre-change file state for /undo. Injected by Agent. May be None.
     checkpoints: Any = None  # CheckpointManager
-    # Names of models available (for the task tool description, etc.).
+    # Shared agent state: "todos" (TodoStore), "shells" (BackgroundShells),
+    # "set_mode"/"get_mode" (plan mode), "external_agents", ...
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -43,6 +44,10 @@ class Tool:
     # JSON Schema for the tool's arguments.
     parameters: Dict[str, Any] = {"type": "object", "properties": {}}
     requires_permission: bool = False
+    # Read-only tools that may run concurrently with each other.
+    parallel_safe: bool = False
+    # Output comes from outside the user's control (web pages, PR bodies, MCP).
+    untrusted_output: bool = False
 
     def run(self, args: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         raise NotImplementedError
@@ -55,6 +60,13 @@ class Tool:
     def permission_target(self, args: Dict[str, Any]) -> str:
         """The string matched against allow/deny rules (e.g. command or path)."""
         return ""
+
+    def is_parallel_safe(self, args: Dict[str, Any], ctx: "ToolContext") -> bool:
+        return self.parallel_safe
+
+    def auto_allowed(self, args: Dict[str, Any], ctx: "ToolContext") -> bool:
+        """True when this call may skip the prompt (e.g. it runs sandboxed)."""
+        return False
 
     def preview(self, args: Dict[str, Any], ctx: "ToolContext"):
         """Optional colored/plain preview (e.g. a diff) shown before running."""
