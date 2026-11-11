@@ -417,6 +417,15 @@ by pattern. Patterns are `tool` or `tool(glob)` matched against the command/path
 
 ### Context & sessions
 
+Auto-compaction is **on by default**: when the conversation reaches 80% of the
+model's `context_window` (`compact_ratio`), the older messages are summarized in
+place and coded says so ("Summarized earlier conversation to fit context"). The
+task list survives it, and the cut is made at a user-message boundary so a tool
+call is never split from its result. `/compact` forces it; `{"auto_compact":
+false}` turns it off. The threshold follows whichever model answers, so it
+shrinks if a smaller fallback takes over — a model with no `context_window` set
+is assumed to be 128k.
+
 Long conversations are **auto-compacted**: as the estimated input nears the
 model's `context_window`, older messages are summarized into a briefing while a
 recent, consistent tail is kept verbatim. Force it with `/compact`; disable with
@@ -1135,7 +1144,23 @@ for a 5xx are exhausted it tries once more with the optional parameters
 and remembers them as unsupported if that works. It never drops `tools`
 automatically — an agent that silently loses its tools is worse than an error.
 
-To keep working while an endpoint is down, give the model a fallback:
+**If a model doesn't work, coded tries another.** After its own retries, and
+after any `fallback` models you declared, it sweeps the rest of your configured
+models rather than ending the turn — closest first (same endpoint, then the
+widest context window), one attempt each, and it says which one answered. A
+model that can't serve the request is skipped: no vision model for an image, no
+tool-less model for a turn that needs tools, and nothing whose context window
+would force the conversation to be summarized. The error you finally see names
+the model *you* chose and lists what else was tried.
+
+This can send a request to a different provider than the one you picked (local
+→ cloud, say). To stay strictly on the models you declared:
+
+```json
+{"auto_fallback": false}
+```
+
+To control the order instead, declare the fallback yourself:
 
 ```json
 {"models": {"glm-5-3-flash": {"fallback": ["gpt-oss-120b"]}}}

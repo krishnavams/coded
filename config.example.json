@@ -348,6 +348,8 @@
 
   "auto_approve": false,
   "auto_compact": true,
+  "// auto_fallback": "When a model fails and its own fallbacks are exhausted (or it has none), try the other configured models before giving up. This can send a request to a different provider than the one you selected.",
+  "auto_fallback": true,
   "compact_ratio": 0.8,
   "max_turns": 100,
   "stream": true

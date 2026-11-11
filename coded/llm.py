@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, List, Optional
 
 import httpx
@@ -75,6 +75,16 @@ def _is_retryable(exc: Exception) -> bool:
         return True
     if isinstance(exc, openai.APIStatusError):
         return exc.status_code in (408, 409, 429) or exc.status_code >= 500
+    return False
+
+
+def _has_images(messages: List[Dict[str, Any]]) -> bool:
+    """Does this request carry an image part (so only a vision model will do)?"""
+    for msg in messages or []:
+        content = msg.get("content")
+        if isinstance(content, list) and any(
+                isinstance(part, dict) and part.get("type") == "image_url" for part in content):
+            return True
     return False
 
 
@@ -168,18 +178,41 @@ class LLMClient:
     """Thin wrapper over the OpenAI SDK pointed at any compatible endpoint."""
 
     def __init__(self, model: ModelConfig, fallbacks: Optional[List[ModelConfig]] = None,
-                 on_status: Optional[Callable[[str], None]] = None):
+                 on_status: Optional[Callable[[str], None]] = None,
+                 last_resort: Optional[List[ModelConfig]] = None):
         self.model = model
         self._primary = endpoint_for(model)
         self.client = self._primary.client
         self._fallback_models = list(fallbacks or [])
+        # Models nobody asked for, tried only when everything declared has
+        # failed — better than ending the turn with an error (Config.auto_fallback).
+        self._last_resort = [m for m in (last_resort or [])
+                             if m.name not in {x.name for x in self._fallback_models}
+                             and m.name != model.name]
         self.on_status = on_status
         self._sleep = time.sleep
         self._clock = time.monotonic
 
-    def _chain(self) -> List[ModelConfig]:
-        """Primary + fallbacks, with endpoints that recently failed moved to the end."""
-        chain = [self.model, *self._fallback_models]
+    def _chain(self, *, tools: bool = False, images: bool = False,
+               size: int = 0) -> List[ModelConfig]:
+        """Primary + fallbacks (+ last resort), with endpoints that recently
+        failed moved to the end.
+
+        Only the *last-resort* models are filtered — what the user declared is
+        honoured as written. A model nobody asked for is skipped when it cannot
+        serve this request: no vision for a request with an image, no tools for
+        a turn that needs them, and no window too small for the conversation,
+        which would otherwise summarize the session to survive an outage.
+        """
+        def usable(m: ModelConfig) -> bool:
+            if images and not m.supports_vision:
+                return False
+            if tools and not m.supports_tools:
+                return False
+            return not (size and (m.context_window or 128_000) < size)
+
+        chain = [self.model, *self._fallback_models,
+                 *[m for m in self._last_resort if usable(m)]]
         now = self._clock()
         up = [m for m in chain if self._down_until(m) <= now]
         return up + [m for m in chain if self._down_until(m) > now]
@@ -188,7 +221,10 @@ class LLMClient:
         return endpoint_for(model).down_until
 
     def min_context_window(self) -> int:
-        """Smallest window in the chain: a request this size fits whichever answers."""
+        """Smallest window in the declared chain: a request this size fits
+        whichever answers. Last-resort models are excluded on purpose — one
+        small local model should not shrink every request; `_sync_sizing`
+        shrinks the history if one of them actually takes over."""
         return min((m.context_window or 128_000) for m in [self.model, *self._fallback_models])
 
     def next_model(self) -> ModelConfig:
@@ -206,15 +242,34 @@ class LLMClient:
         on_reasoning: Optional[Callable[[str], None]] = None,
     ) -> Completion:
         last_exc: Optional[Exception] = None
-        chain = self._chain()
+        from coded.compaction import estimate_tokens
+
+        # A last-resort model must hold the conversation as it stands; never
+        # compact a session just to survive someone else's outage.
+        size = int(estimate_tokens(messages) * 1.25)
+        chain = self._chain(tools=bool(tools and self.model.supports_tools),
+                            images=_has_images(messages), size=size)
+        declared = {self.model.name, *(m.name for m in self._fallback_models)}
+        primary_exc: Optional[Exception] = None
+        tried: List[str] = []
+        unreachable: set = set()
         for i, model in enumerate(chain):
+            if model.name not in declared and model.resolved_base_url_safe() in unreachable:
+                continue  # that endpoint did not answer at all; its other models won't either
             try:
                 endpoint = self._primary if model is self.model else self._endpoint(model)
             except Exception as exc:  # noqa: BLE001 - e.g. missing key for a fallback
                 last_exc = exc
                 continue
+            tried.append(model.name)
+            if model.name not in declared and model.max_retries:
+                # One attempt each: a sweep of every configured model must not
+                # multiply the backoff the user already waited through.
+                model = replace(model, max_retries=0)
             if last_exc is not None:
-                self._status(f"Falling back to model '{model.name}' after: {_short(last_exc)}")
+                how = ("Falling back to model" if model.name in declared
+                       else "Everything configured for this model failed; trying")
+                self._status(f"{how} '{model.name}' after: {_short(last_exc)}")
             try:
                 completion = self._complete_on(endpoint, messages, tools, stream, on_text,
                                                on_reasoning, model)
@@ -223,6 +278,10 @@ class LLMClient:
                 return completion
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
+                if primary_exc is None:
+                    primary_exc = exc
+                if isinstance(exc, openai.APIConnectionError):
+                    unreachable.add(model.resolved_base_url_safe())
                 try:
                     exc.coded_model = model  # which model/window the error refers to
                 except Exception:  # noqa: BLE001
@@ -236,8 +295,16 @@ class LLMClient:
                     endpoint.down_until = self._clock() + cooldown
                     self._status(f"Model '{model.name}' is unavailable; skipping it for "
                                  f"{cooldown:.0f}s.")
-        assert last_exc is not None
-        raise last_exc
+        # Report the model the user chose, not whichever substitute failed last:
+        # "qwen-coder-7b returned 500" is bewildering when you asked for another.
+        failure = primary_exc if primary_exc is not None else last_exc
+        assert failure is not None
+        if len(tried) > 1:
+            try:
+                failure.coded_also_tried = [n for n in tried if n != self.model.name]
+            except Exception:  # noqa: BLE001
+                pass
+        raise failure
 
     def _endpoint(self, model: ModelConfig) -> _Endpoint:
         return endpoint_for(model)
@@ -453,11 +520,13 @@ def explain_failure(exc: Exception) -> str:
     head = f"Model '{alias}'{where} " if alias else "The model "
     body = str(exc).splitlines()[0][:200] if str(exc) else type(exc).__name__
 
+    also = getattr(exc, "coded_also_tried", None)
+    swept = (f"\n  Also tried: {', '.join(also)}." if also else "")
     if _is_server_error(exc):
         hint = (f"`coded models --check {alias}` reports which requests this endpoint "
                 "accepts; `/model <alias>` switches models." if alias
                 else "`coded models --check` reports which requests each endpoint accepts.")
-        return f"{head}returned {status}.\n  {body}\n  {hint}"
+        return f"{head}returned {status}.\n  {body}{swept}\n  {hint}"
     if isinstance(exc, openai.AuthenticationError):
         return (f"{head}rejected the API key ({status}).\n  {body}\n"
                 "  Check the key for this model's provider, then retry.")
@@ -465,7 +534,7 @@ def explain_failure(exc: Exception) -> str:
         return (f"{head}was not found ({status}).\n  {body}\n"
                 "  Check the model id and base_url; `coded models` lists what is configured.")
     if isinstance(exc, openai.APIConnectionError):
-        return (f"{head}could not be reached.\n  {body}\n"
+        return (f"{head}could not be reached.\n  {body}{swept}\n"
                 "  Check the base_url, the network, and any proxy or VPN.")
     # Not a transport/model failure: keep the whole message, it is the content.
     full = str(exc) or type(exc).__name__

@@ -97,7 +97,8 @@ class Agent:
     def _make_llm(self, model: ModelConfig) -> LLMClient:
         pool = self._pool or self.config.pool_of(model.name)
         return LLMClient(model, fallbacks=self.config.fallbacks_for(model, pool),
-                         on_status=self._status_note)
+                         on_status=self._status_note,
+                         last_resort=self.config.last_resort_models(model, pool))
 
     def _status_note(self, text: str) -> None:
         if not self._emit("status", text=text) and self.verbose:

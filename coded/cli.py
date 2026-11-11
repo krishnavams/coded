@@ -257,6 +257,8 @@ def _handle_models_command(argv: List[str]) -> int:
         for name, members in (cfg.pools or {}).items():
             picked = cfg.pool_members(name)
             print(f"  {name:<16} pool         {', '.join(picked) or '(no valid members)'}")
+        if not cfg.auto_fallback:
+            print("  auto-fallback   off          a failing model will not try the others")
         routing = cfg.routing_settings()
         if routing.configured:
             levels = ", ".join(f"{lvl}→{routing.target(lvl)}"

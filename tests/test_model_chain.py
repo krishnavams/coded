@@ -471,3 +471,196 @@ def test_probe_stops_at_a_dead_endpoint(route_server):
         stages = probe_stages(_model(srv.base + "/v1", "m"))
     assert len(stages) == 1 and stages[0][0] == "minimal request"
     assert "endpoint or the model id" in probe_hint(*stages[0])
+
+
+# -- "if one model doesn't work, try another" --------------------------------
+
+def _cfg(*models, **kw):
+    cfg = Config(**kw)
+    for m in models:
+        cfg.add_model(m, make_default=(m is models[0]))
+    return cfg
+
+
+def test_a_model_with_no_fallback_falls_back_to_another_configured_one(route_server):
+    """The user's case: several models on one gateway, one of them broken."""
+    hits = {"bad": 0, "good": 0}
+
+    def route(method, path, body):
+        name = json.loads(body)["model"]
+        hits[name] = hits.get(name, 0) + 1
+        if name == "bad":
+            return 500, "application/json", '{"error": {"message": "An unexpected error"}}'
+        return _ok("from the other model")
+
+    with route_server(route) as srv:
+        bad = _model(srv.base + "/v1", "bad", max_retries=0)
+        good = _model(srv.base + "/v1", "good")
+        cfg = _cfg(bad, good)
+        agent = create_agent(model=bad, config=cfg, cwd=".",
+                             permissions=PermissionManager(auto_approve=True),
+                             stream=False, verbose=False)
+        out = agent.llm.complete([{"role": "user", "content": "hi"}], stream=False)
+        assert out.content == "from the other model"
+        assert out.model == "good"
+
+        # Endpoint health is per model, not per gateway: the broken one is not
+        # hammered again while it cools down.
+        agent.llm.complete([{"role": "user", "content": "hi"}], stream=False)
+    assert hits["bad"] == 1
+    assert hits["good"] == 2
+
+
+def test_auto_fallback_can_be_turned_off(route_server):
+    def route(method, path, body):
+        if json.loads(body)["model"] == "bad":
+            return _down(method, path, body)
+        return _ok("other")
+
+    with route_server(route) as srv:
+        bad = _model(srv.base + "/v1", "bad", max_retries=0)
+        cfg = _cfg(bad, _model(srv.base + "/v1", "good"), auto_fallback=False)
+        agent = create_agent(model=bad, config=cfg, cwd=".",
+                             permissions=PermissionManager(auto_approve=True),
+                             stream=False, verbose=False)
+        try:
+            agent.llm.complete([{"role": "user", "content": "hi"}], stream=False)
+            assert False, "expected the failure to surface"
+        except openai.APIStatusError as exc:
+            assert exc.status_code == 503
+
+
+def test_a_sweep_never_summarizes_the_session_to_survive_an_outage(route_server):
+    """A small model nobody declared must not become the reason to compact."""
+    def route(method, path, body):
+        if json.loads(body)["model"] == "big":
+            return _down(method, path, body)
+        return _ok("small")
+
+    with route_server(route) as srv:
+        big = _model(srv.base + "/v1", "big", context_window=300_000, max_retries=0)
+        small = _model(srv.base + "/v1", "small", context_window=8_000)
+        cfg = _cfg(big, small)
+        agent = create_agent(model=big, config=cfg, cwd=".",
+                             permissions=PermissionManager(auto_approve=True),
+                             stream=False, verbose=False)
+        huge = [{"role": "user", "content": "x" * 400_000}]  # ~100k tokens
+        try:
+            agent.llm.complete(huge, stream=False)
+            assert False, "the small model should not have been used"
+        except openai.APIStatusError as exc:
+            assert exc.status_code == 503
+        # …and it is used once the conversation is small enough for it
+        assert agent.llm.complete([{"role": "user", "content": "hi"}],
+                                  stream=False).model == "small"
+
+
+def test_a_sweep_skips_models_that_cannot_do_the_job(route_server):
+    def route(method, path, body):
+        if json.loads(body)["model"] == "main":
+            return _down(method, path, body)
+        return _ok("ok")
+
+    tools = [{"type": "function", "function": {"name": "f", "parameters": {}}}]
+    with route_server(route) as srv:
+        main = _model(srv.base + "/v1", "main", max_retries=0)
+        no_tools = _model(srv.base + "/v1", "no_tools", supports_tools=False)
+        cfg = _cfg(main, no_tools)
+        client = LLMClient(main, last_resort=cfg.last_resort_models(main))
+        # The turn needs tools, and the only other model cannot call them.
+        try:
+            client.complete([{"role": "user", "content": "hi"}], tools=tools, stream=False)
+            assert False, "a tool-less model is not a substitute for an agent turn"
+        except openai.APIStatusError:
+            pass
+        # Without tools it is a perfectly good substitute.
+        assert client.complete([{"role": "user", "content": "hi"}],
+                               stream=False).model == "no_tools"
+
+
+def test_an_image_request_only_sweeps_vision_models(route_server):
+    def route(method, path, body):
+        if json.loads(body)["model"] == "main":
+            return _down(method, path, body)
+        return _ok("saw it")
+
+    msgs = [{"role": "user", "content": [
+        {"type": "text", "text": "what is this?"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}]}]
+    with route_server(route) as srv:
+        main = _model(srv.base + "/v1", "main", max_retries=0, supports_vision=True)
+        blind = _model(srv.base + "/v1", "blind")
+        seeing = _model(srv.base + "/v1", "seeing", supports_vision=True)
+        cfg = _cfg(main, blind, seeing)
+        client = LLMClient(main, last_resort=cfg.last_resort_models(main))
+        assert client.complete(msgs, stream=False).model == "seeing"
+
+
+def test_the_error_names_the_model_the_user_chose(route_server):
+    def route(method, path, body):
+        return _down(method, path, body)
+
+    with route_server(route) as srv:
+        mine = _model(srv.base + "/v1", "mine", max_retries=0)
+        other = _model(srv.base + "/v1", "other", max_retries=0)
+        cfg = _cfg(mine, other)
+        client = LLMClient(mine, last_resort=cfg.last_resort_models(mine))
+        try:
+            client.complete([{"role": "user", "content": "hi"}], stream=False)
+            assert False
+        except openai.APIStatusError as exc:
+            from coded.llm import explain_failure
+
+            assert exc.coded_model.name == "mine"       # not whichever failed last
+            text = explain_failure(exc)
+            assert "'mine'" in text and "Also tried: other" in text
+
+
+def test_last_resort_order_prefers_the_same_endpoint_then_the_largest(route_server):
+    here = _model("http://a/v1", "here", context_window=32_000)
+    same = _model("http://a/v1", "same", context_window=8_000)
+    far_big = _model("http://b/v1", "far_big", context_window=200_000)
+    far_small = _model("http://b/v1", "far_small", context_window=16_000)
+    cfg = _cfg(here, far_small, same, far_big)
+    assert [m.name for m in cfg.last_resort_models(here)] == ["same", "far_big", "far_small"]
+
+
+def test_declared_fallbacks_are_honoured_as_written(route_server):
+    """Filtering applies to the sweep, never to what the user asked for."""
+    no_tools = _model("http://x/v1", "no_tools", supports_tools=False)
+    main = _model("http://x/v1", "main", fallback=["no_tools"])
+    client = LLMClient(main, fallbacks=[no_tools])
+    chain = client._chain(tools=True, images=True, size=10**9)
+    assert [m.name for m in chain] == ["main", "no_tools"]
+
+
+def test_compaction_and_review_models_sweep_too(route_server):
+    """Every LLMClient the agent builds goes through _make_llm, so a summarizer
+    failure is not the one place that still ends the turn."""
+    with route_server(lambda *a: _ok("x")) as srv:
+        main = _model(srv.base + "/v1", "main")
+        other = _model(srv.base + "/v1", "other")
+        cfg = _cfg(main, other)
+        agent = create_agent(model=main, config=cfg, cwd=".",
+                             permissions=PermissionManager(auto_approve=True),
+                             stream=False, verbose=False)
+        for client in (agent.llm, agent._make_llm(other)):
+            assert client._last_resort, "no last-resort models on an agent client"
+
+
+def test_a_dead_gateway_is_swept_once_not_per_model(route_server):
+    """Eight models on one unreachable host must not mean eight backoffs."""
+    unreachable = "http://127.0.0.1:9/v1"
+    models = [_model(unreachable, f"m{i}", retry_base_delay=0, max_retries=1) for i in range(8)]
+    cfg = _cfg(*models)
+    client = LLMClient(models[0], last_resort=cfg.last_resort_models(models[0]))
+    attempts = []
+    client._sleep = lambda d: attempts.append(d)
+    try:
+        client.complete([{"role": "user", "content": "hi"}], stream=False)
+        assert False, "the host is not listening"
+    except openai.APIConnectionError as exc:
+        assert exc.coded_model.name == "m0"  # the model the user chose
+    # Only the primary retried; the rest of that host was skipped after the
+    # first connection error.
+    assert len(attempts) == 1

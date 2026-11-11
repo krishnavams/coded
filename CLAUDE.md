@@ -317,6 +317,15 @@ config.example.json     # sample configuration
   unimplemented param with a 500; `tools` is never dropped automatically.
   `coded models --check` probes a failing endpoint in stages
   (`llm.probe_stages`/`probe_hint`) to say which part of the request it refuses.
+- **Last-resort fallback** (`Config.auto_fallback`, on): when a model's own
+  chain is exhausted, `Config.last_resort_models` offers the other configured
+  models (same endpoint first, then the widest window) and `LLMClient._chain`
+  drops the ones that cannot serve *this* request — no vision for an image, no
+  tools for a tool turn, no window smaller than the conversation (never compact
+  to survive someone else's outage). Declared fallbacks are never filtered.
+  Each gets one attempt, a host that refuses a connection is skipped for its
+  other models, and the error raised is the **primary's**, carrying
+  `coded_also_tried`.
 - **Model chain**: an endpoint that fails over is skipped for
   `fallback_cooldown` seconds (`_Endpoint.down_until`; cooling endpoints are
   tried last). `LLMClient.next_model()` is the model the next request goes to;
