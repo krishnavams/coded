@@ -137,6 +137,7 @@ class CodedTUI(App):
         Binding("ctrl+c", "quit", "Quit", priority=True),
         Binding("ctrl+l", "clear", "Clear"),
         Binding("ctrl+u", "undo", "Undo edits"),
+        Binding("shift+tab", "toggle_plan", "Plan mode", priority=True),
     ]
 
     busy = reactive(False)
@@ -198,7 +199,7 @@ class CodedTUI(App):
                  f"~${s.estimated_cost(self.agent.model):.4f}")
         if getattr(s, "compactions", 0):
             t.append(f"  ·  compacted {s.compactions}×")
-        t.append("  ·  ^C quit  ^L clear  ^U undo")
+        t.append("  ·  shift+tab plan  ^C quit  ^L clear  ^U undo")
         return t
 
     def _tasks_text(self) -> Text:
@@ -345,6 +346,12 @@ class CodedTUI(App):
         self.query_one("#transcript", VerticalScroll).remove_children()
         self._finalize_assistant()
         self._mount(StatusNote("Conversation cleared."))
+        self._refresh_sidebar()
+
+    def action_toggle_plan(self) -> None:
+        if self.busy:
+            return  # not while a turn is running
+        self.agent.set_mode("default" if self.agent.mode == "plan" else "plan", announce=False)
         self._refresh_sidebar()
 
     def action_undo(self) -> None:

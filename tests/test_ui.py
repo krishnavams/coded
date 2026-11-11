@@ -81,3 +81,26 @@ def test_diff_display_has_line_numbers_and_no_file_headers():
 def test_logo_is_coded_own_mark():
     assert len(ui.LOGO) == 3 and len({len(r) for r in ui.LOGO}) == 1
     assert "◆" in ui.logo_text().plain
+
+
+def test_repl_shift_tab_is_bound_to_plan_mode():
+    from prompt_toolkit.formatted_text import to_formatted_text
+
+    cfg = Config()
+    m = ModelConfig(name="m", model="m", base_url="http://x/v1", api_key="k")
+    cfg.add_model(m, make_default=True)
+    agent = create_agent(model=m, config=cfg, cwd=".", permissions=PermissionManager(),
+                         stream=False, verbose=False)
+    repl = Repl(agent, cfg)
+    binding = [b for b in repl.prompt.key_bindings.bindings
+               if [getattr(k, "value", k) for k in b.keys] == ["s-tab"]]
+    assert len(binding) == 1
+
+    class _Event:
+        app = type("A", (), {"invalidate": lambda self: None})()
+
+    binding[0].handler(_Event())
+    assert agent.mode == "plan"
+    assert "plan mode" in "".join(t[1] for t in to_formatted_text(repl._bottom_toolbar()))
+    binding[0].handler(_Event())
+    assert agent.mode == "default"

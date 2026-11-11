@@ -200,7 +200,7 @@ class Config:
     # Prompt-injection guard after untrusted content: "off" | "warn" | "strict".
     injection_guard: str = "warn"
     # Which model alias to use for each role, e.g. {"subagent": "cheap",
-    # "compact": "cheap", "review": "smart", "verdict": "smart"}.
+    # "compact": "cheap", "review": "smart", "verdict": "smart", "plan": "smart"}.
     model_roles: Dict[str, str] = field(default_factory=dict)
     # Outside coding agents (Claude Code, Codex, Gemini CLI, Aider, ...).
     external_agents: Dict[str, Any] = field(default_factory=dict)

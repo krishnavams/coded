@@ -66,6 +66,7 @@ class Agent:
         self.mode = "default"
         self.limits: Limits = limits_for(model)
         self._sized_model: ModelConfig = model  # whose window limits/compaction target
+        self._main_model: ModelConfig = model   # the user's choice; plan mode may borrow another
         self.llm = self._make_llm(model)
         self._compact_llm: Optional[LLMClient] = None
         for t in extra_tools or []:
@@ -150,9 +151,18 @@ class Agent:
         self._interrupted = True
 
     def switch_model(self, model: ModelConfig) -> None:
+        """Make `model` the session's main model (the user's choice: -m, /model)."""
+        self._main_model = model
+        self.use_model(model)
+
+    def use_model(self, model: ModelConfig) -> None:
+        """Run on `model` without changing the main model (plan role, one command)."""
+        if model is self.model:
+            return
         self.model = model
         self.limits = limits_for(model)
-        self._sized_model = model
+        # _sized_model is left alone: the next step's _sync_sizing() sees the change
+        # and shrinks the conversation if this model's window is smaller.
         self.llm = self._make_llm(model)
         self._compact_llm = None
         self.refresh_system_prompt()
@@ -175,13 +185,23 @@ class Agent:
         if self.session.messages and self.session.messages[0].get("role") == "system":
             self.session.messages[0]["content"] = prompt
 
-    def set_mode(self, mode: str) -> None:
-        """"default" or "plan" (read-only research until a plan is approved)."""
+    def set_mode(self, mode: str, announce: bool = True) -> None:
+        """"default" or "plan" (read-only research until a plan is approved).
+        Plan mode runs on the `plan` role model when one is configured; leaving it
+        returns to the main model."""
         self.mode = mode
         self.permissions.plan_mode = mode == "plan"
         self._plan_intro_sent = False  # resend planner.md next time plan mode starts
-        self._status_note("Plan mode on: read-only until you approve a plan."
-                          if mode == "plan" else "Plan mode off.")
+        target = (self.config.model_for_role("plan", self._main_model) if mode == "plan"
+                  else self._main_model)
+        switched = target is not self.model
+        self.use_model(target)
+        if announce:
+            note = ("Plan mode on: read-only until you approve a plan."
+                    if mode == "plan" else "Plan mode off.")
+            if switched:
+                note += f" Using model '{target.name}'."
+            self._status_note(note)
 
     # -- core loop ----------------------------------------------------------
     def _loop(self) -> str:

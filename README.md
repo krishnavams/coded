@@ -524,7 +524,7 @@ same permission gate.
 For multi-step work the agent keeps a visible task list (`todo_write`), shown in
 the REPL as it changes and above the TUI input box (`/todos` to show it again).
 
-**Plan mode** (`coded --plan`, or `/plan` in the REPL/TUI) makes the agent
+**Plan mode** (`coded --plan`, or `/plan` / **Shift+Tab** in the REPL/TUI) makes the agent
 research with read-only tools only. When it has a plan it calls
 `exit_plan_mode`; you approve (implementation starts) or reject (it revises).
 Every risky action is refused while plan mode is on, including `git`/`github`
@@ -628,8 +628,10 @@ top of that:
   - **Typos**: an alias in `fallback`, `model_roles` or `default_model` that
     isn't a configured model is reported at startup and by `coded models`.
 - **Roles**: `model_roles` picks the model for sub-agents (`subagent`), context
-  compaction (`compact`), the review phases (`review`) and the CI pass/fail
-  call (`verdict`). The `task` tool also accepts a `model` alias per sub-agent.
+  compaction (`compact`), the review phases (`review`), the CI pass/fail
+  call (`verdict`) and plan mode (`plan`). With `"plan": "large"`, plan mode
+  runs on `large` and coded returns to your main model to implement the
+  approved plan. The `task` tool also accepts a `model` alias per sub-agent.
 - **Health check**: `coded models` lists endpoints, fallbacks and roles;
   `coded models --check [alias ...]` sends a tiny request to each and reports
   latency or the error.

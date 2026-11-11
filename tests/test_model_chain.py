@@ -310,3 +310,49 @@ def test_new_model_fields_load_from_a_config_file(tmp_path):
     cfg = load_config(cwd=str(tmp_path), config_path=str(path), plugins=False)
     assert cfg.models["large"].timeout == 900 and cfg.models["large"].fallback_cooldown == 30
     assert any("'nope'" in w for w in cfg.model_warnings())
+
+
+def _two_model_agent(tmp_path, url, roles):
+    cfg = Config()
+    main = _model(url, "medium")
+    big = _model(url, "large", context_window=300_000)
+    cfg.add_model(main, make_default=True)
+    cfg.add_model(big)
+    cfg.model_roles = roles
+    agent = create_agent(model=main, config=cfg, cwd=str(tmp_path),
+                         permissions=PermissionManager(auto_approve=True), stream=False,
+                         verbose=False)
+    return agent, main, big
+
+
+def test_plan_role_model_plans_and_main_model_executes(tmp_path, route_server):
+    served = []
+
+    def route(method, path, body):
+        served.append(json.loads(body)["model"])
+        return _ok("ok")
+
+    with route_server(route) as srv:
+        agent, main, big = _two_model_agent(tmp_path, srv.base + "/v1", {"plan": "large"})
+        agent.set_mode("plan")
+        assert agent.model is big and agent.permissions.plan_mode
+        assert agent.limits.read_lines > 2000  # sized for the planner
+        agent.run("plan it")
+        agent.set_mode("default")
+        assert agent.model is main and agent.limits.read_lines == 2000
+        agent.run("do it")
+        assert served == ["large", "medium"]
+        # /model while planning changes the main model, which execution returns to.
+        agent.set_mode("plan")
+        agent.switch_model(big)
+        agent.set_mode("default")
+        assert agent.model is big
+
+
+def test_plan_mode_without_a_plan_role_keeps_the_model(tmp_path, route_server):
+    with route_server(lambda *a: _ok("ok")) as srv:
+        agent, main, _ = _two_model_agent(tmp_path, srv.base + "/v1", {})
+        agent.set_mode("plan")
+        assert agent.model is main
+        agent.set_mode("default")
+        assert agent.model is main and not agent.permissions.plan_mode

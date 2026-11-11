@@ -552,8 +552,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         tracer=tracer_from_config(cfg, args.trace),
     )
     if args.plan:
-        agent.mode = "plan"
-        permissions.plan_mode = True
+        agent.set_mode("plan", announce=False)
 
     # Session persistence: resume a saved session, or start a fresh id.
     from coded.sessions_store import SessionStore

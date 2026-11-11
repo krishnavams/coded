@@ -154,7 +154,9 @@ config.example.json     # sample configuration
    nested `AGENTS.md` injection for file tools → `PostToolUse` hook. A final
    answer runs the `Stop` hook, which may push the agent to continue.
 9. **Models per role**: `Config.model_for_role()` picks the model for
-   `subagent`, `compact`, `review`, `verdict`; `Config.fallbacks_for()` resolves
+   `subagent`, `compact`, `review`, `verdict`, `plan` (`Agent.set_mode` swaps to
+   the `plan` model via `use_model()` and back to `_main_model` on exit;
+   `switch_model()` is the user's choice and sets `_main_model`); `Config.fallbacks_for()` resolves
    a model's `fallback` aliases for `LLMClient`.
 
 10. **Skills & plugins install** (`plugins.py`): `coded skill|plugin …` fetch a

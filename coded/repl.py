@@ -9,7 +9,9 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.filters import has_completions
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
 from rich.table import Table
 
@@ -38,7 +40,7 @@ SLASH_COMMANDS = {
     "/skills": "List available skills.",
     "/skill": "Invoke a skill now: /skill <name> [task].",
     "/review": "Run reviewer→qa→security sub-agents on the changes: /review [target].",
-    "/plan": "Toggle plan mode (read-only research, then approve a plan).",
+    "/plan": "Toggle plan mode (read-only research, then approve a plan). Also Shift+Tab.",
     "/todos": "Show the agent's current task list.",
     "/shells": "List background shells; /shells kill <id>.",
     "/agents": "List outside agents available to delegate to (external_agent tool).",
@@ -92,7 +94,16 @@ class Repl:
         meta.update({name: "skill" for name in agent.skills})
         completer = WordCompleter(words, meta_dict=meta, sentence=True)
 
+        bindings = KeyBindings()
+
+        @bindings.add("s-tab", filter=~has_completions)
+        def _toggle_plan(event) -> None:  # Shift+Tab: plan mode on/off
+            self.agent.set_mode("default" if self.agent.mode == "plan" else "plan",
+                                announce=False)
+            event.app.invalidate()  # redraw the status bar
+
         self.prompt = PromptSession(
+            key_bindings=bindings,
             history=FileHistory(str(_history_path())),
             completer=completer,
             auto_suggest=AutoSuggestFromHistory(),
@@ -111,13 +122,14 @@ class Repl:
         tok = u.prompt_tokens + u.completion_tokens
         tok_str = f"{tok/1000:.1f}k" if tok >= 1000 else str(tok)
         compact = "  ⟳ compacted" if getattr(s, "compactions", 0) else ""
-        mode = "   <b>⏸ plan mode</b>" if self.agent.mode == "plan" else ""
+        mode = ("  ·  <style fg='%s'><b>⏸ plan mode</b></style>" % ui.WARN
+                if self.agent.mode == "plan" else "")
         return HTML(
             f"  <style fg='{ui.ACCENT}'><b>◆ {self.agent.model.name}</b></style>{mode}"
             f"  ·  {s.turns} turns"
             f"  ·  {tok_str} tokens"
             f"  ·  ~${cost:.4f}{compact}"
-            f"  ·  /help"
+            f"  ·  shift+tab plan  ·  /help"
         )
 
     def _permission_prompt(self, title: str, detail: str) -> str:
@@ -252,13 +264,13 @@ class Repl:
                 ui.error(str(exc))
                 return
             previous = self.agent.model
-            self.agent.switch_model(mc)
+            self.agent.use_model(mc)
         try:
             ui.user_prefix()
             self.agent.run(command.expand(arguments))
         finally:
             if previous is not None:
-                self.agent.switch_model(previous)
+                self.agent.use_model(previous)
 
     def _cmd_shells(self, args) -> None:
         if args[:1] == ["kill"] and len(args) > 1:
