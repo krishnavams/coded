@@ -298,7 +298,7 @@ def test_every_profile_keeps_safety_rules(tmp_path, profile):
 def test_profile_files_override_only_what_they_contain(tmp_path):
     full = _m(prompt_profile="full")
     text, src = resolve_prompt("reviewer", str(tmp_path), full)
-    assert src.endswith("full/reviewer.md")
+    assert src.replace("\\", "/").endswith("full/reviewer.md")
     _, src = resolve_prompt("system", str(tmp_path), full)
     assert src == str(builtin_prompts_dir() / "system.md")
     compact = build_system_prompt(str(tmp_path), model=_m(prompt_profile="compact"))

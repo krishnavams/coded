@@ -182,6 +182,17 @@ def text_kwargs() -> Dict[str, Any]:
     return {"text": True, "encoding": "utf-8", "errors": "replace"}
 
 
+def child_env(env: Optional[Dict[str, str]] = None) -> Optional[Dict[str, str]]:
+    """Environment for a child process. On Windows, ask Python children to write
+    UTF-8: the default is the ANSI code page, so printing non-ASCII to a pipe
+    raises UnicodeEncodeError in the child."""
+    if not IS_WINDOWS:
+        return env
+    base = dict(env if env is not None else os.environ)
+    base.setdefault("PYTHONIOENCODING", "utf-8")
+    return base
+
+
 def kill_tree(proc: subprocess.Popen, timeout: float = 5.0) -> None:
     """Stop a process and its children, on any platform."""
     if proc.poll() is not None:
@@ -235,7 +246,7 @@ def run(command: Union[str, Sequence[str]], *, cwd: Optional[str] = None,
         return subprocess.run(argv, shell=use_shell, cwd=cwd, env=env, input=input,
                               capture_output=True, timeout=timeout, **text_kwargs())
     proc = subprocess.Popen(
-        argv, shell=use_shell, cwd=cwd, env=env, stdin=subprocess.PIPE,
+        argv, shell=use_shell, cwd=cwd, env=child_env(env), stdin=subprocess.PIPE,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         **text_kwargs(), **popen_kwargs(new_group=True))
     try:

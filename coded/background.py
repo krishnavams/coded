@@ -17,7 +17,7 @@ import threading
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Union
 
-from coded.shells import command_argv, kill_tree, popen_kwargs
+from coded.shells import child_env, command_argv, kill_tree, popen_kwargs
 
 
 @dataclass
@@ -41,7 +41,7 @@ class BackgroundShells:
         spec = command_argv(argv) if isinstance(argv, str) else argv
         with os.fdopen(fd, "wb") as log:
             proc = subprocess.Popen(
-                spec, shell=isinstance(spec, str), cwd=cwd, stdout=log,
+                spec, shell=isinstance(spec, str), cwd=cwd, env=child_env(), stdout=log,
                 stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                 **popen_kwargs(new_group=True),
             )

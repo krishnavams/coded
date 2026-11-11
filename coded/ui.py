@@ -145,16 +145,17 @@ def _home_short(path: str) -> str:
 
 
 def _rel(path: Any, cwd: str = "") -> str:
-    """A path as the user thinks of it: relative to the project when inside it."""
+    """A path as the user thinks of it: relative to the project when inside it,
+    always with forward slashes (shorter, and what the model wrote)."""
     path = str(path)
     if cwd and os.path.isabs(path):
         try:
             rel = os.path.relpath(path, cwd)
         except ValueError:
-            return path
+            return path.replace("\\", "/")
         if not rel.startswith(".."):
-            return rel
-    return _home_short(path)
+            return rel.replace("\\", "/")
+    return _home_short(path).replace("\\", "/")
 
 
 def _one_line(value: Any, width: int = 100) -> str:

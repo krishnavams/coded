@@ -320,6 +320,18 @@ class Plugin:
             text = text.replace(var, root)
         return text
 
+    def _expand_tree(self, value: Any) -> Any:
+        """Expand the plugin root inside a parsed structure. Substituting into
+        JSON text instead would produce invalid JSON for Windows paths, whose
+        backslashes are escape characters."""
+        if isinstance(value, str):
+            return self._expand(value)
+        if isinstance(value, dict):
+            return {k: self._expand_tree(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._expand_tree(v) for v in value]
+        return value
+
     def hooks(self) -> Dict[str, List[Dict[str, Any]]]:
         """Hook entries in coded's flat form, paths expanded and matchers mapped."""
         raw = self.manifest.get("hooks")
@@ -388,7 +400,7 @@ class Plugin:
                 self._warn(f"MCP server '{name}' is not a stdio (command) server; coded supports "
                            "stdio only, ignored")
                 continue
-            spec = json.loads(self._expand(json.dumps(spec)))
+            spec = self._expand_tree(spec)
             spec.setdefault("env", {})
             spec["env"] = {**spec["env"], "CODED_PLUGIN_ROOT": str(self.root),
                            "CLAUDE_PLUGIN_ROOT": str(self.root)}

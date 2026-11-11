@@ -146,7 +146,9 @@ def test_pre_tool_use_hook_payload_and_allow_decision(tmp_path, fake_server):
 
 def test_user_prompt_submit_context_and_block(tmp_path, fake_server):
     cfg = Config()
-    cfg.hooks = {"UserPromptSubmit": [{"command": f"{sys.executable} -c \"import json,sys; p=json.load(sys.stdin)['prompt']; "
+    # the hook runs through a shell; Windows paths need forward slashes for it
+    python = Path(sys.executable).as_posix()
+    cfg.hooks = {"UserPromptSubmit": [{"command": f"{python} -c \"import json,sys; p=json.load(sys.stdin)['prompt']; "
                                                   "sys.exit(2) if 'forbidden' in p else print('ctx: sprint 42')\""}]}
     script = _scripted("ok")
     with fake_server(script) as srv:

@@ -2,11 +2,25 @@
 
 from __future__ import annotations
 
+import pytest
+
 from coded import ui
 from coded.agent import create_agent
 from coded.config import Config, ModelConfig
 from coded.permissions import PermissionManager
 from coded.repl import Repl
+
+
+@pytest.fixture
+def headless():
+    """prompt_toolkit needs an app session with no real console (Windows CI)."""
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    with create_pipe_input() as pipe:
+        with create_app_session(input=pipe, output=DummyOutput()):
+            yield
 
 
 def test_ui_helpers_render_without_error():
@@ -33,7 +47,7 @@ def test_thinking_spinner_is_context_manager():
         ui.set_quiet(False)
 
 
-def test_repl_bottom_toolbar():
+def test_repl_bottom_toolbar(headless):
     from prompt_toolkit.formatted_text import to_formatted_text
 
     cfg = Config()
@@ -83,7 +97,7 @@ def test_logo_is_coded_own_mark():
     assert "◆" in ui.logo_text().plain
 
 
-def test_repl_shift_tab_is_bound_to_plan_mode():
+def test_repl_shift_tab_is_bound_to_plan_mode(headless):
     from prompt_toolkit.formatted_text import to_formatted_text
 
     cfg = Config()

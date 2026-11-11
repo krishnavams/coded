@@ -46,7 +46,9 @@ def test_posix_is_unchanged():
     assert shell.name == "sh" and shell.posix_syntax
     # The command string still goes to subprocess as-is (shell=True, /bin/sh -c).
     assert command_argv("ls -la && echo $HOME", shell) == "ls -la && echo $HOME"
-    assert popen_kwargs(new_group=True) == {"start_new_session": True}
+    expected = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" \
+        else {"start_new_session": True}
+    assert popen_kwargs(new_group=True) == expected
 
 
 def test_windows_prefers_git_bash_found_next_to_git():
