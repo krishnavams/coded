@@ -439,6 +439,34 @@ coded --resume <id>     # resume a specific one
 coded sessions          # list them
 ```
 
+### Documents: PDF, Word, Excel, PowerPoint
+
+```bash
+pip install 'coded[docs]'      # pypdf, openpyxl, python-docx, python-pptx
+```
+
+With the extra installed, the `read` tool reads documents as text, paged
+through with the same `offset`/`limit` and per-model budgets as source files:
+
+| File | Read as |
+|---|---|
+| `.pdf` | text per page (`===== page 3 =====`) |
+| `.docx` | headings, paragraphs and tables in document order |
+| `.xlsx` | each sheet as numbered rows of cell values |
+| `.pptx` | per slide — title, bullets, tables and speaker notes |
+
+`pages` picks part of a document first: `"3"`, `"2-5"`, `"1,4,9"`, or a sheet
+name. Spreadsheets show the values Excel last calculated; a formula that was
+never calculated (a file written by a script) is shown as the formula rather
+than a blank.
+
+Out of scope, and reported as such rather than guessed at: **scanned PDFs**
+(pages that are images need OCR — the tool says so), charts and pictures inside
+Office files, password-protected files, and the pre-2007 binary formats
+(`.doc`, `.xls`, `.ppt` — the error gives the `soffice` command to convert
+them). Without the extra, reading a document fails with the exact `pip install`
+line; it never falls back to decoding a binary file as text.
+
 ### Repository map
 
 ```

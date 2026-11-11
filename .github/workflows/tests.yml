@@ -33,7 +33,7 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: Install
-        run: pip install -e '.[dev,tui]'
+        run: pip install -e '.[dev,tui,docs]'
 
       - name: Show the resolved shell
         run: python -c "from coded.shells import active_shell; s = active_shell(); print(s.name, s.path or '(sh)', s.label)"

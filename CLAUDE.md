@@ -60,6 +60,7 @@ coded/
 ├── index.py            # CodeIndex: chunk/embed/store + cosine search
 ├── websearch.py        # web-search backends + HTML→text fetch
 ├── images.py           # image → base64 data URL for vision models
+├── documents.py        # PDF/DOCX/XLSX/PPTX → text sections for the read tool
 ├── mcp_client.py       # optional MCP stdio client (background asyncio loop)
 ├── hooks.py            # HookRunner: PreToolUse/PostToolUse/UserPromptSubmit/SessionStart/Stop
 ├── sandbox.py          # bwrap / sandbox-exec wrapping for bash (no Windows backend)
@@ -109,6 +110,7 @@ tests/
 ├── test_routing.py     # difficulty routing, pools, endpoint reuse, per-model cost
 ├── test_repomap.py     # symbol extraction, ranking, budgets, the repo_map tool
 ├── test_memory.py      # memory store, the permission gate, prompt injection
+├── test_documents.py   # reading PDF/Word/Excel/PowerPoint, refusals, no-extra path
 ├── test_verify.py      # the verification loop: checks, second opinion, rounds
 ├── test_model_chain.py # failover cooldown, sizing for a smaller fallback, stream retry,
 │                       # per-model timeout, unknown-alias warnings
@@ -325,6 +327,13 @@ config.example.json     # sample configuration
   unimplemented param with a 500; `tools` is never dropped automatically.
   `coded models --check` probes a failing endpoint in stages
   (`llm.probe_stages`/`probe_hint`) to say which part of the request it refuses.
+- **Documents** (`documents.py`, through the `read` tool): PDF/DOCX/XLSX/PPTX
+  become sections (pages, slides, sheets) of text lines, then go through the
+  same offset/limit/budget code as text. The parsers are the `docs` extra and
+  are imported lazily; a missing one is a `DocumentError` naming the install,
+  and a binary file must **never** be decoded as text (a PDF is recognised by
+  magic, and text with too many replacement characters is refused). Parsers
+  raise anything, so `documents.load` converts every exception.
 - **Repository map** (`repomap.py`, the `repo_map` tool): `ast` for Python plus
   conservative regexes elsewhere — an outline, not a parse tree, and never a
   new dependency. Ranking is PageRank over a file graph built from "names a
@@ -414,6 +423,7 @@ config.example.json     # sample configuration
 ```bash
 pip install -e '.[dev]'        # editable install + pytest
 pip install -e '.[mcp]'        # add MCP support
+pip install -e '.[docs]'       # read PDF/Word/Excel/PowerPoint
 ```
 
 ### Run
