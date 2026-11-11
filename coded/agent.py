@@ -442,13 +442,13 @@ class Agent:
     # -- display routing (ui vs. event sink) --------------------------------
     def _show_tool_call(self, name: str, args: dict, call_id: str = "") -> None:
         if not self._emit("tool_call", name=name, args=args, id=call_id) and self.verbose:
-            ui.tool_call(name, args)
+            ui.tool_call(name, args, cwd=self.cwd)
 
     def _show_tool_result(self, content: str, is_error: bool, call_id: str = "",
                           name: str = "") -> None:
         if not self._emit("tool_result", content=content, is_error=is_error, id=call_id,
                           name=name) and self.verbose:
-            ui.tool_result(content, is_error=is_error)
+            ui.tool_result(content, is_error=is_error, name=name, cwd=self.cwd)
 
     def _show_diff(self, diff: str, call_id: str = "") -> None:
         if not self._emit("diff", diff=diff, id=call_id) and self.verbose:

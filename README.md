@@ -75,7 +75,7 @@ runtime.
 - **Two front-ends** — a modern inline **REPL** (streaming Markdown, live status
   bar, ghost-text history suggestions, rich completion, framed permission/diff
   prompts) and an optional **full-screen TUI** (`coded --tui`) with a scrolling
-  transcript, session sidebar, tool/diff cards, and a permission modal.
+  transcript, tool calls and numbered diffs, a status line, and a permission modal.
 - **Sub-agents** — the `task` tool spawns a focused agent with its own context
   for large searches or multi-step subtasks.
 - **Skills & agent roles** — Claude Code-style `SKILL.md` instruction packs with
@@ -273,9 +273,9 @@ coded sessions                 # list saved sessions
 ### Full-screen TUI
 
 `coded --tui` launches a Textual app: a scrolling transcript (user turns,
-streamed assistant Markdown, tool-call and result cards, syntax-highlighted
-diffs), a live **session sidebar** (model, turns, tokens, cost, tools, skills),
-an input box, and a **permission modal** for gated actions. Keys: `Enter` send,
+streamed assistant Markdown, tool calls shown as `● Edit(app.py)` with their
+results, line-numbered diffs), the task list while the agent has one, an input
+box with a **status line** under it (model, mode, turns, tokens, cost), and a **permission modal** for gated actions. Keys: `Enter` send,
 `Ctrl+L` clear, `Ctrl+U` undo edits, `Ctrl+C` quit. It reuses the same agent,
 tools, permissions, and session persistence as the REPL. Install the extra:
 
@@ -522,7 +522,7 @@ same permission gate.
 ### Task list & plan mode
 
 For multi-step work the agent keeps a visible task list (`todo_write`), shown in
-the REPL as it changes and in the TUI sidebar (`/todos` to show it again).
+the REPL as it changes and above the TUI input box (`/todos` to show it again).
 
 **Plan mode** (`coded --plan`, or `/plan` in the REPL/TUI) makes the agent
 research with read-only tools only. When it has a plan it calls

@@ -258,6 +258,12 @@ config.example.json     # sample configuration
   `ssl_verify()` resolves `ca_bundle` → `$CODED_CA_BUNDLE` → `verify_ssl`. The
   `--ca-bundle`/`--insecure` CLI flags override the selected model; disabling
   verification warns. Route new endpoint clients through this helper.
+- **Look**: purple theme (`ui.ACCENT`/`ACCENT_DEEP`/`ACCENT_SOFT`) and coded's own
+  logo (`ui.LOGO`: code brackets around a diamond). Never hard-code colors or
+  reuse another product's logo/branding. Tool calls display as `● Edit(app.py)`
+  with results under `⎿` (`ui.tool_call_text` / `tool_result_text` / `diff_text`
+  / `welcome`); the REPL and the TUI both render through these so they match.
+  A new tool gets a readable title by adding it to `ui._TOOL_TITLES`.
 - **UI**: use the helpers in `coded/ui.py` and its single shared `console`.
   Displayed tool output is truncated for readability; the **model** always
   receives the full tool result (truncation is display-only). Colors come from

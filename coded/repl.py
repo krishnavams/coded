@@ -19,14 +19,15 @@ from coded.config import Config, ConfigError
 
 # prompt_toolkit color theme (matches ui.py accents).
 _PT_STYLE = Style.from_dict({
-    "prompt": "#7c9cff bold",
-    "bottom-toolbar": "#8a94a7 bg:#161922",
-    "bottom-toolbar.accent": "#5ad1a0 bg:#161922",
-    "completion-menu.completion": "bg:#161922 #c0c8d8",
-    "completion-menu.completion.current": "bg:#7c9cff #0b0e14 bold",
-    "completion-menu.meta.completion": "bg:#161922 #6b7488",
-    "completion-menu.meta.completion.current": "bg:#5f78c9 #0b0e14",
-    "auto-suggestion": "#4a5568",
+    "prompt": f"{ui.ACCENT} bold",
+    "rule": ui.ACCENT_DEEP,
+    "bottom-toolbar": f"{ui.MUTED} bg:#15121f noreverse",
+    "bottom-toolbar.accent": f"{ui.ACCENT} bg:#15121f",
+    "completion-menu.completion": "bg:#1c1830 #cfc8e8",
+    "completion-menu.completion.current": f"bg:{ui.ACCENT} #120f1d bold",
+    "completion-menu.meta.completion": "bg:#1c1830 #7d7699",
+    "completion-menu.meta.completion.current": f"bg:{ui.ACCENT_DEEP} #f3efff",
+    "auto-suggestion": "#5b5475",
 })
 
 SLASH_COMMANDS = {
@@ -112,14 +113,13 @@ class Repl:
         compact = "  ⟳ compacted" if getattr(s, "compactions", 0) else ""
         mode = "   <b>⏸ plan mode</b>" if self.agent.mode == "plan" else ""
         return HTML(
-            f"  <b>{self.agent.model.name}</b>{mode}"
-            f"   turns {s.turns}"
-            f"   tokens {tok_str}"
-            f"   ~${cost:.4f}{compact}"
-            f"   <b>/help</b>"
+            f"  <style fg='{ui.ACCENT}'><b>◆ {self.agent.model.name}</b></style>{mode}"
+            f"  ·  {s.turns} turns"
+            f"  ·  {tok_str} tokens"
+            f"  ·  ~${cost:.4f}{compact}"
+            f"  ·  /help"
         )
 
-    # -- permission prompt --------------------------------------------------
     def _permission_prompt(self, title: str, detail: str) -> str:
         ui.console.print()
         ui.permission_panel(title, detail)
@@ -145,7 +145,9 @@ class Repl:
                 ui.echo_user(text)
             else:
                 try:
-                    text = self.prompt.prompt(HTML("<prompt>❯</prompt> "))
+                    ui.console.print()
+                    ui.console.rule(style=ui.ACCENT_DEEP)
+                    text = self.prompt.prompt(HTML("<prompt>&gt;</prompt> "))
                 except KeyboardInterrupt:
                     continue
                 except EOFError:
