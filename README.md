@@ -45,6 +45,9 @@ runtime.
 - **Worktree isolation** — sub-agents and outside agents can work in their own
   git worktree/branch, so parallel edits never collide.
 - **Custom slash commands** — Markdown prompt templates in `.coded/commands/`.
+- **Editable prompts** — the built-in prompts are eight Markdown files
+  (`system`, `coder`, `tools`, `security`, `skills`, `planner`, `reviewer`,
+  `debugger`) that you can override per user or per project (`coded prompts`).
 - **Skill & plugin installs** — `coded skill install` and `coded plugin install`
   from a folder, a `.zip` (path or URL), a git URL or GitHub `owner/repo`;
   plugins bundle skills, commands, hooks, MCP servers and outside agents;
@@ -77,7 +80,7 @@ runtime.
   for large searches or multi-step subtasks.
 - **Skills & agent roles** — Claude Code-style `SKILL.md` instruction packs with
   progressive disclosure; the agent auto-invokes them when a task matches.
-  Ships with built-in `planner`, `reviewer`, `qa`, and `security` roles.
+  Ships with built-in `planner`, `reviewer`, `debugger`, `qa`, and `security` roles.
 - **MCP client** — connect Model Context Protocol servers and expose their tools
   to the agent (optional).
 - **Context auto-compaction** — long sessions are summarized automatically as
@@ -305,6 +308,7 @@ pip install -e '.[tui]'      # adds Textual
 | `/agents` | List outside agents available for delegation |
 | `/commands` | List custom slash commands |
 | `/plugins` | List installed plugins |
+| `/prompts` | Show which prompt files are in use |
 | `/<custom> [args]` | Run a custom command from `.coded/commands/` |
 | `/exit`, `/quit` | Quit |
 
@@ -653,6 +657,39 @@ a fresh git worktree on a new `coded/<label>-<id>` branch under
 other agents. Several isolated tasks requested together run in parallel. If
 nothing changed, the worktree and branch are removed. Otherwise the result says
 where the changes are, for you to review and merge.
+
+### Prompts
+
+coded's built-in prompts are plain Markdown files in `coded/builtin_prompts/`:
+
+| File | What it covers | Used by |
+|---|---|---|
+| `system.md` | Identity, tone, output style | main agent |
+| `coder.md` | How to do the work: read first, small changes, verify, report | main agent, sub-agents |
+| `tools.md` | Tool-calling rules: dedicated tools over bash, parallel calls, which edit tool, background jobs, delegation, handling denials | main agent, sub-agents |
+| `security.md` | Untrusted content, secrets, destructive actions, sandbox, refusals | main agent, sub-agents |
+| `skills.md` | How to use skills (heads the skill list) | main agent, when skills exist |
+| `planner.md` | Planning method | `planner` skill; sent once when plan mode starts |
+| `reviewer.md` | Review method | `reviewer` skill, `/review`, `coded review` |
+| `debugger.md` | Root-cause debugging method | `debugger` skill |
+
+Override any file by putting your own version in `~/.config/coded/prompts/<name>.md`
+(for you) or `./.coded/prompts/<name>.md` (for one project; it wins over the user
+one). An override replaces the whole file; an **empty** file removes that section.
+Files are used verbatim, so braces and code samples are safe.
+
+```bash
+coded prompts list                    # each prompt, where it comes from, size
+coded prompts show                    # the assembled main system prompt
+coded prompts show subagent           # …or a sub-agent's, or one file: show reviewer
+coded prompts init reviewer           # copy the built-in to ~/.config/coded/prompts/ to edit
+coded prompts init all --project      # copy all of them into ./.coded/prompts/
+```
+
+Overriding `reviewer.md` also changes `/review` and `coded review`, since the
+`reviewer` skill reads its instructions from that file (same for `planner` and
+`debugger`). Smaller local models work best with short prompts, so trimming
+these files is a reasonable thing to do for them.
 
 ### Installing skills and plugins
 

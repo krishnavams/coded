@@ -18,7 +18,8 @@ from coded.config import Config, ModelConfig
 from coded.hooks import HookRunner
 from coded.llm import Completion, LLMClient
 from coded.permissions import Decision, PermissionManager
-from coded.prompts import SUBAGENT_SYSTEM_PROMPT, _dir_instruction_files, build_system_prompt, read_instructions
+from coded.prompt_files import load_prompt
+from coded.prompts import _dir_instruction_files, build_subagent_prompt, build_system_prompt, read_instructions
 from coded.session import Session
 from coded.telemetry import Tracer, run_in_context
 from coded.tools import ToolContext, ToolRegistry, build_registry
@@ -74,6 +75,7 @@ class Agent:
         self._interrupted = False
         self._session_started = False
         self._instruction_dirs: set = set()
+        self._plan_intro_sent = False
 
     def _emit(self, kind: str, **data) -> bool:
         if self.on_event is not None:
@@ -117,6 +119,9 @@ class Agent:
             if extra:
                 text += "\n\n<hook-context>\n" + "\n\n".join(extra) + "\n</hook-context>"
             if self.mode == "plan":
+                if not self._plan_intro_sent:
+                    self._plan_intro_sent = True
+                    text += "\n\n" + load_prompt("planner", self.cwd)
                 text += "\n\n" + PLAN_MODE_REMINDER
         if self.checkpoints is not None:
             self.checkpoints.begin(str(user_message)[:60])
@@ -143,6 +148,7 @@ class Agent:
         """"default" or "plan" (read-only research until a plan is approved)."""
         self.mode = mode
         self.permissions.plan_mode = mode == "plan"
+        self._plan_intro_sent = False  # resend planner.md next time plan mode starts
         self._status_note("Plan mode on: read-only until you approve a plan."
                           if mode == "plan" else "Plan mode off.")
 
@@ -510,7 +516,7 @@ class Agent:
             if self.verbose and self.on_event is None:
                 where = f" in {sub_cwd}" if cwd else ""
                 ui.info(f"  ↳ spawning sub-agent ({sub_model.name}){where}…")
-            sub_system = SUBAGENT_SYSTEM_PROMPT.format(cwd=sub_cwd)
+            sub_system = build_subagent_prompt(sub_cwd)
             sub_session = Session(system_prompt=sub_system)
             sub_registry = build_registry(include_task=False)
             sub_agent = Agent(
@@ -558,7 +564,7 @@ def create_agent(
     from coded.tools.skill import SkillTool
 
     skills = skills or {}
-    section = skills_prompt_section(skills)
+    section = skills_prompt_section(skills, cwd)
     combined = "\n\n".join(x for x in (system_extra, section) if x) or None
 
     system_prompt = build_system_prompt(cwd, extra=combined)

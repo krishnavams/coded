@@ -36,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="coded",
         description="A Claude Code-style coding agent for OpenAI-compatible models.",
         epilog="Subcommands: `coded config init|path|show`, `coded models [--check]`, "
-               "`coded skill install|list|remove|update|info`, "
+               "`coded skill install|list|remove|update|info`, `coded prompts list|show|init`, "
                "`coded plugin install|list|remove|update|enable|disable|info|search|marketplace`, "
                "`coded review`, `coded commit`, `coded index`, `coded sessions`, "
                "`coded acp` (Agent Client Protocol server), `coded mcp-serve` (MCP server).",
@@ -467,6 +467,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         from coded.manage_cli import plugin_main
 
         return plugin_main(argv[1:])
+    if argv and argv[0] == "prompts":
+        from coded.prompt_files import prompts_main
+
+        return prompts_main(argv[1:])
     if argv and argv[0] == "acp":
         from coded.acp import main as acp_main
 

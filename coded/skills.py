@@ -23,9 +23,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 from coded.config import user_config_path
+
+_PROMPT_REF = re.compile(r"<!--\s*coded:prompt\s+([a-z0-9_-]+)\s*-->")
 
 
 def _scalar(v: str) -> Any:
@@ -95,9 +98,18 @@ class Skill:
     directory: Path
     allowed_tools: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    cwd: Optional[str] = None  # for resolving prompt-file overrides
 
     def load_body(self) -> str:
+        """The skill's instructions. A body that is just ``<!-- coded:prompt NAME -->``
+        is read from the prompt file NAME (so overriding e.g. reviewer.md changes
+        the reviewer skill too)."""
         _, body = parse_frontmatter(self.path.read_text(encoding="utf-8"))
+        m = _PROMPT_REF.fullmatch(body.strip())
+        if m:
+            from coded.prompt_files import load_prompt
+
+            return load_prompt(m.group(1), self.cwd)
         return body
 
 
@@ -145,21 +157,19 @@ def discover_skills(cwd: str) -> Dict[str, Skill]:
                 directory=child,
                 allowed_tools=_as_list(meta.get("allowed-tools") or meta.get("allowed_tools")),
                 metadata=meta,
+                cwd=cwd,
             )
     return skills
 
 
-def skills_prompt_section(skills: Dict[str, Skill]) -> str:
-    """Level-1 disclosure: names + descriptions injected into the system prompt."""
+def skills_prompt_section(skills: Dict[str, Skill], cwd: Optional[str] = None) -> str:
+    """Level-1 disclosure: the skills.md intro, then names + descriptions."""
     if not skills:
         return ""
-    out = [
-        "# Available skills",
-        "When the user's task matches one of these skills, call the `skill` tool "
-        "with its name to load the full instructions, then follow them. Do not "
-        "guess a skill's contents from its description alone.",
-        "",
-    ]
+    from coded.prompt_files import load_prompt
+
+    intro = load_prompt("skills", cwd)
+    out = [intro, ""] if intro else ["# Available skills", ""]
     for s in skills.values():
         out.append(f"- **{s.name}**: {s.description}")
     return "\n".join(out) + "\n"

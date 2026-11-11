@@ -43,6 +43,7 @@ SLASH_COMMANDS = {
     "/agents": "List outside agents available to delegate to (external_agent tool).",
     "/commands": "List custom slash commands (.coded/commands/*.md).",
     "/plugins": "List installed plugins (manage with `coded plugin …`).",
+    "/prompts": "Show which prompt files are in use (override with `coded prompts init`).",
     "/init": "Analyze the repo and write a CODED.md project guide.",
     "/image": "Attach image(s) to your next message: /image <path>... [prompt].",
     "/undo": "Undo the last file changes (checkpoint).",
@@ -229,6 +230,10 @@ class Repl:
             self._cmd_commands()
         elif cmd == "/plugins":
             self._cmd_plugins()
+        elif cmd == "/prompts":
+            from coded.prompt_files import prompts_main
+
+            prompts_main(["list", "--cwd", self.agent.cwd])
         elif cmd[1:] in self.commands:
             self._run_custom_command(cmd[1:], text[len(cmd):])
         else:

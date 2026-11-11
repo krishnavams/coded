@@ -37,13 +37,15 @@ coded/
 ├── agent.py            # Agent: the agentic loop; sub-agent spawning
 ├── session.py          # Session: message history + usage/cost tracking
 ├── permissions.py      # PermissionManager: approve/deny/always gate
-├── prompts.py          # system prompt construction (+ project CODED.md/CLAUDE.md)
+├── prompts.py          # assembles main/sub-agent prompts + AGENTS.md/CODED.md/CLAUDE.md hierarchy
+├── prompt_files.py     # prompt-file loading/overrides + `coded prompts` CLI
+├── builtin_prompts/    # system, coder, tools, security, skills, planner, reviewer, debugger (.md)
 ├── repl.py             # interactive REPL and slash commands
 ├── tui.py              # full-screen Textual app (coded --tui), optional
 ├── ui.py               # rich-based rendering helpers (single Console)
 ├── skills.py           # skill discovery, frontmatter parsing, prompt section
 ├── review.py           # /review pipeline: reviewer→qa→security sub-agents
-├── builtin_skills/     # bundled agent roles: planner, reviewer, qa, security
+├── builtin_skills/     # bundled roles: planner, reviewer, debugger (bodies from prompt files), qa, security
 ├── compaction.py       # context auto-compaction (summarize old messages)
 ├── sessions_store.py   # persist/restore sessions (--continue/--resume)
 ├── checkpoints.py      # CheckpointManager: per-turn file snapshots for /undo
@@ -93,6 +95,7 @@ tests/
 ├── test_semantic_and_web.py  # index/search, web_fetch/search, image encoding
 ├── test_skills.py      # skill discovery, frontmatter, skill tool
 ├── test_tools.py       # tool + config unit tests
+├── test_prompts.py     # prompt files: placement, override order, empty=remove, CLI
 ├── test_plugins.py     # sources, zip safety, skill/plugin install/update/remove,
 │                       # Claude-format plugins, marketplaces, CLI
 └── test_modern_features.py  # todo/plan, hooks, sandbox, AGENTS.md, patch, parallel,
@@ -157,6 +160,13 @@ config.example.json     # sample configuration
     (`/<plugin>:<cmd>`), and `load_config` → `apply_plugins_to_config` (hooks
     appended, MCP servers/outside agents added unless the user defines the name).
 
+11. **Prompts are files** (`prompt_files.py`): `build_system_prompt` joins
+    `system` + `coder` + `tools` + `security`, then an Environment section built
+    in code, project instructions and extras. `build_subagent_prompt` uses a
+    fixed sub-agent opener (tests rely on its first line) + `coder` + `tools` +
+    `security`. A skill whose body is `<!-- coded:prompt NAME -->` loads prompt
+    file NAME (planner/reviewer/debugger), so there is one source of truth.
+
 ## Key conventions
 
 - **Adding a tool**: subclass `Tool` in `coded/tools/`, set `name`,
@@ -177,6 +187,11 @@ config.example.json     # sample configuration
   threadsafe=True)` (TUI, ACP) allows tools that may prompt to run in parallel;
   prompts are serialized by a lock either way. `ask()` is a raw yes/no question
   (used by `exit_plan_mode`).
+- **Prompt text lives in `coded/builtin_prompts/*.md`, not in Python strings.**
+  Never `str.format` prompt files (users' overrides may contain braces); put
+  dynamic values in code-built sections. New prompt files must be added to
+  `PROMPT_NAMES`, and stay covered by the `builtin_prompts/*.md` package-data
+  glob. Watch the size: coded targets small local models too.
 - **No install tool for the model.** Installing skills/plugins grants code
   execution (hooks run unprompted), so it stays a user-run CLI action. Never
   write plugin contributions into the user's config.json; they're merged at load
@@ -296,7 +311,7 @@ one (e.g. `ruff`, `black`), record the commands here.
 - **argparse + free-form prompt**: the top-level parser has a `nargs="*"`
   positional `prompt`, which conflicts with argparse subparsers. Subcommands
   (`config`, `models`, `index`, `review`, `sessions`, `commit`, `skill`,
-  `plugin`, `acp`, `mcp-serve`) are therefore dispatched manually by the first token in
+  `plugin`, `prompts`, `acp`, `mcp-serve`) are therefore dispatched manually by the first token in
   `cli.main()` — keep new subcommands on that path, not on `add_subparsers`.
 - **ACP / MCP server modes keep stdout clean** (`ui.set_quiet(True)`): stdout
   carries only protocol messages.
