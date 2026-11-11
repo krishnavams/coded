@@ -40,6 +40,7 @@ class Limits:
     step_result_chars: int = 307_200    # hard cap on all results of one step (60% of window)
     repo_overview_chars: int = 0        # repository overview in the prompt (0 = off)
     memory_chars: int = 4_000           # project memory in the prompt
+    skills_chars: int = 24_000          # the skills list in the prompt (shortened past this)
 
 
 # Floors for scaled-down (small-context) models.
@@ -48,6 +49,7 @@ _FLOORS = {
     "web_fetch_chars": 3000, "grep_matches": 50, "external_output_chars": 4000,
     "instructions_file_chars": 4000, "instructions_total_chars": 8000,
     "nested_instructions_chars": 3000, "compact_keep_recent": 4, "memory_chars": 1500,
+    "skills_chars": 6000,
     "tool_result_chars": 4000, "step_result_chars": 8000,
 }
 _SCALED = tuple(k for k in _FLOORS if k not in ("tool_result_chars", "step_result_chars"))

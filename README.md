@@ -1134,6 +1134,12 @@ coded skill install ~/Downloads/skills.zip --all    # several skills in one arch
 coded skill install acme/agent-skills/skills/lint@v1.2
 coded skill list | update [name…] | remove <name> | info <name>
 
+# From skills.sh: paste the page link, or the repository it points to
+coded skill install https://skills.sh/vercel-labs/agent-skills/vercel-react-best-practices
+coded skill install anthropics/skills --all               # a whole collection
+coded skill install anthropics/skills pdf docx            # just some of it
+coded skill install https://github.com/anthropics/skills/tree/main/skills/pdf
+
 coded plugin install examples/plugins/code-quality
 coded plugin install https://github.com/acme/coded-plugin.git --ref main
 coded plugin list | info <name> | update [name…] | enable <name> | disable <name> | remove <name>
@@ -1144,6 +1150,16 @@ coded plugin install code-quality@coded-examples
 coded plugin marketplace list | update | remove <name>
 ```
 
+- **Skill collections (skills.sh and GitHub):** a skills.sh page is a link
+  to a GitHub repository, so either link works; a page for one skill installs
+  just that skill. Skills are found at the root, under `skills/*/`, `*/`, or
+  nested deeper (`plugins/<p>/skills/<name>/`, `.claude/skills/<name>/`).
+  Multi-line YAML descriptions and `metadata:` blocks are read correctly. A
+  symlink elsewhere in the repository (such as `CLAUDE.md → AGENTS.md`) is
+  dropped and ignored; one inside a skill you are installing is still refused.
+  With many skills installed, the list in the system prompt is shortened to
+  fit (`limits.skills_chars`): descriptions are cut, and past that the rest are
+  listed by name — every skill can still be loaded by name.
 - **What a plugin can contain:** skills, slash commands (shown as
   `/<plugin>:<command>`), hooks, MCP servers and outside agents. See
   [`examples/plugins/`](./examples/plugins/) for the layout and an example.

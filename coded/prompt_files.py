@@ -161,7 +161,8 @@ def prompts_main(argv: List[str]) -> int:
             from coded.skills import discover_skills, skills_prompt_section
 
             # Same assembly as create_agent (minus --system extras).
-            extra = skills_prompt_section(discover_skills(cwd), cwd, model) or None
+            budget = limits_for(model).skills_chars if model is not None else 0
+            extra = skills_prompt_section(discover_skills(cwd), cwd, model, budget=budget) or None
             print(build_system_prompt(cwd, extra=extra, model=model,
                                       limits=limits_for(model) if model is not None else None))
         elif args.name == "subagent":

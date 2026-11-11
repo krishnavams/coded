@@ -108,6 +108,7 @@ tests/
 ├── test_git_tools.py   # git tool + github tool (fake API)
 ├── test_semantic_and_web.py  # index/search, web_fetch/search, image encoding
 ├── test_skills.py      # skill discovery, frontmatter, skill tool
+├── test_skill_sources.py  # real-world collections: links, nesting, YAML, prompt budget
 ├── test_tools.py       # tool + config unit tests
 ├── test_routing.py     # difficulty routing, pools, endpoint reuse, per-model cost
 ├── test_repomap.py     # symbol extraction, ranking, budgets, the repo_map tool
@@ -246,6 +247,16 @@ config.example.json     # sample configuration
   goes through `limits_for`; `test_128k_limits_equal_the_historical_constants`
   pins the base values. Tools never hard-code output sizes: use `get_limits(ctx)`.
   Every prompt profile must keep the untrusted-content and secrets rules (tested).
+- **Skill sources** (`sources.py`, `plugins.find_skills`): a fetched source has
+  every symlink deleted unread (`strip_symlinks`); `Fetched.refuse_links_in`
+  then refuses only an install whose own files held one (a skill dir, or a
+  whole plugin/marketplace root). Skills are searched at the root,
+  `skills/*/`, `*/`, then up to `_MAX_DEPTH` deep without entering a skill's
+  own folders; duplicate names are an error. skills.sh page links and GitHub
+  `tree/` links are parsed into GitHub sources. The frontmatter parser is
+  indentation-based (block lists, one-level maps, `>`/`|` and plain multi-line
+  scalars) — still no pyyaml. `skills_prompt_section(budget=limits.skills_chars)`
+  shortens a big list; under budget it must be byte-identical to unbudgeted.
 - **No install tool for the model.** Installing skills/plugins grants code
   execution (hooks run unprompted), so it stays a user-run CLI action. Never
   write plugin contributions into the user's config.json; they're merged at load

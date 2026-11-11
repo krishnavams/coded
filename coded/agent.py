@@ -207,7 +207,9 @@ class Agent:
         repository overview, skills list, --system extras)."""
         from coded.skills import skills_prompt_section
 
-        section = skills_prompt_section(self.skills, self.cwd, self.model) if self.skills else ""
+        section = (skills_prompt_section(self.skills, self.cwd, self.model,
+                                         budget=self.limits.skills_chars)
+                   if self.skills else "")
         combined = "\n\n".join(x for x in (self.system_extra, section) if x) or None
         return build_system_prompt(self.cwd, extra=combined, model=self.model, limits=self.limits)
 
