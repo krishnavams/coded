@@ -224,8 +224,9 @@ class Config:
         name = name or self.default_model
         if not name:
             raise ConfigError(
-                "No model configured. Run `coded config init` to create a config "
-                "file, set OPENAI_API_KEY, or pass --model/--base-url/--api-key."
+                "No model configured. Run `coded config setup` to configure one "
+                "interactively (`coded config init` writes a sample instead), set "
+                "OPENAI_API_KEY, or pass --model/--base-url/--api-key."
             )
         if name not in self.models:
             picked = self.pick_from_pool(name)

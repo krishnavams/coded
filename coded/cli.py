@@ -36,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="coded",
         description="A Claude Code-style coding agent for OpenAI-compatible models.",
-        epilog="Subcommands: `coded config init|path|show`, `coded models [--check]`, "
+        epilog="Subcommands: `coded config setup|init|path|show`, `coded models [--check]`, "
                "`coded skill install|list|remove|update|info`, `coded prompts list|show|init`, "
                "`coded plugin install|list|remove|update|enable|disable|info|search|marketplace`, "
                "`coded review`, `coded commit`, `coded index`, `coded sessions`, "
@@ -98,9 +98,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def build_config_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="coded config", description="Manage configuration.")
-    p.add_argument("config_command", choices=["init", "path", "show"], help="Config action.")
+    p.add_argument("config_command", choices=["setup", "init", "path", "show"],
+                   help="Config action ('setup' is the interactive model wizard).")
     p.add_argument("--config", help="Path to a specific config file.")
     p.add_argument("--cwd", help="Working directory.")
+    p.add_argument("--project", action="store_true",
+                   help="Edit the project config (./.coded/config.json) instead of the user one.")
     return p
 
 
@@ -189,6 +192,10 @@ def _init_mcp(cfg: Config, disabled: bool):
 
 
 def _handle_config_command(args: argparse.Namespace) -> int:
+    if args.config_command == "setup":
+        from coded.config_wizard import run_wizard
+
+        return run_wizard(project=args.project, config_path=args.config, cwd=args.cwd)
     if args.config_command == "init":
         try:
             path = write_sample_config()
@@ -196,7 +203,8 @@ def _handle_config_command(args: argparse.Namespace) -> int:
             ui.error(str(exc))
             return 1
         ui.success(f"Wrote sample config to {path}")
-        ui.info("Edit it to add your models and API keys.")
+        ui.info("Edit it to add your models and API keys, "
+                "or run `coded config setup` to do it interactively.")
         return 0
     if args.config_command == "path":
         from coded.config import user_config_path
@@ -211,7 +219,7 @@ def _handle_config_command(args: argparse.Namespace) -> int:
         ui.info(f"auto_approve={cfg.auto_approve}  max_turns={cfg.max_turns}  stream={cfg.stream}")
         ui.info(f"Sources: {', '.join(cfg.source_paths) or '(defaults/env)'}")
         return 0
-    ui.error("Unknown config subcommand. Try: coded config init")
+    ui.error("Unknown config subcommand. Try: coded config setup|init|path|show")
     return 1
 
 
@@ -224,7 +232,7 @@ def _handle_models_command(argv: List[str]) -> int:
     args = p.parse_args(argv)
     cfg = load_config(cwd=args.cwd, config_path=args.config)
     if not cfg.models:
-        ui.info("No models configured. Run `coded config init` or set OPENAI_API_KEY.")
+        ui.info("No models configured. Run `coded config setup` to add one, or set OPENAI_API_KEY.")
         return 0
     roles = {}
     for role, alias in cfg.model_roles.items():
@@ -552,7 +560,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         model, model_pool = _select_model(cfg, args.model)
     except ConfigError as exc:
         ui.error(str(exc))
-        ui.info("Tip: `coded config init` to create a config, or pass "
+        ui.info("Tip: `coded config setup` configures models interactively, "
+                "`coded config init` writes a sample, or pass "
                 "--base-url/--api-key/--model-name for a one-off endpoint.")
         return 1
 

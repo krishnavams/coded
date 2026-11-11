@@ -17,7 +17,7 @@ from rich.table import Table
 
 from coded import ui
 from coded.agent import Agent
-from coded.config import Config, ConfigError
+from coded.config import Config, ConfigError, load_config
 from coded.llm import explain_failure
 
 # prompt_toolkit color theme (matches ui.py accents).
@@ -76,6 +76,7 @@ SLASH_COMMANDS = {
     "/clear": "Clear conversation history (keep the system prompt).",
     "/reset": "Alias for /clear.",
     "/config": "Show which config files are loaded.",
+    "/setup": "Configure models interactively (adds, tests, roles, pools, routing).",
     "/exit": "Quit (also /quit).",
 }
 
@@ -217,6 +218,8 @@ class Repl:
             self._cmd_help()
         elif cmd == "/models":
             self._cmd_models()
+        elif cmd == "/setup":
+            self._cmd_setup()
         elif cmd == "/model":
             self._cmd_model(args)
         elif cmd == "/tools":
@@ -375,6 +378,27 @@ class Repl:
             active = "● active" if name == self.agent.model.name else ""
             table.add_row(name, mc.model, mc.provider, active)
         ui.console.print(table)
+
+    def _cmd_setup(self) -> None:
+        """Run the wizard, then reload every config layer into the live session."""
+        from coded.config_wizard import run_wizard
+
+        run_wizard(cwd=self.agent.cwd)
+        try:
+            fresh = load_config(cwd=self.agent.cwd)
+        except ConfigError as exc:
+            ui.error(f"Could not reload the config: {exc}")
+            return
+        self.config = fresh
+        self.agent.config = fresh
+        for warning in fresh.model_warnings():
+            ui.warn(warning)
+        if self.agent.model.name not in fresh.models:
+            ui.warn(f"The active model '{self.agent.model.name}' is no longer configured; "
+                    "pick another with /model.")
+        else:
+            self.agent.switch_model(self.agent.model.name)  # pick up edited settings
+        ui.info("Config reloaded. /models shows the result.")
 
     def _cmd_model(self, args) -> None:
         if not args:
