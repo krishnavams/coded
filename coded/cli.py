@@ -36,6 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="coded",
         description="A Claude Code-style coding agent for OpenAI-compatible models.",
         epilog="Subcommands: `coded config init|path|show`, `coded models [--check]`, "
+               "`coded skill install|list|remove|update|info`, "
+               "`coded plugin install|list|remove|update|enable|disable|info|search|marketplace`, "
                "`coded review`, `coded commit`, `coded index`, `coded sessions`, "
                "`coded acp` (Agent Client Protocol server), `coded mcp-serve` (MCP server).",
     )
@@ -457,6 +459,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _handle_sessions_command(argv[1:])
     if argv and argv[0] == "commit":
         return _handle_commit_command(argv[1:])
+    if argv and argv[0] == "skill":
+        from coded.manage_cli import skill_main
+
+        return skill_main(argv[1:])
+    if argv and argv[0] == "plugin":
+        from coded.manage_cli import plugin_main
+
+        return plugin_main(argv[1:])
     if argv and argv[0] == "acp":
         from coded.acp import main as acp_main
 
@@ -494,6 +504,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.reasoning_effort:
         model.reasoning_effort = args.reasoning_effort
     _warn_sandbox(cfg)
+    for w in cfg.plugin_warnings:
+        ui.warn(w)
+    if cfg.plugins:
+        ui.info(f"Plugins: {', '.join(cfg.plugins)}")
 
     permissions = PermissionManager(auto_approve=cfg.auto_approve, rules=cfg.permissions,
                                     injection_guard=cfg.injection_guard)

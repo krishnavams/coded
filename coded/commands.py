@@ -5,6 +5,7 @@ Locations (project overrides user on name clash):
   - project: ./.coded/commands/<name>.md
 
 Subdirectories namespace the command: ``commands/git/pr.md`` → ``/git:pr``.
+Commands from installed plugins are namespaced by plugin: ``/<plugin>:<name>``.
 
 Optional frontmatter::
 
@@ -55,17 +56,26 @@ class CustomCommand:
 
 
 def command_dirs(cwd: str) -> list:
-    return [user_config_path().parent / "commands", Path(cwd) / ".coded" / "commands"]
+    """(directory, namespace) pairs; later entries override earlier ones by name.
+    Plugin commands are namespaced as /<plugin>:<command>."""
+    from coded.plugins import plugin_command_dirs
+
+    try:
+        from_plugins = plugin_command_dirs(cwd)
+    except Exception:  # noqa: BLE001
+        from_plugins = []
+    return [*from_plugins, (user_config_path().parent / "commands", ""),
+            (Path(cwd) / ".coded" / "commands", "")]
 
 
 def discover_commands(cwd: str) -> Dict[str, CustomCommand]:
     found: Dict[str, CustomCommand] = {}
-    for base in command_dirs(cwd):
+    for base, namespace in command_dirs(cwd):
         if not base.is_dir():
             continue
         for md in sorted(base.rglob("*.md")):
             rel = md.relative_to(base).with_suffix("")
-            name = ":".join(rel.parts)
+            name = ":".join(([namespace] if namespace else []) + list(rel.parts))
             try:
                 meta, body = parse_frontmatter(md.read_text(encoding="utf-8"))
             except OSError:

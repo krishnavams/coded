@@ -188,6 +188,8 @@ class Config:
     # Outside coding agents (Claude Code, Codex, Gemini CLI, Aider, ...).
     external_agents: Dict[str, Any] = field(default_factory=dict)
     detect_external_agents: bool = True  # offer installed CLIs automatically
+    plugins: list = field(default_factory=list)  # names of enabled plugins merged in
+    plugin_warnings: list = field(default_factory=list)
     source_paths: list = field(default_factory=list)  # config files that were loaded
 
     def get_model(self, name: Optional[str] = None) -> ModelConfig:
@@ -274,8 +276,10 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
             setattr(cfg, key, data[key])
 
 
-def load_config(cwd: Optional[str] = None, config_path: Optional[str] = None) -> Config:
-    """Load and merge all configuration layers."""
+def load_config(cwd: Optional[str] = None, config_path: Optional[str] = None,
+                plugins: bool = True) -> Config:
+    """Load and merge all configuration layers, then enabled plugins' hooks,
+    MCP servers and outside agents (user config wins on name clashes)."""
     cfg = Config()
 
     if config_path:
@@ -283,6 +287,11 @@ def load_config(cwd: Optional[str] = None, config_path: Optional[str] = None) ->
     else:
         _merge_into(cfg, _load_json(user_config_path()), user_config_path())
         _merge_into(cfg, _load_json(project_config_path(cwd)), project_config_path(cwd))
+
+    if plugins:
+        from coded.plugins import apply_plugins_to_config
+
+        cfg.plugin_warnings = apply_plugins_to_config(cfg, cwd)
 
     # Fallback: if nothing is configured but OPENAI_API_KEY exists, register a
     # sensible default so the tool works out of the box.

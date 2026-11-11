@@ -5,8 +5,17 @@ skill is a directory with a `SKILL.md` file (YAML frontmatter + Markdown body).
 
 ## Install a skill
 
-Copy a skill directory into either location (project skills override user skills
-of the same name):
+The easy way: `coded skill install` takes a folder, a `.zip`, a git URL or
+GitHub `owner/repo[/path][@ref]`, shows what's inside, and records the source so
+`coded skill update` works:
+
+```bash
+coded skill install examples/skills/conventional-commit
+coded skill install examples/skills/conventional-commit --project   # ./.coded/skills
+```
+
+Or copy a skill directory into either location by hand (project skills override
+user skills of the same name):
 
 ```bash
 # Project-local (this repo/working dir):

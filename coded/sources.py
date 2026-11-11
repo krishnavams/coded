@@ -1,0 +1,245 @@
+"""Fetch installable content (skills, plugins, marketplaces) from a source.
+
+Supported sources:
+  - a local directory:          ./my-skill   /abs/path/plugin
+  - a local or remote .zip:     ./skill.zip  https://example.com/plugin.zip
+  - a git URL:                  https://github.com/o/r.git  git@host:o/r.git  file:///repo
+  - GitHub shorthand:           owner/repo   owner/repo/sub/path   owner/repo@v1.2
+
+Everything is fetched into a fresh temporary directory first; callers validate
+it there before moving anything into place.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import stat
+import subprocess
+import tempfile
+import zipfile
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+MAX_ZIP_BYTES = 200 * 1024 * 1024
+MAX_ZIP_FILES = 20_000
+_GH_SHORTHAND = re.compile(r"^(?P<owner>[\w.-]+)/(?P<repo>[\w.-]+)(?P<path>(/[^@]+)?)(@(?P<ref>.+))?$")
+
+
+class SourceError(Exception):
+    pass
+
+
+@dataclass
+class SourceInfo:
+    type: str  # dir | zip | zip-url | git | github
+    location: str  # path or URL
+    ref: Optional[str] = None
+    subpath: Optional[str] = None
+    commit: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SourceInfo":
+        return cls(**{k: data.get(k) for k in ("type", "location", "ref", "subpath", "commit")})
+
+    def describe(self) -> str:
+        out = self.location
+        if self.subpath:
+            out += f" ({self.subpath})"
+        if self.ref:
+            out += f" @ {self.ref}"
+        if self.commit:
+            out += f" [{self.commit[:10]}]"
+        return out
+
+
+def parse_source(source: str, ref: Optional[str] = None, subpath: Optional[str] = None) -> SourceInfo:
+    """Work out what kind of source a user-supplied string is."""
+    source = source.strip()
+    if not source:
+        raise SourceError("Empty source.")
+    if source.startswith("-"):
+        raise SourceError(f"Invalid source {source!r}.")
+    local = Path(source).expanduser()
+    if local.exists():
+        kind = "zip" if local.is_file() and source.lower().endswith(".zip") else "dir"
+        if local.is_file() and kind != "zip":
+            raise SourceError(f"{source} is a file; expected a directory or a .zip archive.")
+        return SourceInfo(kind, str(local.resolve()), ref, subpath)
+    if re.match(r"^https?://", source) and source.lower().split("?")[0].endswith(".zip"):
+        return SourceInfo("zip-url", source, ref, subpath)
+    if re.match(r"^(https?|ssh|git|file)://", source) or source.startswith("git@") or source.endswith(".git"):
+        return SourceInfo("git", source, ref, subpath)
+    m = _GH_SHORTHAND.match(source)
+    if m and not source.startswith(("./", "../", "/")):
+        path = (m.group("path") or "").strip("/") or None
+        return SourceInfo("github", f"https://github.com/{m.group('owner')}/{m.group('repo')}.git",
+                          ref or m.group("ref"), subpath or path)
+    raise SourceError(f"Source not found: {source} (not a local path, .zip, git URL, or owner/repo).")
+
+
+def safe_extract_zip(archive: Path, dest: Path) -> None:
+    """Extract a zip, refusing path traversal, symlinks and zip bombs."""
+    try:
+        zf = zipfile.ZipFile(archive)
+    except zipfile.BadZipFile as exc:
+        raise SourceError(f"Not a valid zip archive: {exc}") from exc
+    with zf:
+        members = zf.infolist()
+        if len(members) > MAX_ZIP_FILES:
+            raise SourceError(f"Archive has too many files ({len(members)}).")
+        total = sum(m.file_size for m in members)
+        if total > MAX_ZIP_BYTES:
+            raise SourceError(f"Archive expands to {total // (1024 * 1024)} MB; limit is "
+                              f"{MAX_ZIP_BYTES // (1024 * 1024)} MB.")
+        root = dest.resolve()
+        for m in members:
+            name = m.filename.replace("\\", "/")
+            if name.startswith("/") or re.match(r"^[A-Za-z]:", name) or ".." in name.split("/"):
+                raise SourceError(f"Unsafe path in archive: {m.filename}")
+            mode = (m.external_attr >> 16) & 0o170000
+            if mode == stat.S_IFLNK:
+                raise SourceError(f"Archive contains a symlink: {m.filename}")
+            target = (root / name).resolve()
+            if root != target and root not in target.parents:
+                raise SourceError(f"Unsafe path in archive: {m.filename}")
+        for m in members:
+            zf.extract(m, root)
+            perms = (m.external_attr >> 16) & 0o777
+            if perms and not m.is_dir():
+                os.chmod(root / m.filename, perms | 0o600)
+
+
+def _single_top_dir(path: Path) -> Path:
+    """Zips often wrap everything in one folder (repo-main/); descend into it."""
+    entries = [p for p in path.iterdir() if p.name not in ("__MACOSX",)]
+    if len(entries) == 1 and entries[0].is_dir():
+        return entries[0]
+    return path
+
+
+def _git(*args: str, cwd: Optional[str] = None) -> str:
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    try:
+        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, env=env,
+                              timeout=600)
+    except FileNotFoundError as exc:
+        raise SourceError("git is not installed.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise SourceError("git timed out.") from exc
+    if proc.returncode != 0:
+        raise SourceError((proc.stderr or proc.stdout).strip() or f"git {args[0]} failed")
+    return proc.stdout.strip()
+
+
+def _clone(url: str, ref: Optional[str], dest: Path) -> str:
+    if ref:
+        try:
+            _git("clone", "--quiet", "--depth", "1", "--branch", ref, "--", url, str(dest))
+        except SourceError:
+            # Not a branch/tag (probably a commit): full clone, then check it out.
+            shutil.rmtree(dest, ignore_errors=True)
+            _git("clone", "--quiet", "--", url, str(dest))
+            _git("checkout", "--quiet", ref, cwd=str(dest))
+    else:
+        _git("clone", "--quiet", "--depth", "1", "--", url, str(dest))
+    return _git("rev-parse", "HEAD", cwd=str(dest))
+
+
+def _download(url: str, dest: Path) -> None:
+    import httpx
+
+    try:
+        with httpx.stream("GET", url, follow_redirects=True, timeout=60) as resp:
+            resp.raise_for_status()
+            size = 0
+            with dest.open("wb") as fh:
+                for chunk in resp.iter_bytes():
+                    size += len(chunk)
+                    if size > MAX_ZIP_BYTES:
+                        raise SourceError("Download is too large.")
+                    fh.write(chunk)
+    except httpx.HTTPError as exc:
+        raise SourceError(f"Download failed: {exc}") from exc
+
+
+class Fetched:
+    """A fetched source in a temp directory. Use as a context manager."""
+
+    def __init__(self, info: SourceInfo):
+        self.info = info
+        self._tmp = Path(tempfile.mkdtemp(prefix="coded-fetch-"))
+        self.root = self._tmp
+
+    def __enter__(self) -> "Fetched":
+        try:
+            self._fetch()
+        except OSError as exc:
+            self.cleanup()
+            raise SourceError(f"Could not read {self.info.location}: {exc}") from exc
+        except BaseException:
+            self.cleanup()
+            raise
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.cleanup()
+
+    def cleanup(self) -> None:
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _fetch(self) -> None:
+        info = self.info
+        if info.type == "dir":
+            src = Path(info.location)
+            dest = self._tmp / "src"
+            shutil.copytree(src, dest, symlinks=False,
+                            ignore=shutil.ignore_patterns(".git", "__pycache__"))
+            self.root = dest
+        elif info.type in ("zip", "zip-url"):
+            archive = Path(info.location)
+            if info.type == "zip-url":
+                archive = self._tmp / "download.zip"
+                _download(info.location, archive)
+            dest = self._tmp / "src"
+            dest.mkdir()
+            safe_extract_zip(archive, dest)
+            self.root = _single_top_dir(dest)
+        elif info.type in ("git", "github"):
+            dest = self._tmp / "src"
+            info.commit = _clone(info.location, info.ref, dest)
+            shutil.rmtree(dest / ".git", ignore_errors=True)
+            self.root = dest
+        else:
+            raise SourceError(f"Unknown source type {info.type!r}.")
+        if info.subpath:
+            sub = (self.root / info.subpath).resolve()
+            if self.root.resolve() not in sub.parents and sub != self.root.resolve():
+                raise SourceError(f"Sub-path escapes the source: {info.subpath}")
+            if not sub.is_dir():
+                raise SourceError(f"Sub-path not found in source: {info.subpath}")
+            self.root = sub
+
+
+def install_tree(src: Path, dest: Path) -> None:
+    """Copy `src` to `dest`, replacing any existing copy only once the new one is in place."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    staging = dest.with_name(f".{dest.name}.new")
+    backup = dest.with_name(f".{dest.name}.old")
+    shutil.rmtree(staging, ignore_errors=True)
+    shutil.rmtree(backup, ignore_errors=True)
+    shutil.copytree(src, staging, symlinks=False, ignore=shutil.ignore_patterns(".git"))
+    if dest.exists():
+        dest.rename(backup)
+    try:
+        staging.rename(dest)
+    except OSError:
+        if backup.exists():
+            backup.rename(dest)
+        raise
+    shutil.rmtree(backup, ignore_errors=True)

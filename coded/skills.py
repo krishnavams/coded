@@ -107,10 +107,17 @@ def builtin_skills_dir() -> Path:
 
 
 def skill_search_dirs(cwd: str) -> List[Path]:
-    # Order matters: later dirs override earlier ones by skill name, so a
-    # user/project skill can shadow a built-in role of the same name.
+    # Order matters: later dirs override earlier ones by skill name:
+    # built-in < enabled plugins < user < project.
+    from coded.plugins import plugin_skill_dirs
+
+    try:
+        from_plugins = plugin_skill_dirs(cwd)
+    except Exception:  # noqa: BLE001 - a broken plugin must not stop skill discovery
+        from_plugins = []
     return [
         builtin_skills_dir(),                    # bundled roles
+        *from_plugins,                           # <plugin>/skills
         user_config_path().parent / "skills",    # ~/.config/coded/skills
         Path(cwd) / ".coded" / "skills",         # project-local
     ]

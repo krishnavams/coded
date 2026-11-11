@@ -45,6 +45,10 @@ runtime.
 - **Worktree isolation** — sub-agents and outside agents can work in their own
   git worktree/branch, so parallel edits never collide.
 - **Custom slash commands** — Markdown prompt templates in `.coded/commands/`.
+- **Skill & plugin installs** — `coded skill install` and `coded plugin install`
+  from a folder, a `.zip` (path or URL), a git URL or GitHub `owner/repo`;
+  plugins bundle skills, commands, hooks, MCP servers and outside agents;
+  marketplaces; Claude Code plugins install as-is.
 - **Tracing** — JSONL spans for turns, LLM calls and tools (`--trace`), plus
   optional OpenTelemetry export.
 - **Prompt-injection guard** — web/PR/MCP output is fenced as untrusted, and
@@ -300,6 +304,7 @@ pip install -e '.[tui]'      # adds Textual
 | `/shells [kill <id>]` | List or stop background shells |
 | `/agents` | List outside agents available for delegation |
 | `/commands` | List custom slash commands |
+| `/plugins` | List installed plugins |
 | `/<custom> [args]` | Run a custom command from `.coded/commands/` |
 | `/exit`, `/quit` | Quit |
 
@@ -648,6 +653,59 @@ a fresh git worktree on a new `coded/<label>-<id>` branch under
 other agents. Several isolated tasks requested together run in parallel. If
 nothing changed, the worktree and branch are removed. Otherwise the result says
 where the changes are, for you to review and merge.
+
+### Installing skills and plugins
+
+Skills and plugins can be installed from a local folder, a `.zip` file (a path,
+for example a file you uploaded, or a URL), any git URL, or GitHub shorthand
+`owner/repo[/sub/path][@ref]`.
+
+```bash
+coded skill install ./my-skill                      # a folder with SKILL.md
+coded skill install ~/Downloads/skills.zip --all    # several skills in one archive
+coded skill install acme/agent-skills/skills/lint@v1.2
+coded skill list | update [name…] | remove <name> | info <name>
+
+coded plugin install examples/plugins/code-quality
+coded plugin install https://github.com/acme/coded-plugin.git --ref main
+coded plugin list | info <name> | update [name…] | enable <name> | disable <name> | remove <name>
+
+coded plugin marketplace add acme/plugin-marketplace   # or a folder / zip / git URL
+coded plugin search [query]
+coded plugin install code-quality@coded-examples
+coded plugin marketplace list | update | remove <name>
+```
+
+- **What a plugin can contain:** skills, slash commands (shown as
+  `/<plugin>:<command>`), hooks, MCP servers and outside agents. See
+  [`examples/plugins/`](./examples/plugins/) for the layout and an example.
+  Claude Code plugins (`.claude-plugin/plugin.json`) install as-is:
+  - `${CLAUDE_PLUGIN_ROOT}` is expanded.
+  - Tool names in hook matchers (`Bash`, `Edit|Write`) are mapped to coded's.
+  - Parts coded can't use (sub-agent definitions, HTTP MCP servers, hook events
+    such as `SessionEnd`) are listed as warnings.
+- **Review before trusting:** before installing or updating, coded prints
+  everything the plugin adds:
+  - every hook command and MCP server command, verbatim
+  - any scripts and executables it contains
+  - every warning
+
+  It then asks for confirmation. Without a terminal it refuses unless you pass
+  `--yes`. Hooks run without a permission prompt, so installing a plugin lets
+  it run code on your machine.
+- **Scope:** by default things install for your user (`~/.config/coded/`).
+  `--project` installs into `./.coded/` instead. That folder is gitignored, so
+  project installs aren't committed.
+- **Safe updates:** sources are fetched into a temporary folder and checked
+  before anything is replaced. A failed update keeps the previous version.
+  Zip archives with `..` paths, symlinks or oversized contents are rejected.
+- **Precedence and disabling:**
+  - Skill names resolve built-in < plugin < user < project.
+  - Plugin hooks are added after your own hooks; they never replace them.
+  - On a name clash, your config's MCP servers and outside agents win.
+  - `disable` turns off everything a plugin contributes without uninstalling it.
+- Changes take effect the next time coded starts. Only you can install, from the
+  command line; the agent has no tool for installing skills or plugins.
 
 ### Custom slash commands
 

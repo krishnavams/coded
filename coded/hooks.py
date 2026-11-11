@@ -96,7 +96,8 @@ class HookRunner:
         data = {"hook_event_name": event, "cwd": self.cwd, **payload}
         if tool_name is not None:
             data["tool_name"] = tool_name
-        env = dict(os.environ, CODED_HOOK_EVENT=event, CODED_PROJECT_DIR=self.cwd)
+        env = dict(os.environ, CODED_HOOK_EVENT=event, CODED_PROJECT_DIR=self.cwd,
+                   CLAUDE_PROJECT_DIR=self.cwd, **{k: str(v) for k, v in (hook.get("env") or {}).items()})
         timeout = float(hook.get("timeout", _DEFAULT_TIMEOUT))
         try:
             proc = subprocess.run(
@@ -123,6 +124,12 @@ class HookRunner:
             return
         decision = _json_decision(stdout)
         if decision is not None:
+            specific = decision.get("hookSpecificOutput")
+            if isinstance(specific, dict):  # Claude Code hook output format
+                decision = {**specific, **decision}
+                if "permissionDecision" in specific:
+                    decision["decision"] = specific["permissionDecision"]
+                    decision.setdefault("reason", specific.get("permissionDecisionReason"))
             kind = str(decision.get("decision", "")).lower()
             if kind in ("block", "deny"):
                 outcome.blocked = True

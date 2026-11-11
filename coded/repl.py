@@ -42,6 +42,7 @@ SLASH_COMMANDS = {
     "/shells": "List background shells; /shells kill <id>.",
     "/agents": "List outside agents available to delegate to (external_agent tool).",
     "/commands": "List custom slash commands (.coded/commands/*.md).",
+    "/plugins": "List installed plugins (manage with `coded plugin …`).",
     "/init": "Analyze the repo and write a CODED.md project guide.",
     "/image": "Attach image(s) to your next message: /image <path>... [prompt].",
     "/undo": "Undo the last file changes (checkpoint).",
@@ -226,6 +227,8 @@ class Repl:
             self._cmd_agents()
         elif cmd == "/commands":
             self._cmd_commands()
+        elif cmd == "/plugins":
+            self._cmd_plugins()
         elif cmd[1:] in self.commands:
             self._run_custom_command(cmd[1:], text[len(cmd):])
         else:
@@ -280,6 +283,24 @@ class Repl:
         for a in tool.agents.values():
             table.add_row(a.name, " ".join(a.command), a.description)
         ui.console.print(table)
+
+    def _cmd_plugins(self) -> None:
+        from coded.plugins import installed_plugins
+
+        plugins = installed_plugins(self.agent.cwd, include_disabled=True)
+        if not plugins:
+            ui.info("No plugins installed. From a shell: `coded plugin install <dir|zip|git|owner/repo>` "
+                    "or `coded plugin marketplace add <source>` then `coded plugin search`.")
+            return
+        table = Table(title="Plugins")
+        for col in ("plugin", "version", "scope", "status", "description"):
+            table.add_column(col)
+        for p in plugins:
+            table.add_row(p.name, p.version, p.scope,
+                          "[green]enabled[/green]" if p.enabled else "[dim]disabled[/dim]",
+                          p.description[:60])
+        ui.console.print(table)
+        ui.info("Install/remove/enable with `coded plugin …` in a shell, then restart coded.")
 
     def _cmd_commands(self) -> None:
         if not self.commands:

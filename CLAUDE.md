@@ -61,6 +61,10 @@ coded/
 ├── external_agents.py  # outside agent CLIs (claude, codex, gemini, aider, …)
 ├── acp.py              # `coded acp`: Agent Client Protocol server (stdio JSON-RPC)
 ├── mcp_server.py       # `coded mcp-serve`: coded as an MCP server
+├── sources.py          # fetch dir / zip (safe extract) / git / GitHub shorthand into a temp dir
+├── plugins.py          # skill + plugin install, registry (installed.json), marketplaces,
+│                       # plugin contributions merged into skills/commands/config
+├── manage_cli.py       # `coded skill …` and `coded plugin …` subcommands
 └── tools/
     ├── __init__.py     # build_registry(): assembles the tool suite
     ├── base.py         # Tool, ToolResult, ToolContext, ToolRegistry
@@ -89,10 +93,14 @@ tests/
 ├── test_semantic_and_web.py  # index/search, web_fetch/search, image encoding
 ├── test_skills.py      # skill discovery, frontmatter, skill tool
 ├── test_tools.py       # tool + config unit tests
+├── test_plugins.py     # sources, zip safety, skill/plugin install/update/remove,
+│                       # Claude-format plugins, marketplaces, CLI
 └── test_modern_features.py  # todo/plan, hooks, sandbox, AGENTS.md, patch, parallel,
                         # retry/fallback/roles, reasoning, shells, commands, tracing,
                         # worktrees, injection guard, external agents, ACP, MCP server
 examples/skills/        # example SKILL.md packs + install guide
+examples/plugins/       # example plugin (code-quality) + plugin layout guide
+examples/.coded-plugin/marketplace.json  # examples folder doubles as a marketplace
 config.example.json     # sample configuration
 ```
 
@@ -140,6 +148,15 @@ config.example.json     # sample configuration
    `subagent`, `compact`, `review`, `verdict`; `Config.fallbacks_for()` resolves
    a model's `fallback` aliases for `LLMClient`.
 
+10. **Skills & plugins install** (`plugins.py`): `coded skill|plugin …` fetch a
+    source into a temp dir (`sources.Fetched`), validate it, show a summary and
+    ask, then `install_tree` swaps it into `<home>/skills|plugins/<name>` and
+    records the source in `<home>/installed.json` (`home` = `~/.config/coded`
+    or `./.coded` with `--project`). Enabled plugins are merged at load time:
+    `skill_search_dirs` (built-in < plugin < user < project), `command_dirs`
+    (`/<plugin>:<cmd>`), and `load_config` → `apply_plugins_to_config` (hooks
+    appended, MCP servers/outside agents added unless the user defines the name).
+
 ## Key conventions
 
 - **Adding a tool**: subclass `Tool` in `coded/tools/`, set `name`,
@@ -160,6 +177,11 @@ config.example.json     # sample configuration
   threadsafe=True)` (TUI, ACP) allows tools that may prompt to run in parallel;
   prompts are serialized by a lock either way. `ask()` is a raw yes/no question
   (used by `exit_plan_mode`).
+- **No install tool for the model.** Installing skills/plugins grants code
+  execution (hooks run unprompted), so it stays a user-run CLI action. Never
+  write plugin contributions into the user's config.json; they're merged at load
+  time so `disable`/`remove` are clean. The install summary must list every hook
+  and MCP command verbatim; non-TTY installs require `--yes`.
 - **Tools must never raise into the loop**: return `ToolResult.error(...)` for
   expected failures. `Agent._run_tool` also catches unexpected exceptions and
   feeds them back to the model as text, so the agent can recover.
@@ -273,8 +295,8 @@ one (e.g. `ruff`, `black`), record the commands here.
 
 - **argparse + free-form prompt**: the top-level parser has a `nargs="*"`
   positional `prompt`, which conflicts with argparse subparsers. Subcommands
-  (`config`, `models`, `index`, `review`, `sessions`, `commit`, `acp`,
-  `mcp-serve`) are therefore dispatched manually by the first token in
+  (`config`, `models`, `index`, `review`, `sessions`, `commit`, `skill`,
+  `plugin`, `acp`, `mcp-serve`) are therefore dispatched manually by the first token in
   `cli.main()` — keep new subcommands on that path, not on `add_subparsers`.
 - **ACP / MCP server modes keep stdout clean** (`ui.set_quiet(True)`): stdout
   carries only protocol messages.
