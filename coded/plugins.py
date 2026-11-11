@@ -538,7 +538,7 @@ def update_plugins(names: Optional[List[str]] = None, *, scope: str = "user",
             continue
         try:
             if rec.get("marketplace"):
-                update_marketplaces([rec["marketplace"]], scope=scope, cwd=cwd)
+                update_marketplaces([rec["marketplace"]], scope="user", cwd=cwd)
                 p = install_from_marketplace(name, rec["marketplace"], scope=scope, cwd=cwd,
                                              confirm=confirm, _replace=True)
             else:

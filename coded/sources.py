@@ -198,7 +198,9 @@ class Fetched:
         if info.type == "dir":
             src = Path(info.location)
             dest = self._tmp / "src"
-            shutil.copytree(src, dest, symlinks=False,
+            # Keep links as links (never follow them while copying); they're
+            # rejected below before anything is shown or installed.
+            shutil.copytree(src, dest, symlinks=True,
                             ignore=shutil.ignore_patterns(".git", "__pycache__"))
             self.root = dest
         elif info.type in ("zip", "zip-url"):
@@ -217,6 +219,7 @@ class Fetched:
             self.root = dest
         else:
             raise SourceError(f"Unknown source type {info.type!r}.")
+        reject_symlinks(self._tmp)
         if info.subpath:
             sub = (self.root / info.subpath).resolve()
             if self.root.resolve() not in sub.parents and sub != self.root.resolve():
@@ -226,6 +229,17 @@ class Fetched:
             self.root = sub
 
 
+def reject_symlinks(root: Path) -> None:
+    """Refuse sources containing symlinks: a link to ~ or / would otherwise be
+    copied (followed) into the install directory."""
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        for name in dirnames + filenames:
+            p = Path(dirpath) / name
+            if p.is_symlink():
+                rel = p.relative_to(root).as_posix().split("/", 1)[-1]
+                raise SourceError(f"Source contains a symlink ({rel}); symlinks are not allowed.")
+
+
 def install_tree(src: Path, dest: Path) -> None:
     """Copy `src` to `dest`, replacing any existing copy only once the new one is in place."""
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -233,7 +247,7 @@ def install_tree(src: Path, dest: Path) -> None:
     backup = dest.with_name(f".{dest.name}.old")
     shutil.rmtree(staging, ignore_errors=True)
     shutil.rmtree(backup, ignore_errors=True)
-    shutil.copytree(src, staging, symlinks=False, ignore=shutil.ignore_patterns(".git"))
+    shutil.copytree(src, staging, symlinks=True, ignore=shutil.ignore_patterns(".git"))
     if dest.exists():
         dest.rename(backup)
     try:

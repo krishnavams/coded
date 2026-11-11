@@ -8,6 +8,7 @@ package is not installed, MCPManager degrades gracefully to a no-op.
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -33,7 +34,7 @@ def _render_content(result: Any) -> str:
             parts.append(text)
         else:
             parts.append(str(block))
-    if getattr(result, "isError", False):
+    if getattr(result, "isError", False) or getattr(result, "is_error", False):
         return "ERROR: " + ("\n".join(parts) or "(unknown MCP error)")
     return "\n".join(parts) if parts else "(no content)"
 
@@ -81,7 +82,9 @@ class MCPManager:
                     params = StdioServerParameters(
                         command=cfg["command"],
                         args=cfg.get("args", []),
-                        env=cfg.get("env"),
+                        # Server-specific vars on top of our environment (keeps PATH etc.).
+                        env={**os.environ, **{k: str(v) for k, v in cfg["env"].items()}}
+                        if cfg.get("env") else None,
                     )
                     read, write = await stack.enter_async_context(stdio_client(params))
                     session = await stack.enter_async_context(ClientSession(read, write))
@@ -90,7 +93,9 @@ class MCPManager:
                     self.sessions[name] = session
                     for t in listed.tools:
                         self.tool_specs.append(
-                            (name, t.name, t.description or "", t.inputSchema or {})
+                            (name, t.name, t.description or "",
+                             # mcp 1.x: inputSchema; mcp 2.x: input_schema
+                             getattr(t, "input_schema", None) or getattr(t, "inputSchema", None) or {})
                         )
                 except Exception as exc:  # noqa: BLE001
                     self.errors.append(f"MCP server '{name}' failed to start: {exc}")

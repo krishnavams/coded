@@ -363,3 +363,47 @@ def test_cli_refuses_without_tty_or_yes(home, tmp_path, monkeypatch, capsys):
     assert main(["plugin", "search", "quality"]) == 0
     assert main(["plugin", "remove", "code-quality", "--cwd", str(project)]) == 0
     assert main(["skill", "remove", "cli-skill", "--cwd", str(project)]) == 0
+
+
+def test_symlinks_in_sources_are_refused(home, tmp_path):
+    _, project = home
+    src = _plugin(tmp_path / "linky", name="linky")
+    os.symlink(Path.home(), src / "evil")
+    with pytest.raises(SourceError, match="symlink"):
+        install_plugin(str(src), cwd=str(project), confirm=YES)
+    _git("init", "-q", cwd=src)
+    _git("add", ".", cwd=src)
+    _git("commit", "-qm", "x", cwd=src)
+    with pytest.raises(SourceError, match="symlink"):
+        install_plugin(f"file://{src}", cwd=str(project), confirm=YES)
+    assert not (home[0] / "plugins").exists()
+
+
+def test_plugin_mcp_server_launches_with_plugin_root(home, tmp_path):
+    pytest.importorskip("mcp")
+    import sys
+
+    from coded.mcp_client import MCPManager
+
+    _, project = home
+    src = tmp_path / "mcp-plugin"
+    (src / ".claude-plugin").mkdir(parents=True)
+    (src / ".claude-plugin" / "plugin.json").write_text('{"name": "rootcheck"}')
+    (src / "server.py").write_text(
+        "import os\n"
+        "try:\n    from mcp.server.mcpserver import MCPServer as S\n"
+        "except ImportError:\n    from mcp.server.fastmcp import FastMCP as S\n"
+        "s = S('rootcheck')\n"
+        "@s.tool()\ndef where() -> str:\n    return os.environ.get('CLAUDE_PLUGIN_ROOT', 'unset')\n"
+        "s.run()\n")
+    (src / ".mcp.json").write_text(json.dumps({"mcpServers": {"srv": {
+        "command": sys.executable, "args": ["${CLAUDE_PLUGIN_ROOT}/server.py"]}}}))
+    plugin = install_plugin(str(src), cwd=str(project), confirm=YES)
+    cfg = load_config(cwd=str(project))
+    manager = MCPManager({"rootcheck-srv": cfg.mcp_servers["rootcheck-srv"]})
+    manager.start()
+    try:
+        assert not manager.errors, manager.errors
+        assert manager.call("rootcheck-srv", "where", {}).strip() == str(plugin.root)
+    finally:
+        manager.stop()
