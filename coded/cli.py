@@ -266,9 +266,15 @@ def _handle_models_command(argv: List[str]) -> int:
 
 
 def _check_models(cfg: Config, names: List[str]) -> int:
+    """Probe each model with progressively richer requests.
+
+    A single minimal request is not enough: an endpoint that answers "hi" can
+    still 500 on streaming, on `stream_options` or on tool definitions, which is
+    exactly the request a real turn sends.
+    """
     import time
 
-    from coded.llm import LLMClient
+    from coded.llm import probe_hint, probe_stages
 
     failures = 0
     for name in names:
@@ -277,38 +283,29 @@ def _check_models(cfg: Config, names: List[str]) -> int:
             failures += 1
             continue
         mc = cfg.models[name]
-        probe = ModelConfig(**{**mc.__dict__, "max_retries": 0, "max_tokens": 8})
         start = time.time()
         try:
-            out = LLMClient(probe).complete([{"role": "user", "content": "Reply with: ok"}],
-                                            stream=False)
-            ms = (time.time() - start) * 1000
-            print(f"✓ {name:<16} {ms:7.0f} ms   {(out.content or '').strip()[:40]!r}")
-        except Exception as exc:  # noqa: BLE001
+            stages = probe_stages(mc)
+        except Exception as exc:  # noqa: BLE001 - e.g. a missing key
             failures += 1
-            print(f"✗ {name:<16} {type(exc).__name__}: "
-                  f"{str(exc).splitlines()[0][:120] if str(exc) else ''}")
-            _probe(mc)
+            print(f"\u2717 {name:<16} {type(exc).__name__}: {exc}")
+            continue
+        ms = (time.time() - start) * 1000
+        bad = [(label, exc) for label, exc in stages if exc is not None]
+        if not bad:
+            print(f"\u2713 {name:<16} {ms:7.0f} ms   "
+                  f"{len(stages)} request shapes accepted")
+            continue
+        failures += 1
+        print(f"\u2717 {name:<16} {ms:7.0f} ms")
+        for label, exc in stages:
+            if exc is None:
+                print(f"      \u2713 {label}")
+            else:
+                detail = str(exc).splitlines()[0][:200] if str(exc) else type(exc).__name__
+                print(f"      \u2717 {label}: {type(exc).__name__}: {detail}")
+                print(f"      \u2192 {probe_hint(label, exc)}")
     return 1 if failures else 0
-
-
-def _probe(mc: ModelConfig) -> None:
-    """Narrow a failed check down to the part of the request the endpoint refuses."""
-    from coded.llm import probe_hint, probe_stages
-
-    print("    probing which requests this endpoint accepts:")
-    try:
-        stages = probe_stages(mc)
-    except Exception as exc:  # noqa: BLE001 - e.g. a missing key
-        print(f"      could not probe: {exc}")
-        return
-    for label, exc in stages:
-        if exc is None:
-            print(f"      ✓ {label}")
-        else:
-            detail = str(exc).splitlines()[0][:160] if str(exc) else type(exc).__name__
-            print(f"      ✗ {label}: {type(exc).__name__}: {detail}")
-            print(f"      → {probe_hint(label, exc)}")
 
 
 def _handle_index_command(argv: List[str]) -> int:

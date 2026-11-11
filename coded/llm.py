@@ -324,6 +324,8 @@ class LLMClient:
                 resp = endpoint.client.chat.completions.create(**params)
                 if dropped:  # the bare request worked, so the endpoint dislikes these
                     endpoint.unsupported.update(dropped)
+                    self._status("That worked, so this endpoint does not support "
+                                 + ", ".join(dropped) + "; coded will stop sending them.")
                 return resp
             except Exception as exc:  # noqa: BLE001
                 if is_context_overflow(exc):
@@ -452,11 +454,10 @@ def explain_failure(exc: Exception) -> str:
     body = str(exc).splitlines()[0][:200] if str(exc) else type(exc).__name__
 
     if _is_server_error(exc):
-        hint = (f"Try `coded models --check {alias}` to see which kind of request it "
-                "accepts, or `/model <alias>` to switch." if alias
-                else "Try `coded models --check` or switch models.")
-        return (f"{head}failed: the server returned {status}. coded retried and gave up.\n"
-                f"  {body}\n  This is the endpoint's error, not coded's. {hint}")
+        hint = (f"`coded models --check {alias}` reports which requests this endpoint "
+                "accepts; `/model <alias>` switches models." if alias
+                else "`coded models --check` reports which requests each endpoint accepts.")
+        return f"{head}returned {status}.\n  {body}\n  {hint}"
     if isinstance(exc, openai.AuthenticationError):
         return (f"{head}rejected the API key ({status}).\n  {body}\n"
                 "  Check the key for this model's provider, then retry.")
@@ -466,7 +467,9 @@ def explain_failure(exc: Exception) -> str:
     if isinstance(exc, openai.APIConnectionError):
         return (f"{head}could not be reached.\n  {body}\n"
                 "  Check the base_url, the network, and any proxy or VPN.")
-    return f"{type(exc).__name__}: {body}" if not alias else f"{head}failed.\n  {body}"
+    # Not a transport/model failure: keep the whole message, it is the content.
+    full = str(exc) or type(exc).__name__
+    return f"{type(exc).__name__}: {full}" if not alias else f"{head}failed.\n  {full}"
 
 
 _PROBE_TOOL = {
@@ -500,6 +503,20 @@ def probe_stages(model: ModelConfig) -> List[tuple]:
                        {**base, "reasoning_effort": model.reasoning_effort}))
     if model.extra_body:
         stages.append(("extra_body", {**base, "extra_body": dict(model.extra_body)}))
+    # Each part can pass alone and still fail together, which is the request a
+    # real turn sends.
+    whole: Dict[str, Any] = {**base, "stream": True,
+                             "stream_options": {"include_usage": True},
+                             "messages": [{"role": "system", "content": "You are a coding agent."},
+                                          *base["messages"]]}
+    if model.supports_tools:
+        whole.update(tools=[_PROBE_TOOL], tool_choice="auto")
+    if model.reasoning_effort:
+        whole["reasoning_effort"] = model.reasoning_effort
+    if model.extra_body:
+        whole["extra_body"] = dict(model.extra_body)
+    stages.append(("a full turn (system prompt + streaming"
+                   + (" + tools" if model.supports_tools else "") + ")", whole))
 
     results: List[tuple] = []
     for label, params in stages:
@@ -521,7 +538,8 @@ def probe_hint(label: str, exc: Exception) -> str:
         return ("even a bare request fails, so this is the endpoint or the model id — "
                 "nothing coded sends. Check the model id, base_url and key.")
     if label == "streaming":
-        return 'set "stream": false for this model, or use a different endpoint.'
+        return ("this endpoint cannot stream. Run coded with --no-stream (or set "
+                '"stream": false in config.json), or use a different endpoint.')
     if label == "stream_options":
         return ("the endpoint does not implement stream_options; coded now drops it "
                 "automatically after a 5xx, so retry the request.")
@@ -532,4 +550,8 @@ def probe_hint(label: str, exc: Exception) -> str:
         return 'remove "reasoning_effort" from this model.'
     if label == "extra_body":
         return 'remove or correct "extra_body" for this model.'
+    if label.startswith("a full turn"):
+        return ("each part is accepted on its own but the combination is not — most "
+                "often the system prompt plus tools is too large for this endpoint. "
+                "Try a smaller prompt profile, or another model.")
     return _short(exc)

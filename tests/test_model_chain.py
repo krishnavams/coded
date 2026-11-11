@@ -414,6 +414,39 @@ def test_a_real_outage_still_fails_after_the_bare_retry(route_server):
     assert calls["n"] == 3  # try + retry + the one bare attempt
 
 
+def test_check_fails_on_a_500_that_only_tools_trigger(route_server, capsys):
+    """The old check sent one minimal request, so a gateway that 500s on tool
+    definitions passed the check and failed every real turn."""
+    def route(method, path, body):
+        params = json.loads(body)
+        if "tools" in params:
+            return 500, "application/json", '{"error": {"message": "nope"}}'
+        return _sse("ok") if params.get("stream") else _ok("ok")
+
+    from coded.cli import _check_models
+
+    with route_server(route) as srv:
+        cfg = Config(models={"m": _model(srv.base + "/v1", "m")}, default_model="m")
+        rc = _check_models(cfg, ["m"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "✓ streaming" in out and "✗ tools" in out
+    assert "supports_tools" in out
+
+
+def test_check_passes_when_every_shape_is_accepted(route_server, capsys):
+    def route(method, path, body):
+        return _sse("ok") if json.loads(body).get("stream") else _ok("ok")
+
+    from coded.cli import _check_models
+
+    with route_server(route) as srv:
+        cfg = Config(models={"m": _model(srv.base + "/v1", "m")}, default_model="m")
+        rc = _check_models(cfg, ["m"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "request shapes accepted" in out
+
+
 def test_probe_reports_the_first_request_shape_the_endpoint_refuses(route_server):
     def route(method, path, body):
         params = json.loads(body)

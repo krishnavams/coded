@@ -1079,37 +1079,39 @@ risky actions:
 
 ## When a model errors
 
-If a turn ends with something like `InternalServerError: Error code: 500`, the
-error came from the endpoint, not from coded — it already retried
-(`max_retries`, with backoff and `Retry-After`) and, if the model has a
-`fallback` list, tried those too. coded names the model and its base URL, and
-points at the next step:
+If a turn ends with something like `InternalServerError: Error code: 500`, that
+status came from the endpoint. coded names the model and its base URL and
+retries first (`max_retries`, with backoff and `Retry-After`), then any
+`fallback` models. To find out what the endpoint will actually accept:
 
 ```bash
 coded models --check glm-5-3-flash
 ```
 
-A failed check probes the endpoint in stages — a minimal request, then
-streaming, `stream_options`, tools, `reasoning_effort`, `extra_body` — and
-reports the first shape it refuses, because some gateways answer a parameter
-they don't implement with a 500 rather than a 400:
+The check is a staged probe, not one ping: a gateway that answers "hi" can
+still fail on streaming, on `stream_options` or on tool definitions — and some
+answer a parameter they don't implement with a 500 rather than a 400, which
+looks exactly like an outage. It stops at the first shape refused and says what
+to change:
 
 ```
-✗ glm-5-3-flash    InternalServerError: Error code: 500 - An unexpected error occurred
-    probing which requests this endpoint accepts:
+✗ glm-5-3-flash         74 ms
       ✓ minimal request
       ✓ streaming
-      ✗ stream_options: InternalServerError: Error code: 500 - ...
-      → the endpoint does not implement stream_options; coded now drops it
-        automatically after a 5xx, so retry the request.
+      ✓ stream_options
+      ✗ tools: InternalServerError: Error code: 500 - An unexpected error occurred
+      → this endpoint cannot take tool definitions. Set "supports_tools": false
+        for this model — coded will then run it without tools.
 ```
 
-coded does the same thing by itself during a turn: after the retries for a 5xx
-are exhausted it tries once more with the optional parameters
-(`stream_options`, `reasoning_effort`, `parallel_tool_calls`) removed, and
-remembers them as unsupported if that works. It never drops `tools` — an agent
-that silently loses its tools is worse than an error; if the probe shows tools
-are the problem, set `"supports_tools": false` for that model.
+The last stage sends the shape a real turn uses (system prompt + streaming +
+tools), because each part can pass alone and fail together.
+
+During a turn coded does a narrower version of this by itself: once the retries
+for a 5xx are exhausted it tries once more with the optional parameters
+(`stream_options`, `reasoning_effort`, `parallel_tool_calls`) removed, says so,
+and remembers them as unsupported if that works. It never drops `tools`
+automatically — an agent that silently loses its tools is worse than an error.
 
 To keep working while an endpoint is down, give the model a fallback:
 
