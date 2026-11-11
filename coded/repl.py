@@ -79,6 +79,7 @@ SLASH_COMMANDS = {
     "/config": "Show which config files are loaded.",
     "/setup": "Configure models interactively (adds, tests, roles, pools, routing).",
     "/verify": "Run the project's checks (and the verify model) over the last change.",
+    "/memory": "Project memory: /memory [list|add <note>|forget <id>|clear].",
     "/exit": "Quit (also /quit).",
 }
 
@@ -269,6 +270,8 @@ class Repl:
             self._cmd_setup()
         elif cmd == "/verify":
             self._cmd_verify()
+        elif cmd == "/memory":
+            self._cmd_memory(args)
         elif cmd == "/model":
             self._cmd_model(args)
         elif cmd == "/tools":
@@ -484,6 +487,59 @@ class Repl:
                 in ("y", "yes"):
             ui.user_prefix()
             self.agent.run(feedback)
+
+    def _cmd_memory(self, args) -> None:
+        """Project memory, under the user's hand: list, add, forget, clear."""
+        from coded.memory import KINDS, MemoryStore
+
+        store = MemoryStore.for_project(self.agent.cwd)
+        action = (args[0].lower() if args else "list")
+        rest = " ".join(args[1:]).strip()
+        if action == "list":
+            entries = store.load()
+            if not entries:
+                ui.info(f"No project memory yet ({store.path}). "
+                        "Add one with /memory add <note>.")
+                return
+            table = Table(title=f"Project memory ({len(entries)})")
+            table.add_column("id", style="cyan")
+            table.add_column("kind")
+            table.add_column("note")
+            table.add_column("by", style="dim")
+            for e in entries:
+                table.add_row(e.id, e.kind, e.text, e.source)
+            ui.console.print(table)
+        elif action == "add":
+            if not rest:
+                ui.error("Nothing to add: /memory add <note>  (prefix with "
+                         f"{'|'.join(KINDS)}: to set the kind)")
+                return
+            kind = "fact"
+            for k in KINDS:
+                if rest.lower().startswith(k + ":"):
+                    kind, rest = k, rest[len(k) + 1:].strip()
+                    break
+            entry = store.add(rest, kind, source="user")
+            if entry is None:
+                ui.info("Already known; nothing added.")
+            else:
+                ui.success(f"Remembered as {entry.id}. "
+                           "It reaches the model at the start of the next session.")
+                self.agent.refresh_system_prompt()
+        elif action == "forget":
+            if not rest:
+                ui.error("Which one? /memory forget <id>")
+            elif store.forget(rest):
+                ui.success(f"Forgot {rest}.")
+                self.agent.refresh_system_prompt()
+            else:
+                ui.error(f"No note '{rest}'.")
+        elif action == "clear":
+            count = store.clear()
+            ui.success(f"Cleared {count} note(s).")
+            self.agent.refresh_system_prompt()
+        else:
+            ui.error("Usage: /memory [list|add <note>|forget <id>|clear]")
 
     def _cmd_model(self, args) -> None:
         if not args:

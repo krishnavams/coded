@@ -173,6 +173,8 @@ _TOOL_TITLES = {
     "web_search": ("WebSearch", "query"), "web_fetch": ("Fetch", "url"),
     "task": ("Task", "description"), "skill": ("Skill", "name"),
     "external_agent": ("Agent", "agent"), "apply_patch": ("Patch", None),
+    "repo_map": ("Map repo", None),
+    "memory": ("Memory", None),
     "todo_write": ("Update tasks", None), "exit_plan_mode": ("Plan ready", None),
 }
 _PATH_KEYS = {"path", "source", "destination", "cwd"}

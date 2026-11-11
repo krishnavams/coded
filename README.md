@@ -439,6 +439,54 @@ coded --resume <id>     # resume a specific one
 coded sessions          # list them
 ```
 
+### Repository map
+
+```
+repo_map                      # the whole repo, ranked
+repo_map path=src/api         # one subtree
+repo_map focus=PermissionManager
+```
+
+`repo_map` is an outline of the codebase — each file's classes, functions and
+types — with the files **the rest of the code depends on most** first. Grep
+answers "where does this string appear"; this answers "what is this made of,
+and which part matters", which is the question a model with a small context
+window has to answer before it can act.
+
+Ranking is PageRank over a graph whose edges are "this file names a symbol that
+file defines", so a small, widely imported module outranks a large one nobody
+references. Method names (`run`, `save`) and names defined in many files are
+excluded from the graph — otherwise whichever file has the most of them looks
+like the heart of the project.
+
+Extraction is Python's own `ast` plus conservative per-language regexes (Go,
+Rust, JS/TS, Java/Kotlin, Ruby, PHP, C/C++, Swift, Lua, shell) — no tree-sitter
+and no extra dependency, so it is an *outline*, not a parse tree. It lists
+definitions only, never code, and everything is bounded: files scanned, bytes
+per file, wall time, output. Binary, minified and generated files are skipped.
+
+### Project memory
+
+```
+/memory                                   # list
+/memory add gotcha: the e2e suite needs Docker
+/memory forget m3
+```
+
+What a session learns about a repository normally dies with `/clear`. Project
+memory keeps a few short notes — conventions, decisions, gotchas, facts — in
+`./.coded/memory.json` (gitignored), and puts them in the system prompt at the
+start of every future session in that project, labelled as recorded
+observations that may be out of date, never as instructions.
+
+The agent can add notes with the `memory` tool, but every write **asks you
+first and shows the exact text**, and a turn with untrusted content in context
+(web, GitHub or MCP output) cannot write at all — a page should not be able to
+plant a durable instruction. The model can only ever write the *project* store,
+never your user-level config, so one hostile repository can't follow you
+elsewhere. The store is capped, your own notes outlive the agent's, and
+`/memory` is the authority: list, add, forget, clear.
+
 ### Semantic code search
 
 Build an embedding index of the repo, then the agent's `semantic_search` tool

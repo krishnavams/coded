@@ -41,6 +41,9 @@ coded/
 ├── prompt_files.py     # prompt-file loading/overrides/profiles + `coded prompts` CLI
 ├── limits.py           # per-model limits scaled by context_window; result/step caps
 ├── repo_overview.py    # repository overview for large-context models
+├── repomap.py          # ranked symbol map (ast + regex, PageRank over references)
+├── memory.py           # project memory store (./.coded/memory.json)
+├── verify.py           # post-turn gates: project checks + a second model
 ├── routing.py          # difficulty classifier + model pools (round-robin, health)
 ├── builtin_prompts/    # system, coder, tools, security, skills, planner, reviewer, debugger (.md);
 │                       # compact/ and full/ hold per-profile variants
@@ -81,6 +84,8 @@ coded/
     ├── todo.py         # todo_write (TodoStore), exit_plan_mode
     ├── external_agent.py  # external_agent (delegate to an outside CLI agent)
     ├── search.py       # glob, grep
+    ├── repo_map.py     # repo_map (ranked outline of the codebase)
+    ├── memory.py       # memory (remember/forget/list, gated per call)
     ├── semantic_search.py  # semantic_search (uses the embedded index)
     ├── shell.py        # bash (sandbox/background), bash_output, kill_shell
     ├── git.py          # git (read-only free, mutations gated)
@@ -102,6 +107,9 @@ tests/
 ├── test_skills.py      # skill discovery, frontmatter, skill tool
 ├── test_tools.py       # tool + config unit tests
 ├── test_routing.py     # difficulty routing, pools, endpoint reuse, per-model cost
+├── test_repomap.py     # symbol extraction, ranking, budgets, the repo_map tool
+├── test_memory.py      # memory store, the permission gate, prompt injection
+├── test_verify.py      # the verification loop: checks, second opinion, rounds
 ├── test_model_chain.py # failover cooldown, sizing for a smaller fallback, stream retry,
 │                       # per-model timeout, unknown-alias warnings
 ├── test_big_models.py  # scaled limits, caps, overflow retry, max_turns, profiles, repo overview
@@ -317,6 +325,22 @@ config.example.json     # sample configuration
   unimplemented param with a 500; `tools` is never dropped automatically.
   `coded models --check` probes a failing endpoint in stages
   (`llm.probe_stages`/`probe_hint`) to say which part of the request it refuses.
+- **Repository map** (`repomap.py`, the `repo_map` tool): `ast` for Python plus
+  conservative regexes elsewhere — an outline, not a parse tree, and never a
+  new dependency. Ranking is PageRank over a file graph built from "names a
+  symbol another file defines"; methods and names with more than `_MAX_DEFINERS`
+  definers are excluded, or ubiquitous names decide the ranking. Everything is
+  bounded (files, bytes, seconds, output) and nothing raises. It is a **tool**,
+  not a prompt section: the system prompt stays names-only, and a 128k model
+  must behave exactly as before.
+- **Project memory** (`memory.py`, the `memory` tool, `/memory`): short notes in
+  `./.coded/memory.json`, injected by `build_system_prompt` as labelled data
+  within `limits.memory_chars`. The model writes only the **project** store and
+  only through `ctx.permissions.request` (per-call, like git — never
+  `requires_permission`, which would also drag the turn through the verify
+  gate), and not at all while `permissions.tainted`. Every write re-reads first,
+  so a concurrent session's note is not clobbered. Sub-agents get no memory
+  tool. An empty store must leave the system prompt byte-identical.
 - **Verification** (`verify.py`, `Agent._verify_turn`): after a turn that
   changed something, the project's `verify.command` and/or the `verify` role
   model gate the answer; a complaint goes back as a `[verify]` user message,

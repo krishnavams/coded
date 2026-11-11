@@ -140,6 +140,10 @@ def build_system_prompt(cwd: str, extra: str | None = None, model: Any = None,
         overview = build_repo_overview(cwd, limits.repo_overview_chars)
         if overview:
             prompt += "\n\n" + overview
+    if limits is not None and getattr(limits, "memory_chars", 0) > 0:
+        from coded.memory import MemoryStore
+
+        prompt += MemoryStore.for_project(cwd).render(limits.memory_chars)
     if extra:
         prompt += f"\n\n# Additional instructions\n{extra}\n"
     return prompt
