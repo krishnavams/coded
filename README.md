@@ -97,15 +97,80 @@ runtime.
 
 ## Install
 
+coded is a normal Python package (3.10+) with a `coded` console script. It runs
+on Linux, macOS and Windows — see [Windows](#windows) for what differs there.
+Pick whichever of these fits your machine; they all end with `coded --version`
+working.
+
+### From a clone (what contributors use)
+
 ```bash
 git clone https://github.com/krishnavams/coded
 cd coded
-pip install -e .            # core
-pip install -e '.[mcp]'     # + Model Context Protocol support
+python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -e .                 # core
+pip install -e '.[mcp]'          # + MCP client     (zsh users: keep the quotes)
+pip install -e '.[tui]'          # + full-screen UI
+pip install -e '.[dev]'          # + pytest
+pip install -e '.[mcp,tui,dev]'  # everything
+coded --version
 ```
 
-Requires Python 3.10+. Runs on Linux, macOS and Windows (see
-[Windows](#windows) for what differs there).
+`-e` (editable) means your edits take effect without reinstalling.
+
+### As a tool, isolated from your other packages
+
+Best for daily use — one command, its own environment, on your PATH:
+
+```bash
+pipx install git+https://github.com/krishnavams/coded          # pipx install pipx first
+pipx install "coded[mcp,tui] @ git+https://github.com/krishnavams/coded"
+pipx upgrade coded
+
+uv tool install git+https://github.com/krishnavams/coded       # or with uv
+uvx --from git+https://github.com/krishnavams/coded coded      # run once, install nothing
+```
+
+### Into an existing project or virtualenv
+
+```bash
+pip install git+https://github.com/krishnavams/coded
+uv pip install git+https://github.com/krishnavams/coded        # uv
+poetry add git+https://github.com/krishnavams/coded            # poetry
+```
+
+Add a branch or tag with `@name`, e.g. `…/coded@main`.
+
+### Per-platform notes
+
+| Where | Notes |
+| --- | --- |
+| **Linux** | `sudo apt install python3-venv python3-pip` (Debian/Ubuntu) first. For the sandbox: `sudo apt install bubblewrap`. On Arch/Fedora, `pip install` outside a venv is blocked (PEP 668) — use a venv, `pipx`, or `uv`. |
+| **macOS** | `brew install python@3.12 pipx`. The sandbox (`sandbox-exec`) is built in. |
+| **Windows** | Install Python from python.org or `winget install Python.Python.3.12`, then use PowerShell or Windows Terminal. Install [Git for Windows](https://git-scm.com/download/win) too: coded uses its Git Bash for the `bash` tool. |
+| **WSL** | Treat it as Linux; it also gives you the sandbox, which native Windows has no backend for. |
+| **Docker** | `FROM python:3.12-slim`, then `RUN pip install git+https://github.com/krishnavams/coded`. Pass keys with `-e OPENAI_API_KEY`, mount your project at `/work`, and run `coded --cwd /work`. Add `--yolo` only in a throwaway container. |
+| **CI (GitHub Actions)** | `pip install git+https://github.com/krishnavams/coded`, then `coded review --fail-on NEEDS_CHANGES` with the key in a repository secret. See `.github/workflows/coded-review.yml`. |
+| **Remote box / server** | Same as Linux. For a long session use `tmux`; one-shot work needs no terminal at all: `coded -p "…" --output-format json`. |
+| **No internet on the target machine** | `pip download` the wheel on a connected machine, copy it over, `pip install coded-*.whl`, and point `base_url` at your internal endpoint. |
+
+### Check it worked
+
+```bash
+coded --version
+coded models            # configured models, pools and roles (empty is fine at first)
+coded models --check    # sends a tiny request to each endpoint
+coded config init       # writes ~/.config/coded/config.json
+```
+
+Nothing is needed beyond a key or a local endpoint; see [Configuration](#configuration).
+
+### Uninstall
+
+```bash
+pip uninstall coded          # or: pipx uninstall coded / uv tool uninstall coded
+rm -rf ~/.config/coded       # settings, skills, plugins, saved sessions
+```
 
 ## Quick start
 
@@ -687,6 +752,69 @@ top of that:
   `"show_reasoning": true` displays streamed thinking (`reasoning_content`). An
   optional parameter that an endpoint rejects is dropped automatically and
   remembered.
+
+### Routing by difficulty
+
+Off unless configured. When it is on, coded reads each request and picks the
+model for that request — one decision per request, never mid-task:
+
+```json
+{
+  "routing": {
+    "enabled": true,
+    "simple": "small",
+    "medium": "medium",
+    "hard": "large",
+    "sticky": true,
+    "rules": [{"match": "(?i)^deploy\\b", "level": "hard"}]
+  }
+}
+```
+
+- The classifier is a **heuristic over the text of your request** — keywords
+  (refactor, debug, race condition, security, "why does…"), length, and your own
+  `rules` (regexes, tried first). It costs nothing and makes no model call.
+- A request it can't read — "fix it", "yes", "now the tests" — **keeps the model
+  you are already on**, because a short follow-up continues the last task.
+- `"sticky": true` (the default) means a session never drops back down after a
+  hard request. Set it to `false` to let every request stand on its own.
+- coded **never routes down into a model your conversation no longer fits**
+  (that would summarize your history to save pennies), and skips a target that
+  can't run tools, or can't see images when you attached some.
+- `-m` or `/model` **pins** your choice and turns routing off; `/route on` puts
+  it back. `/route` alone shows the state, the targets, and the current model.
+- Each decision is announced in the session ("Routing: hard request → model
+  'large'"), so you can see what it did.
+
+It is a heuristic, not a measurement: treat the levels as a cost control, and
+pin the model yourself when a request matters more than it looks.
+
+### Model pools
+
+Several interchangeable models behind one name:
+
+```json
+{
+  "pools": {"big": ["large-a", "large-b"]},
+  "default_model": "big",
+  "model_roles": {"subagent": "big"}
+}
+```
+
+A pool name works anywhere a model alias does — `coded -m big`, `/model big`,
+`default_model`, `model_roles`, and routing targets.
+
+- A member is picked when the pool is resolved: at session start, per sub-agent,
+  per routed request. The agent then **stays on that member** for the session,
+  so the endpoint keeps its prompt cache.
+- The other members become its **fallbacks**, ahead of the member's own
+  `fallback` list.
+- A member that fails is **skipped for everyone** until its cooldown passes
+  (`fallback_cooldown`); endpoint health is shared across the process, including
+  sub-agents.
+- Give members the same `context_window` — `coded models` warns if they differ,
+  because each request is sized for the member that was picked.
+- `coded models` lists pools; `coded models --check big` checks every member.
 
 ### Large and small models
 

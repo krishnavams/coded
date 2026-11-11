@@ -301,7 +301,23 @@
     "subagent": "gpt-4o-mini",
     "compact": "gpt-4o-mini",
     "review": "gpt-4o",
-    "verdict": "gpt-4o"
+    "verdict": "gpt-4o",
+    "plan": "gpt-4o"
+  },
+
+  "// pools": "Interchangeable models behind one name; usable anywhere an alias is.",
+  "pools": {
+    "frontier": ["gpt-4o", "claude-sonnet"]
+  },
+
+  "// routing": "Pick the model per request by how hard it looks (off by default).",
+  "routing": {
+    "enabled": false,
+    "simple": "gpt-4o-mini",
+    "medium": "gpt-4o",
+    "hard": "frontier",
+    "sticky": true,
+    "rules": [{"match": "(?i)^deploy\\b", "level": "hard"}]
   },
 
   "hooks": {

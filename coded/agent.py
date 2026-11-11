@@ -67,6 +67,12 @@ class Agent:
         self.limits: Limits = limits_for(model)
         self._sized_model: ModelConfig = model  # whose window limits/compaction target
         self._main_model: ModelConfig = model   # the user's choice; plan mode may borrow another
+        self._main_pool: Optional[str] = None   # pool the main model was picked from
+        self._turn_model: ModelConfig = model   # this turn's choice (plan mode aside)
+        self._pool: Optional[str] = None        # pool the current model came from
+        self._route_pinned = False              # -m / /model: routing off until re-enabled
+        self._route_level: Optional[str] = None  # highest difficulty seen this session
+        self._forced: Optional[tuple] = None    # one turn on a given model (command model:)
         self.llm = self._make_llm(model)
         self._compact_llm: Optional[LLMClient] = None
         for t in extra_tools or []:
@@ -89,7 +95,7 @@ class Agent:
         return False
 
     def _make_llm(self, model: ModelConfig) -> LLMClient:
-        return LLMClient(model, fallbacks=self.config.fallbacks_for(model),
+        return LLMClient(model, fallbacks=self.config.fallbacks_for(model, self._pool),
                          on_status=self._status_note)
 
     def _status_note(self, text: str) -> None:
@@ -106,6 +112,7 @@ class Agent:
         self._interrupted = False
         if not self.is_subagent:
             self.permissions.tainted = False
+            self._select_turn_model(user_message, images)
         text = str(user_message)
         if not self.is_subagent:
             extra: List[str] = []
@@ -150,15 +157,25 @@ class Agent:
         """Ask the running turn to stop at the next checkpoint (between steps)."""
         self._interrupted = True
 
-    def switch_model(self, model: ModelConfig) -> None:
-        """Make `model` the session's main model (the user's choice: -m, /model)."""
-        self._main_model = model
-        self.use_model(model)
+    def switch_model(self, model: ModelConfig, pool: Optional[str] = None,
+                     pin: bool = True) -> None:
+        """Make `model` the session's main model (the user's choice: -m, /model).
 
-    def use_model(self, model: ModelConfig) -> None:
-        """Run on `model` without changing the main model (plan role, one command)."""
-        if model is self.model:
+        An explicit choice pins it: difficulty routing stops until `/route on`.
+        """
+        self._main_model = model
+        self._main_pool = pool
+        self._turn_model = model
+        if pin:
+            self._route_pinned = True
+        self.use_model(model, pool)
+
+    def use_model(self, model: ModelConfig, pool: Optional[str] = None) -> None:
+        """Run on `model` without changing the main model (plan role, routing,
+        one command)."""
+        if model is self.model and pool == self._pool:
             return
+        self._pool = pool
         self.model = model
         self.limits = limits_for(model)
         # _sized_model is left alone: the next step's _sync_sizing() sees the change
@@ -192,10 +209,13 @@ class Agent:
         self.mode = mode
         self.permissions.plan_mode = mode == "plan"
         self._plan_intro_sent = False  # resend planner.md next time plan mode starts
-        target = (self.config.model_for_role("plan", self._main_model) if mode == "plan"
-                  else self._main_model)
+        if mode == "plan":
+            target, pool = self._role_target("plan", self._turn_model)
+        else:
+            target, pool = self._turn_model, (self._pool if self._turn_model is self.model
+                                              else self._main_pool)
         switched = target is not self.model
-        self.use_model(target)
+        self.use_model(target, pool)
         if announce:
             note = ("Plan mode on: read-only until you approve a plan."
                     if mode == "plan" else "Plan mode off.")
@@ -234,7 +254,8 @@ class Agent:
                 completion = self._call_model()
             else:
                 context_retry = False
-            self.session.record_usage(completion.usage)
+            answered = self.config.models.get(completion.model) or self.model
+            self.session.record_usage(completion.usage, answered)
             if completion.usage.prompt_tokens:
                 self.session.last_prompt_tokens = completion.usage.prompt_tokens
 
@@ -335,6 +356,83 @@ class Agent:
                 if self.verbose:
                     ui.info("(summarized earlier conversation to stay within the context window)")
         return did
+
+    def _role_target(self, role: str, default: ModelConfig):
+        """(model, pool) for a role that may name a pool."""
+        alias = self.config.model_roles.get(role)
+        model, pool = self.config.resolve_target(alias, default)
+        return (model or default), pool
+
+    def force_model(self, model: ModelConfig, pool: Optional[str] = None) -> None:
+        """Use `model` for the next request only (a custom command's `model:`),
+        ahead of routing and the main model."""
+        self._forced = (model, pool)
+        self.use_model(model, pool)
+
+    def set_routing(self, enabled: bool) -> None:
+        """Turn difficulty routing back on (or off) after an explicit /model."""
+        self._route_pinned = not enabled
+
+    @property
+    def routing_on(self) -> bool:
+        return self.config.routing_settings().configured and not self._route_pinned
+
+    def _select_turn_model(self, user_message: Any, images: Optional[list] = None) -> None:
+        """Decide which model answers this request.
+
+        Order: the user's pinned choice, then plan mode's role model, then
+        difficulty routing, then the main model. Called once per request — never
+        per step, so a model is not swapped mid-task.
+        """
+        forced, self._forced = self._forced, None
+        if forced is not None:
+            self._turn_model = forced[0]
+            model, pool, level = forced[0], forced[1], None
+        else:
+            model, pool, level = self._main_model, self._main_pool, None
+        if forced is None and not self._route_pinned:
+            model, pool, level = self._routed_target(str(user_message), images)
+            self._turn_model = model
+        if self.mode == "plan":
+            model, pool = self._role_target("plan", model)
+        if model is not self.model or pool != self._pool:
+            if level:
+                self._status_note(f"Routing: {level} request → model '{model.name}'"
+                                  + (f" (pool '{pool}')" if pool else ""))
+            self.use_model(model, pool)
+        elif pool and self.config.is_pool(pool):
+            self._pool = pool
+
+    def _routed_target(self, text: str, images: Optional[list]):
+        """(model, pool, level) from difficulty routing, else the main model."""
+        settings = self.config.routing_settings()
+        if not settings.configured:
+            return self._main_model, self._main_pool, None
+        from coded.routing import classify, harder
+
+        level = classify(text, settings)
+        if settings.sticky:
+            level = harder(level, self._route_level)
+        if level is None:
+            return self.model, self._pool, None  # a follow-up stays where it is
+        self._route_level = level
+        model, pool = self.config.resolve_target(settings.target(level))
+        if model is None or not self._can_route_to(model, images):
+            return self._main_model, self._main_pool, None
+        return model, pool, level
+
+    def _can_route_to(self, model: ModelConfig, images: Optional[list]) -> bool:
+        """Refuse a target that cannot do this turn's work, or that the
+        conversation no longer fits — summarizing history to save money is a bad
+        trade the user did not ask for."""
+        if not model.supports_tools:
+            return False
+        if images and not model.supports_vision:
+            return False
+        from coded.compaction import compaction_threshold, current_input_tokens
+
+        size = current_input_tokens(self.session)
+        return size <= compaction_threshold(model, self.config.compact_ratio)
 
     def _sync_sizing(self, target: Optional[ModelConfig] = None) -> bool:
         """Size limits and compaction for the model the next request goes to: a
@@ -679,6 +777,8 @@ class Agent:
                 result = sub_agent.run(prompt)
             # Roll the sub-agent's token usage up into the parent session.
             self.session.record_usage(sub_session.total_usage)
+            self.session.cost += sub_session.cost
+            self.session._priced = self.session._priced or sub_session._priced
             return result
 
         return runner
@@ -697,6 +797,7 @@ def create_agent(
     verbose: bool = True,
     checkpoints: Any = None,
     tracer: Optional[Tracer] = None,
+    pool: Optional[str] = None,
 ) -> Agent:
     """Convenience constructor wiring together a fresh top-level agent."""
     from coded.checkpoints import CheckpointManager
@@ -733,5 +834,8 @@ def create_agent(
     )
     agent.skills = skills
     agent.system_extra = system_extra
+    if pool:
+        agent._main_pool = agent._pool = pool
+        agent.llm = agent._make_llm(model)  # pool siblings become fallbacks
     agent.refresh_system_prompt()
     return agent

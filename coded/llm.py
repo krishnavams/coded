@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
@@ -126,16 +127,48 @@ class _Endpoint:
         self.down_until = 0.0  # monotonic time until which this endpoint is skipped
 
 
+# Endpoints are shared process-wide: switching model (routing, pools, /model) or
+# spawning a sub-agent must not throw away what we learned about an endpoint —
+# which optional params it rejects, and whether it is currently down — nor leak
+# an HTTP client per switch.
+_ENDPOINTS: Dict[tuple, _Endpoint] = {}
+_ENDPOINTS_LOCK = threading.Lock()
+
+
+def _endpoint_key(model: ModelConfig) -> tuple:
+    try:
+        base = model.resolved_base_url()
+    except Exception:  # noqa: BLE001 - keyed by what we have
+        base = ""
+    return (model.name, base, model.model)
+
+
+def endpoint_for(model: ModelConfig) -> _Endpoint:
+    """The shared endpoint for this model alias (created on first use)."""
+    key = _endpoint_key(model)
+    with _ENDPOINTS_LOCK:
+        endpoint = _ENDPOINTS.get(key)
+        if endpoint is None:
+            endpoint = _Endpoint(model)
+            _ENDPOINTS[key] = endpoint
+        return endpoint
+
+
+def reset_endpoints() -> None:
+    """Drop all cached endpoints (tests)."""
+    with _ENDPOINTS_LOCK:
+        _ENDPOINTS.clear()
+
+
 class LLMClient:
     """Thin wrapper over the OpenAI SDK pointed at any compatible endpoint."""
 
     def __init__(self, model: ModelConfig, fallbacks: Optional[List[ModelConfig]] = None,
                  on_status: Optional[Callable[[str], None]] = None):
         self.model = model
-        self._primary = _Endpoint(model)
+        self._primary = endpoint_for(model)
         self.client = self._primary.client
         self._fallback_models = list(fallbacks or [])
-        self._fallbacks: Dict[str, _Endpoint] = {}
         self.on_status = on_status
         self._sleep = time.sleep
         self._clock = time.monotonic
@@ -148,10 +181,7 @@ class LLMClient:
         return up + [m for m in chain if self._down_until(m) > now]
 
     def _down_until(self, model: ModelConfig) -> float:
-        if model is self.model:
-            return self._primary.down_until
-        ep = self._fallbacks.get(model.name)
-        return ep.down_until if ep else 0.0
+        return endpoint_for(model).down_until
 
     def min_context_window(self) -> int:
         """Smallest window in the chain: a request this size fits whichever answers."""
@@ -206,9 +236,7 @@ class LLMClient:
         raise last_exc
 
     def _endpoint(self, model: ModelConfig) -> _Endpoint:
-        if model.name not in self._fallbacks:
-            self._fallbacks[model.name] = _Endpoint(model)
-        return self._fallbacks[model.name]
+        return endpoint_for(model)
 
     def _status(self, text: str) -> None:
         if self.on_status:

@@ -53,7 +53,8 @@ def _prompt_session(**kwargs) -> PromptSession:
 SLASH_COMMANDS = {
     "/help": "Show this help.",
     "/model": "Show or switch the active model: /model [name].",
-    "/models": "List all configured models.",
+    "/models": "List all configured models and pools.",
+    "/route": "Difficulty routing: /route [on|off] (shows the current state).",
     "/tools": "List available tools.",
     "/skills": "List available skills.",
     "/skill": "Invoke a skill now: /skill <name> [task].",
@@ -251,6 +252,8 @@ class Repl:
             if args:
                 ui.user_prefix()
                 self.agent.run(" ".join(args))
+        elif cmd == "/route":
+            self._cmd_route(args)
         elif cmd == "/todos":
             items = self.agent.todos.items
             ui.todos(items) if items else ui.info("No tasks yet.")
@@ -282,7 +285,7 @@ class Repl:
                 ui.error(str(exc))
                 return
             previous = self.agent.model
-            self.agent.use_model(mc)
+            self.agent.force_model(mc)  # beats routing for this one request
         try:
             ui.user_prefix()
             self.agent.run(command.expand(arguments))
@@ -376,13 +379,35 @@ class Repl:
             ui.info(f"Active model: {self.agent.model.name} ({self.agent.model.model})")
             return
         name = args[0]
-        try:
-            mc = self.config.get_model(name)
-        except ConfigError as exc:
-            ui.error(str(exc))
+        pool = None
+        if name not in self.config.models and self.config.pool_members(name):
+            mc, pool = self.config.resolve_target(name)
+        else:
+            try:
+                mc = self.config.get_model(name)
+            except ConfigError as exc:
+                ui.error(str(exc))
+                return
+        self.agent.switch_model(mc, pool)
+        where = f"pool '{pool}' → '{mc.name}'" if pool else f"'{name}'"
+        ui.success(f"Switched to {where} ({mc.model})."
+                   + (" Routing is off; /route on to re-enable."
+                      if self.config.routing_settings().configured else ""))
+
+    def _cmd_route(self, args) -> None:
+        settings = self.config.routing_settings()
+        if not settings.configured:
+            ui.info('Difficulty routing is not configured. Add e.g. "routing": '
+                    '{"enabled": true, "simple": "small", "hard": "large"} to your config.')
             return
-        self.agent.switch_model(mc)
-        ui.success(f"Switched to '{name}' ({mc.model}).")
+        if args and args[0] in ("on", "off"):
+            self.agent.set_routing(args[0] == "on")
+        targets = ", ".join(f"{lvl}→{settings.target(lvl)}" for lvl in ("simple", "medium", "hard")
+                            if settings.target(lvl))
+        state = "on" if self.agent.routing_on else "off (an explicit /model pinned it)"
+        seen = self.agent._route_level or "—"
+        ui.info(f"Routing {state}. {targets}. Highest level this session: {seen}. "
+                f"Current model: {self.agent.model.name}.")
 
     def _cmd_tools(self) -> None:
         table = Table(title="Available tools")

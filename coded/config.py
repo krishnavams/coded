@@ -190,6 +190,11 @@ class Config:
     # "pwsh", "powershell", "cmd", or a full path. Default: the best available
     # (shells.resolve_shell). Ignored on Linux/macOS, which always use sh.
     shell: Optional[str] = None
+    # Interchangeable models behind one name: {"big": ["large-a", "large-b"]}.
+    # Usable anywhere an alias is (see routing.py).
+    pools: Dict[str, Any] = field(default_factory=dict)
+    # Pick the model per request by how hard it looks (see routing.py).
+    routing: Dict[str, Any] = field(default_factory=dict)
     max_turns_override: Optional[int] = None  # --max-turns (beats per-model max_turns)
     stream: bool = True
     auto_compact: bool = True  # summarize old messages near the context limit
@@ -223,20 +228,72 @@ class Config:
                 "file, set OPENAI_API_KEY, or pass --model/--base-url/--api-key."
             )
         if name not in self.models:
+            picked = self.pick_from_pool(name)
+            if picked:
+                return self.models[picked]
             raise ConfigError(
                 f"Unknown model '{name}'. Known models: {', '.join(self.models) or '(none)'}"
+                + (f"; pools: {', '.join(self.pools)}" if self.pools else "")
             )
         return self.models[name]
 
     def model_for_role(self, role: str, default: ModelConfig) -> ModelConfig:
-        """The model configured for `role` (subagent, compact, review, …), else `default`."""
-        alias = self.model_roles.get(role)
-        if alias and alias in self.models:
-            return self.models[alias]
-        return default
+        """The model configured for `role` (subagent, compact, review, …), else `default`.
 
-    def fallbacks_for(self, model: ModelConfig) -> list:
-        return [self.models[a] for a in model.fallback if a in self.models and a != model.name]
+        A role may name a pool, in which case one member is picked (that is a
+        named point: each sub-agent or review phase gets its own member).
+        """
+        alias = self.model_roles.get(role)
+        if not alias:
+            return default
+        if alias in self.models:
+            return self.models[alias]
+        picked = self.pick_from_pool(alias)
+        return self.models[picked] if picked else default
+
+    def pool_members(self, name: Optional[str]) -> List[str]:
+        """Configured members of pool `name` that are real models ([] if not a pool)."""
+        if not name or name in self.models:
+            return []  # a model of the same name wins; model_warnings() flags it
+        members = self.pools.get(name)
+        if not isinstance(members, list):
+            return []
+        return [m for m in members if isinstance(m, str) and m in self.models]
+
+    def pick_from_pool(self, name: Optional[str]) -> Optional[str]:
+        """Choose a member of pool `name` (round-robin, skipping failed endpoints)."""
+        from coded.routing import healthy_members, pick_member
+
+        members = self.pool_members(name)
+        if not members:
+            return None
+        return pick_member(name, members, healthy_members(members, self.models))
+
+    def is_pool(self, name: Optional[str]) -> bool:
+        return bool(self.pool_members(name))
+
+    def resolve_target(self, name: Optional[str], default: Optional[ModelConfig] = None):
+        """(model, pool name) for an alias or pool name; (default, None) if unknown."""
+        if name and name in self.models:
+            return self.models[name], None
+        picked = self.pick_from_pool(name)
+        if picked:
+            return self.models[picked], name
+        return default, None
+
+    def routing_settings(self):
+        from coded.routing import RoutingSettings
+
+        return RoutingSettings.from_config(self.routing)
+
+    def fallbacks_for(self, model: ModelConfig, pool: Optional[str] = None) -> list:
+        """The model's fallbacks. Members of `pool` come first: a sibling is the
+        closest substitute for a model that just failed."""
+        names: List[str] = []
+        for alias in [*self.pool_members(pool), *model.fallback]:
+            if alias in self.models and alias != model.name and alias not in names:
+                names.append(alias)
+        return [self.models[a] for a in names]
 
     def model_warnings(self) -> list:
         """Config mistakes that would otherwise be skipped silently: unknown
@@ -253,10 +310,34 @@ class Config:
                 elif alias not in self.models:
                     out.append(f"Model '{mc.name}': fallback '{alias}' is not a configured "
                                f"model (ignored; known: {known}).")
+        for name, members in (self.pools or {}).items():
+            if name in self.models:
+                out.append(f"Pool '{name}' has the same name as a model; the model wins. "
+                           f"Rename the pool.")
+                continue
+            if not isinstance(members, list) or not members:
+                out.append(f"Pool '{name}' is empty (expected a list of model names).")
+                continue
+            for alias in members:
+                if not isinstance(alias, str) or alias not in self.models:
+                    out.append(f"Pool '{name}': '{alias}' is not a configured model "
+                               f"(ignored; known: {known}).")
+            windows = {self.models[a].context_window for a in self.pool_members(name)}
+            if len(windows) > 1:
+                out.append(f"Pool '{name}' mixes context windows ({', '.join(
+                    f'{w // 1000}k' for w in sorted(windows))}); coded sizes each request "
+                    f"for the member it picked.")
+        routing = self.routing or {}
+        for level in ("simple", "medium", "hard"):
+            alias = routing.get(level)
+            if alias and alias not in self.models and not self.pool_members(alias):
+                out.append(f"routing.{level} points to '{alias}', which is not a configured "
+                           f"model or pool (that level is ignored; known: {known}).")
         for role, alias in self.model_roles.items():
-            if alias not in self.models:
+            if alias not in self.models and not self.pool_members(alias):
                 out.append(f"model_roles: '{role}' points to '{alias}', which is not a "
-                           f"configured model (the main model is used; known: {known}).")
+                           f"configured model or pool (the main model is used; "
+                           f"known: {known}).")
         return out
 
     def add_model(self, mc: ModelConfig, make_default: bool = False) -> None:
@@ -308,7 +389,8 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
         cfg.web_search = data["web_search"]
     if data.get("permissions"):
         cfg.permissions = data["permissions"]
-    for key in ("hooks", "sandbox", "telemetry", "external_agents", "model_roles"):
+    for key in ("hooks", "sandbox", "telemetry", "external_agents", "model_roles",
+                "pools", "routing"):
         if data.get(key):
             merged = dict(getattr(cfg, key))
             merged.update(data[key])

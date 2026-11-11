@@ -136,8 +136,13 @@ def _apply_overrides(cfg: Config, args: argparse.Namespace) -> None:
         args.model = args.model or "cli"
 
 
-def _select_model(cfg: Config, name: Optional[str]) -> ModelConfig:
-    return cfg.get_model(name)
+def _select_model(cfg: Config, name: Optional[str]) -> tuple:
+    """(model, pool name). `name` may be a pool: one member is picked here."""
+    wanted = name or cfg.default_model
+    if wanted and wanted not in cfg.models and cfg.pool_members(wanted):
+        model, pool = cfg.resolve_target(wanted)
+        return model, pool
+    return cfg.get_model(name), None
 
 
 def _warn_sandbox(cfg: Config) -> None:
@@ -241,10 +246,23 @@ def _handle_models_command(argv: List[str]) -> int:
                 url = "(no base_url)"
             print(f"{marker} {name:<16} {mc.provider:<12} {mc.model:<32} {url}"
                   + (f"   [{'; '.join(extra)}]" if extra else ""))
+        for name, members in (cfg.pools or {}).items():
+            picked = cfg.pool_members(name)
+            print(f"  {name:<16} pool         {', '.join(picked) or '(no valid members)'}")
+        routing = cfg.routing_settings()
+        if routing.configured:
+            levels = ", ".join(f"{lvl}→{routing.target(lvl)}"
+                               for lvl in ("simple", "medium", "hard") if routing.target(lvl))
+            print(f"  routing          {'on ' if routing.enabled else 'off'}          {levels}")
         for w in cfg.model_warnings():
             ui.warn(w)
         return 0
-    return _check_models(cfg, args.check or list(cfg.models))
+    wanted = args.check or list(cfg.models)
+    expanded: List[str] = []
+    for name in wanted:  # checking a pool checks every member
+        members = cfg.pool_members(name)
+        expanded += members or [name]
+    return _check_models(cfg, list(dict.fromkeys(expanded)))
 
 
 def _check_models(cfg: Config, names: List[str]) -> int:
@@ -513,7 +531,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
 
     try:
-        model = _select_model(cfg, args.model)
+        model, model_pool = _select_model(cfg, args.model)
     except ConfigError as exc:
         ui.error(str(exc))
         ui.info("Tip: `coded config init` to create a config, or pass "
@@ -561,7 +579,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         stream=cfg.stream,
         verbose=True,
         tracer=tracer_from_config(cfg, args.trace),
+        pool=model_pool,
     )
+    if args.model:
+        agent.set_routing(False)  # an explicit -m pins the model
     if args.plan:
         agent.set_mode("plan", announce=False)
 

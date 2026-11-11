@@ -41,6 +41,7 @@ coded/
 ├── prompt_files.py     # prompt-file loading/overrides/profiles + `coded prompts` CLI
 ├── limits.py           # per-model limits scaled by context_window; result/step caps
 ├── repo_overview.py    # repository overview for large-context models
+├── routing.py          # difficulty classifier + model pools (round-robin, health)
 ├── builtin_prompts/    # system, coder, tools, security, skills, planner, reviewer, debugger (.md);
 │                       # compact/ and full/ hold per-profile variants
 ├── repl.py             # interactive REPL and slash commands
@@ -100,6 +101,7 @@ tests/
 ├── test_semantic_and_web.py  # index/search, web_fetch/search, image encoding
 ├── test_skills.py      # skill discovery, frontmatter, skill tool
 ├── test_tools.py       # tool + config unit tests
+├── test_routing.py     # difficulty routing, pools, endpoint reuse, per-model cost
 ├── test_model_chain.py # failover cooldown, sizing for a smaller fallback, stream retry,
 │                       # per-model timeout, unknown-alias warnings
 ├── test_big_models.py  # scaled limits, caps, overflow retry, max_turns, profiles, repo overview
@@ -156,6 +158,19 @@ config.example.json     # sample configuration
    (`auto_allowed` for sandboxed bash) → run → untrusted-output fencing/taint →
    nested `AGENTS.md` injection for file tools → `PostToolUse` hook. A final
    answer runs the `Stop` hook, which may push the agent to continue.
+9a. **Which model answers a request** (`Agent._select_turn_model`, once per
+   request, never per step): a forced model (`force_model`, a command's
+   `model:`) > plan mode's `plan` role > difficulty routing (`routing.py`) >
+   the main model. `switch_model()` pins the user's choice and turns routing
+   off (`set_routing(True)` restores). `_turn_model` is the non-plan choice, so
+   `exit_plan_mode` mid-turn returns to it. Routing refuses a target that lacks
+   tools/vision or whose window the history no longer fits — never summarize to
+   save money. Pools resolve only at named points (`Config.resolve_target`,
+   `pick_from_pool`, `model_for_role`), never inside `get_model` on a hot path;
+   `Agent._pool` makes the siblings fallbacks. Endpoints are process-wide
+   (`llm.endpoint_for`), so health and learned-unsupported-params survive a
+   switch. Cost accrues per answering model (`Session.record_usage(usage, model)`).
+
 9. **Models per role**: `Config.model_for_role()` picks the model for
    `subagent`, `compact`, `review`, `verdict`, `plan` (`Agent.set_mode` swaps to
    the `plan` model via `use_model()` and back to `_main_model` on exit;
