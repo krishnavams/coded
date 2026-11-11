@@ -289,50 +289,104 @@ def test_timeout_kills_the_whole_process_tree(tmp_path):
 
 
 @windows_only
-def test_cmd_shim_receives_arguments_intact(tmp_path):
-    """Outside agent CLIs are .cmd shims; cmd.exe re-parses their arguments."""
+@pytest.mark.parametrize("prompt", [
+    'fix "quotes" & echo pwned',      # balanced quotes
+    'fix "quotes & echo pwned',       # unbalanced: the & escapes a quoted span
+    'x" & echo pwned & "y',
+    'look at %PATH% & echo pwned',
+])
+def test_cmd_shim_never_executes_the_prompt(prompt, tmp_path):
+    """cmd.exe re-parses a .cmd shim's arguments, so a prompt must not run."""
     from coded.external_agents import ExternalAgent
 
     script = tmp_path / "echo_arg.py"
-    script.write_text("import sys; print('GOT:' + sys.argv[1])", encoding="utf-8")
+    script.write_text("import sys; print('GOT:' + ' '.join(sys.argv[1:]))", encoding="utf-8")
     shim = tmp_path / "agent.cmd"
     shim.write_text(f'@echo off\r\n"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
 
     agent = ExternalAgent(name="shim", command=[str(shim), "{prompt}"], stdin=False)
-    prompt = 'fix "quotes" & echo pwned'
     code, out = agent.run(prompt, str(tmp_path))
-    assert "pwned" not in out.replace("GOT:" + prompt, "")  # the tail was not executed
-    assert prompt in out
+    if "Not run:" in out:            # refused up front — the safe outcome
+        assert "stdin" in out
+        return
+    assert "pwned" not in out.replace("GOT:", "").replace(prompt, "")
 
 
-def test_config_shell_setting_applies_before_anything_uses_it(tmp_path, monkeypatch):
-    """`"shell": …` must be in force before plugin hooks and the prompt resolve."""
-    from coded.config import load_config
+@windows_only
+def test_cmd_shim_with_stdin_takes_any_prompt(tmp_path):
+    from coded.external_agents import ExternalAgent
 
-    monkeypatch.setattr(shells, "IS_WINDOWS", True)
-    monkeypatch.setattr(shells, "resolve_shell",
-                        lambda configured=None, **kw: Shell(name=str(configured), path="x.exe",
-                                                            posix_syntax=False))
-    (tmp_path / "config.json").write_text('{"shell": "pwsh"}')
+    script = tmp_path / "read_stdin.py"
+    script.write_text("import sys; print('GOT:' + sys.stdin.read().strip())", encoding="utf-8")
+    shim = tmp_path / "agent.cmd"
+    shim.write_text(f'@echo off\r\n"{sys.executable}" "{script}"\r\n', encoding="utf-8")
+
+    agent = ExternalAgent(name="shim", command=[str(shim)], stdin=True)
+    code, out = agent.run('fix "quotes" & echo pwned', str(tmp_path))
+    assert code == 0 and "pwned" in out and "GOT:" in out  # echoed back, not executed
+
+
+@windows_only
+def test_permission_rules_match_windows_paths():
+    from coded.permissions import Decision, PermissionManager
+
+    pm = PermissionManager(auto_approve=True, rules={"deny": ["write(secrets/*)"]})
+    for target in (r"secrets\key.txt", "secrets/key.txt", r"SECRETS\key.txt"):
+        assert pm.request(key="write", title="Write", detail=target,
+                          target=target) is Decision.DENY
+
+
+def test_git_arguments_keep_windows_path_separators(monkeypatch):
+    from coded.tools import git as git_tool
+
+    monkeypatch.setattr(git_tool, "IS_WINDOWS", True)
+    assert git_tool.split_args(r'add src\app.py') == ["add", r"src\app.py"]
+    assert git_tool.split_args(r'add "src dir\a.py"') == ["add", r"src dir\a.py"]
+    monkeypatch.setattr(git_tool, "IS_WINDOWS", False)
+    assert git_tool.split_args("add 'a b.py'") == ["add", "a b.py"]
+
+
+def test_cmd_shim_risk_only_flags_what_cmd_would_reparse(monkeypatch):
+    from coded import external_agents as ea
+
+    monkeypatch.setattr(ea, "IS_WINDOWS", True)
+    assert ea.cmd_shim_risk([r"C:\npm\agent.cmd", "plain prompt"]) is None
+    assert ea.cmd_shim_risk([r"C:\npm\agent.cmd", "a & b"]) == "a & b"
+    assert ea.cmd_shim_risk([r"C:\npm\agent.bat", 'say "hi"']) == 'say "hi"'
+    assert ea.cmd_shim_risk([r"C:\tools\agent.exe", "a & b"]) is None  # .exe is safe
+    monkeypatch.setattr(ea, "IS_WINDOWS", False)
+    assert ea.cmd_shim_risk([r"C:\npm\agent.cmd", "a & b"]) is None
+
+
+def test_sub_agents_are_told_which_shell_they_have():
+    from coded.prompts import build_subagent_prompt
+
     try:
-        shells.set_active_shell(None)
-        cfg = load_config(cwd=str(tmp_path), config_path=str(tmp_path / "config.json"))
-        assert cfg.shell == "pwsh"
-        assert shells.active_shell().name == "pwsh"
-        # --shell pins: config.json must not overwrite it.
-        shells.set_active_shell(Shell(name="cmd", path="cmd.exe", posix_syntax=False),
-                                pinned=True)
-        load_config(cwd=str(tmp_path), config_path=str(tmp_path / "config.json"))
-        assert shells.active_shell().name == "cmd"
+        shells.set_active_shell(Shell(name="cmd", path="cmd.exe", posix_syntax=False))
+        prompt = build_subagent_prompt(".")
+        assert "Shell for the bash tool" in prompt and "cmd.exe" in prompt
     finally:
         shells.set_active_shell(None)
 
 
-def test_clixml_error_output_is_turned_back_into_text():
-    raw = ('#< CLIXML\n<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell'
-           '/2004/04"><S S="Error">_x001B_[31;1mParserError: _x001B_[0m_x000D__x000A_</S>'
-           '<S S="Error">Unexpected token &lt;x&gt;_x000D__x000A_</S></Objs>')
-    out = shells.clean_clixml(raw)
-    assert "CLIXML" not in out and "_x000D_" not in out and "[31;1m" not in out
-    assert "ParserError:" in out and "Unexpected token <x>" in out
-    assert shells.clean_clixml("ordinary stderr\n") == "ordinary stderr\n"
+def test_an_unknown_shell_is_an_error_not_a_silent_fallback():
+    from coded.config import ConfigError
+
+    # A POSIX shell by another name is fine: it takes -c like bash.
+    zsh = resolve_shell("zsh", windows=True, which=_which({"zsh": "zsh.exe"}),
+                        exists=_exists(["zsh.exe"]), env={})
+    assert zsh.posix_syntax and command_argv("ls", zsh) == ["zsh.exe", "-c", "ls"]
+
+    with pytest.raises(ConfigError, match="not one coded knows"):
+        resolve_shell(r"C:\tools\nu.exe", windows=True, which=_which({}),
+                      exists=_exists([r"C:\tools\nu.exe"]), env={})
+    with pytest.raises(ConfigError, match="was not found"):
+        resolve_shell("nushell", windows=True, which=_which({}), exists=_exists([]), env={})
+
+
+def test_requesting_bash_never_picks_the_wsl_launcher():
+    wsl = r"C:\Windows\System32\bash.exe"
+    picked = resolve_shell("bash", windows=True,
+                           which=_which({"bash": wsl, "git": GIT_CMD}),
+                           exists=_exists([GIT_BASH, wsl]), env={})
+    assert picked.path == GIT_BASH

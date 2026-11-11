@@ -608,7 +608,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 0
         from coded.repl import Repl
 
-        Repl(agent, cfg, on_turn=autosave).run(initial=initial_prompt, images=images)
+        try:
+            repl = Repl(agent, cfg, on_turn=autosave)
+        except ConfigError as exc:
+            ui.error(str(exc))
+            return 1
+        repl.run(initial=initial_prompt, images=images)
         autosave()
         return 0
     finally:

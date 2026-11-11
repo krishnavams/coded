@@ -44,9 +44,9 @@ def _prompt_session(**kwargs) -> PromptSession:
         if type(exc).__name__ != "NoConsoleScreenBufferError":
             raise
         raise ConfigError(
-            "coded's interactive prompt needs a real console. Run it in Windows "
-            "Terminal, PowerShell or the Git Bash console (not a redirected or "
-            "embedded one), or use one-shot mode: coded -p \"…\"."
+            "coded's interactive prompt needs a Windows console. Run it in Windows "
+            "Terminal, PowerShell or the Command Prompt; in a Git Bash (mintty) "
+            "window use `winpty coded`. One-shot mode works anywhere: coded -p \"…\"."
         ) from exc
 
 

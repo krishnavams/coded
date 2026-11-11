@@ -61,6 +61,14 @@ class Shell:
 POSIX_SHELL = Shell(name="sh")
 
 _WHICH = Callable[[str], Optional[str]]
+# Shells driven with `-c` and POSIX syntax.
+_POSIX_NAMES = ("bash", "sh", "zsh", "dash", "ash", "ksh")
+
+
+def _shell_error(message: str) -> Exception:
+    from coded.config import ConfigError  # imported late: config imports this module
+
+    return ConfigError(message)
 _GIT_BASH_GUESSES = (
     r"C:\Program Files\Git\bin\bash.exe",
     r"C:\Program Files (x86)\Git\bin\bash.exe",
@@ -105,14 +113,25 @@ def resolve_shell(configured: Optional[str] = None, *, windows: bool = IS_WINDOW
     if choice:
         name = PureWindowsPath(choice).stem.lower() or choice.lower()
         is_path = "\\" in choice or "/" in choice or ":" in choice
-        path = choice if is_path else (which(choice) or "")
-        if not path and name == "bash":
+        if is_path:
+            path = choice
+        elif name == "bash":
+            # `which("bash")` is usually System32\bash.exe, the WSL launcher.
             path = _git_bash(which, exists) or ""
+        else:
+            path = which(choice) or which(name) or which(name + ".exe") or ""
         if not path:
-            path = which(name) or which(name + ".exe") or ""
-        if path:
-            known = name if name in ("bash", "pwsh", "powershell", "cmd") else "cmd"
-            return Shell(name=known, path=path, posix_syntax=known == "bash")
+            raise _shell_error(f"Shell '{choice}' was not found. Install it, or set one of "
+                               "bash (Git Bash), pwsh, powershell or cmd — or a full path.")
+        if name in _POSIX_NAMES:
+            return Shell(name="bash", path=path, posix_syntax=True)
+        if name in ("pwsh", "powershell"):
+            return Shell(name=name, path=path, posix_syntax=False)
+        if name == "cmd":
+            return Shell(name="cmd", path=path, posix_syntax=False)
+        raise _shell_error(
+            f"Shell '{choice}' is not one coded knows how to drive. Use bash (Git Bash), "
+            "pwsh, powershell or cmd, or a full path to one of them.")
     bash = _git_bash(which, exists)
     if bash:
         return Shell(name="bash", path=bash, posix_syntax=True)

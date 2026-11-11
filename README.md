@@ -622,8 +622,10 @@ Other Windows specifics, all automatic:
 - **Outside agent CLIs** installed as `.cmd`/`.bat` shims (claude, codex, …) are
   resolved to their real path.
 
-Needs Python 3.11.9+ or 3.12.4+ if you use outside agent CLIs installed as
-`.cmd` shims (those releases fixed argument escaping for them).
+Outside agent CLIs installed as `.cmd`/`.bat` shims are run with the prompt as
+an argument, which `cmd.exe` re-parses; coded refuses a prompt containing
+`" & | < > ^ %` for such an agent and tells you to set `"stdin": true` for it
+(or point `command` at the real `.exe`).
 
 ### Background processes
 

@@ -316,7 +316,10 @@ config.example.json     # sample configuration
   from a lossy read. Windows shells differ in more than quoting: PowerShell
   commands go through `-EncodedCommand` (and its CLIXML error stream is decoded
   back to text by `shells.clean_clixml`), cmd goes through subprocess's own
-  `shell=True`, and `prompts._environment` tells the model which syntax to write.
+  `shell=True`, and `prompts._environment` tells the model which syntax to write
+  (sub-agents included). An unknown `shell` name is a ConfigError, never a silent
+  fallback. Arguments passed to a `.bat`/`.cmd` shim are re-parsed by cmd, so
+  `external_agents.cmd_shim_risk` refuses prompts it could execute.
 - **Config is layered**: presets → user file → project file → CLI flags. Don't
   hard-code paths or keys; go through `config.py`. Dict-valued settings
   (`hooks`, `sandbox`, `telemetry`, `external_agents`, `model_roles`) merge
