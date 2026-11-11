@@ -155,9 +155,16 @@ def ensure_shell(configured: Optional[str]) -> Shell:
 
 
 def _powershell_script(command: str) -> str:
-    """Run the command, then exit with its status (PowerShell swallows it otherwise)."""
+    """Run the command, then exit with its status (PowerShell swallows it otherwise).
+
+    Windows PowerShell 5.1 reads a native command's output using the console's
+    ANSI code page, so UTF-8 output arrives as mojibake unless both encodings
+    are set first.
+    """
     return (
         "$ErrorActionPreference = 'Continue'\n"
+        "try { [Console]::OutputEncoding = [Text.Encoding]::UTF8; "
+        "$OutputEncoding = [Text.Encoding]::UTF8 } catch {}\n"
         f"{command}\n"
         "if ($LASTEXITCODE -ne $null) { exit $LASTEXITCODE }\n"
         "if (-not $?) { exit 1 }\n"
