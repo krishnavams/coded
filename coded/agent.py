@@ -31,7 +31,8 @@ _MAX_STOP_CONTINUATIONS = 3
 _FILE_TOOLS = ("read", "edit", "multi_edit", "write")
 # Tools whose path arguments .codedignore can refuse, and those whose result
 # gets the configured diagnostics after a successful change.
-_PATH_TOOLS = ("read", "write", "edit", "multi_edit", "notebook_edit", "move", "delete", "ls")
+_PATH_TOOLS = ("read", "write", "edit", "multi_edit", "notebook_edit", "move", "delete", "ls",
+               "view_image", "lsp")
 _CHECKED_TOOLS = ("write", "edit", "multi_edit", "apply_patch", "notebook_edit")
 
 
@@ -47,6 +48,15 @@ def _tool_paths(name: str, args: Dict[str, Any]) -> List[str]:
         return out
     return [str(args[k]) for k in ("path", "source", "destination")
             if isinstance(args.get(k), str) and args.get(k)]
+
+
+_TOOL_IMAGES = "[view_image] "
+
+
+def _is_tool_images(message: Dict[str, Any]) -> bool:
+    content = message.get("content")
+    return (isinstance(content, list) and bool(content) and isinstance(content[0], dict)
+            and str(content[0].get("text", "")).startswith(_TOOL_IMAGES))
 
 
 class Agent:
@@ -93,6 +103,7 @@ class Agent:
         self._forced: Optional[tuple] = None    # one turn on a given model (command model:)
         self.llm = self._make_llm(model)
         self._compact_llm: Optional[LLMClient] = None
+        self._tool_images: List[str] = []  # queued by view_image for this step
         for t in extra_tools or []:
             self.registry.register(t)
         self.skills: dict = {}
@@ -416,6 +427,12 @@ class Agent:
                                        "request less at once")
                 budget = max(0, budget - len(content))
                 self.session.add_tool_result(tc.id, content)
+            if self._tool_images:
+                # A tool message cannot carry an image: view_image's pictures follow
+                # the step's results as one user message.
+                paths, self._tool_images[:] = list(self._tool_images), []
+                self.session.add_user_multimodal(
+                    _TOOL_IMAGES + ", ".join(ui._rel(p, self.cwd) for p in paths), paths)
         else:
             if not self._emit("status", text=f"Reached max turns ({self.max_turns})."):
                 if self.verbose:
@@ -745,15 +762,23 @@ class Agent:
         thoughts: List[str] = []
         show_reasoning = self.config.show_reasoning
         live = Live(console=ui.console, refresh_per_second=12, transient=False)
-        status = ui.thinking()
+        # The task list stays docked at the bottom while the answer streams;
+        # the final frame drops it, so only the answer stays in the scrollback.
+        tasks = self.todos.items if self.verbose else []
+        dock = ui.todo_dock(tasks)
+        status = ui.thinking(tasks=tasks)
         status.start()
         started = False
 
-        def render():
+        def render(final: bool = False):
             md = Markdown("".join(buffer))
+            parts = [md]
             if show_reasoning and thoughts:
-                return Group(Text("".join(thoughts), style=f"{ui.MUTED} italic"), md)
-            return md
+                parts.insert(0, Text("".join(thoughts), style=f"{ui.MUTED} italic"))
+            if dock is not None and not final:
+                parts.append(Text(""))
+                parts.append(dock)
+            return parts[0] if len(parts) == 1 else Group(*parts)
 
         def begin():
             nonlocal started
@@ -781,7 +806,7 @@ class Agent:
             )
         finally:
             if started:
-                live.update(render())
+                live.update(render(final=True))
                 live.stop()
             else:
                 status.stop()
@@ -825,6 +850,7 @@ class Agent:
                 "set_mode": self.set_mode,
                 "limits": self.limits,
                 "model": self.model,
+                "attach_image": self._tool_images.append,
             },
         )
 
@@ -961,7 +987,9 @@ class Agent:
         """Halve every tool result since the last user message (and keep each under
         a quarter of the per-result cap) so the retry is guaranteed to be smaller."""
         msgs = self.session.messages
-        last_user = max((i for i, m in enumerate(msgs) if m.get("role") == "user"), default=0)
+        # view_image's pictures arrive as a user message mid-turn: not a boundary.
+        last_user = max((i for i, m in enumerate(msgs)
+                         if m.get("role") == "user" and not _is_tool_images(m)), default=0)
         for m in msgs[last_user:]:
             if m.get("role") == "tool" and isinstance(m.get("content"), str):
                 cap = max(2000, min(len(m["content"]) // 2, self.limits.tool_result_chars // 4))
@@ -1025,6 +1053,10 @@ class Agent:
             sub_system = build_subagent_prompt(sub_cwd, sub_model)
             sub_session = Session(system_prompt=sub_system)
             sub_registry = build_registry(include_task=False)
+            if self.config.lsp:
+                from coded.tools.lsp import LspTool
+
+                sub_registry.register(LspTool(self.config.lsp))
             sub_agent = Agent(
                 model=sub_model,
                 config=self.config,
@@ -1084,6 +1116,10 @@ def create_agent(
 
         settings = config.browser if isinstance(config.browser, dict) else {}
         registry.register(BrowserTool(str(settings.get("executable_path") or "")))
+    if config.lsp:
+        from coded.tools.lsp import LspTool
+
+        registry.register(LspTool(config.lsp))
 
     if checkpoints is None:
         checkpoints = CheckpointManager(cwd)

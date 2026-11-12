@@ -53,6 +53,7 @@ class PermissionManager:
         self.auto_approve = auto_approve
         self._prompt = prompt
         self._prompt_threadsafe = False
+        self._question: Optional[Callable[[str, List[str]], Optional[str]]] = None
         self._lock = threading.Lock()
         self._always: Set[str] = set()
         rules = rules or {}
@@ -85,6 +86,18 @@ class PermissionManager:
             return None
         with self._lock:
             return self._prompt(title, detail)
+
+    def set_question(self, fn: Optional[Callable[[str, List[str]], Optional[str]]]) -> None:
+        """The front-end's way to ask the user a free-form question (ask_user)."""
+        self._question = fn
+
+    def question(self, text: str, options: Optional[List[str]] = None) -> Optional[str]:
+        """Ask the user a question; their answer, or None when nobody can answer."""
+        fn = getattr(self, "_question", None)
+        if fn is None:
+            return None
+        with self._lock:
+            return fn(text, list(options or []))
 
     def allow_always(self, key: str) -> None:
         self._always.add(key)

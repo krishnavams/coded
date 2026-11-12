@@ -5,6 +5,7 @@ from __future__ import annotations
 from coded.tools.base import Tool, ToolContext, ToolRegistry, ToolResult
 from coded.tools.files import DeleteTool, EditTool, LsTool, MoveTool, ReadTool, WriteTool
 from coded.tools.git import GitTool
+from coded.tools.interact import AskUserTool, ViewImageTool
 from coded.tools.github import GitHubTool
 from coded.tools.memory import MemoryTool
 from coded.tools.notebook import NotebookEditTool
@@ -14,7 +15,7 @@ from coded.tools.search import GlobTool, GrepTool
 from coded.tools.semantic_search import SemanticSearchTool
 from coded.tools.shell import BashOutputTool, BashTool, KillShellTool
 from coded.tools.task import TaskTool
-from coded.tools.todo import ExitPlanModeTool, TodoWriteTool
+from coded.tools.todo import EnterPlanModeTool, ExitPlanModeTool, TodoWriteTool
 from coded.tools.web import WebFetchTool, WebSearchTool
 
 __all__ = [
@@ -39,7 +40,7 @@ def build_registry(include_task: bool = True) -> ToolRegistry:
         GlobTool(), GrepTool(), SemanticSearchTool(), RepoMapTool(),
         BashTool(), BashOutputTool(), KillShellTool(),
         GitTool(), GitHubTool(), WebSearchTool(), WebFetchTool(),
-        TodoWriteTool(),
+        TodoWriteTool(), ViewImageTool(),
     ]
     for tool in tools:
         reg.register(tool)
@@ -47,4 +48,6 @@ def build_registry(include_task: bool = True) -> ToolRegistry:
         reg.register(MemoryTool())  # main agent only: a sub-agent has no session to recall
         reg.register(TaskTool())
         reg.register(ExitPlanModeTool())
+        reg.register(EnterPlanModeTool())
+        reg.register(AskUserTool())  # main agent only: a sub-agent reports back instead
     return reg

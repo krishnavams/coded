@@ -74,6 +74,7 @@ coded/
 ├── mentions.py         # `@path` mentions: expansion (Agent.run) + the REPL path completer
 ├── documents.py        # PDF/DOCX/XLSX/PPTX → text sections for the read tool
 ├── mcp_client.py       # optional MCP stdio client (background asyncio loop)
+├── lsp.py              # LSP client: one language server per language, shared per process
 ├── hooks.py            # HookRunner: PreToolUse/PostToolUse/UserPromptSubmit/SessionStart/Stop
 ├── sandbox.py          # bwrap / sandbox-exec wrapping for bash (no Windows backend)
 ├── shells.py           # shell resolution (Git Bash/PowerShell/cmd), tree kill, UTF-8, rmtree
@@ -89,6 +90,7 @@ coded/
 ├── plugins.py          # skill + plugin install, registry (installed.json), marketplaces,
 │                       # plugin contributions merged into skills/commands/config
 ├── manage_cli.py       # `coded skill …` and `coded plugin …` subcommands
+├── agent_import.py     # `coded import`: other agents' MCP servers + Claude Code commands
 └── tools/
     ├── __init__.py     # build_registry(): assembles the tool suite
     ├── base.py         # Tool, ToolResult, ToolContext, ToolRegistry
@@ -96,7 +98,9 @@ coded/
     ├── patch.py        # multi_edit, apply_patch (Codex patch format)
     ├── notebook.py     # notebook_edit (replace/insert/delete a cell; read renders .ipynb)
     ├── browser.py      # browser (Playwright; opt-in "browser"): render, steps, console, screenshot
-    ├── todo.py         # todo_write (TodoStore), exit_plan_mode
+    ├── todo.py         # todo_write (TodoStore), enter_plan_mode, exit_plan_mode
+    ├── interact.py     # ask_user (PermissionManager.question), view_image (vision)
+    ├── lsp.py          # lsp (opt-in "lsp"): definition/references/hover/symbols/diagnostics
     ├── external_agent.py  # external_agent (delegate to an outside CLI agent)
     ├── search.py       # glob, grep
     ├── repo_map.py     # repo_map (ranked outline of the codebase)
@@ -108,7 +112,7 @@ coded/
     ├── web.py          # web_search, web_fetch
     ├── task.py         # task (sub-agent delegation)
     ├── skill.py        # skill (loads a SKILL.md body into context)
-    └── mcp_tool.py     # wraps an MCP server tool as a coded Tool
+    └── mcp_tool.py     # wraps an MCP server tool; list_mcp_resources, read_mcp_resource
 tests/
 ├── conftest.py         # FakeServer + EmbeddingsServer + RouteServer (all offline)
 ├── test_agent_e2e.py   # full agent loop (tool call, streaming, permission)
@@ -135,6 +139,9 @@ tests/
 ├── test_big_models.py  # scaled limits, caps, overflow retry, max_turns, profiles, repo overview
 ├── test_windows.py     # shell resolution, line endings, UTF-8, shims (runs everywhere)
 ├── test_prompts.py     # prompt files: placement, override order, empty=remove, CLI
+├── test_agent_import.py  # `coded import`: each agent's format, skips, secrets, ${VAR}, commands
+├── test_new_tools.py  # ask_user, view_image, enter_plan_mode, MCP resources
+├── test_lsp.py        # the lsp tool against tests/fake_lsp.py (a scripted server)
 ├── test_plugins.py     # sources, zip safety, skill/plugin install/update/remove,
 │                       # Claude-format plugins, marketplaces, CLI
 └── test_modern_features.py  # todo/plan, hooks, sandbox, AGENTS.md, patch, parallel,
@@ -248,6 +255,31 @@ config.example.json     # sample configuration
 - **Shared agent state reaches tools via `ToolContext.extra`**: `todos`,
   `shells`, `get_mode`/`set_mode`. Sub-agents share the parent's
   `PermissionManager`, tracer and shells, but not todos/skills/Stop hooks.
+- **Asking the user** (`ask_user`): `PermissionManager.question(text, options)`
+  goes to the front-end's `set_question` callback (REPL: `ui.question_panel`
+  + `TypeAhead.ask()`; TUI: `QuestionModal`); None (no front-end: `--print`,
+  ACP) tells the model to state an assumption and go on. `ui.pick_answer`
+  maps a typed number to the choice. Main agent only, like `enter_plan_mode`,
+  which refuses when `permissions.interactive` is false: nobody could approve
+  the plan, so a `--print`/CI run would stay read-only.
+- **`view_image`** queues a path through `ctx.extra["attach_image"]`; after the
+  step's tool results the agent adds one user message with the images (a
+  `tool` message cannot carry one). `Config.disabled_tools_for` drops it for a
+  model without `supports_vision`, so it is neither offered nor runnable.
+  That message is not a turn boundary: code that looks for "the last user
+  message" must skip it (`agent._is_tool_images`).
+  MCP `list_mcp_resources`/`read_mcp_resource` are built only when a server
+  reported resources at start (`MCPManager.resource_servers`).
+- **Code intelligence** (`lsp.py`, the `lsp` tool, opt-in `config.lsp`, like
+  `browser`, so the default request is unchanged): plain JSON-RPC over the
+  server's stdio, no dependency. `get_manager(root, settings)` is process-wide
+  (sub-agents get the tool and share servers); `stop_all` runs at exit. Files
+  are re-sent when their mtime or size changes (`LSPClient.sync`), so answers
+  match disk. Source lines of `.codedignore`d files are never printed. Server requests (`workspace/configuration`, …) are always answered or
+  some servers wait forever. Positions are named by `line` + `symbol`; LSP
+  columns are UTF-16 (`utf16_col`/`py_col`). A missing server or unknown
+  extension is a `ToolResult.error` pointing at grep/repo_map. Tests run
+  against `tests/fake_lsp.py`, never a real server (one optional test skips).
 - **Prompts from worker threads**: `PermissionManager.set_prompt(fn,
   threadsafe=True)` (TUI, ACP) allows tools that may prompt to run in parallel;
   prompts are serialized by a lock either way. `ask()` is a raw yes/no question
@@ -357,7 +389,8 @@ config.example.json     # sample configuration
   receives the full tool result (truncation is display-only). Colors come from
   the palette constants (`ACCENT`, `MUTED`, …); `ui.thinking()` is the spinner
   used by the streaming path. The REPL (`repl.py`) adds a prompt_toolkit
-  `bottom_toolbar` status bar, `AutoSuggestFromHistory`, and a shared `_PT_STYLE`.
+  `bottom_toolbar` status bar, `AutoSuggestFromHistory` (Tab or → accepts it
+  when no completion menu is open), and a shared `_PT_STYLE`.
 - **Agent display is decoupled via events**: `Agent.on_event` (set by the TUI)
   receives structured events — `assistant_start/_delta/_end`, `reasoning_delta`,
   `tool_call`/`tool_result`/`diff` (with the tool-call `id`), `todos`, `status`.
@@ -465,6 +498,22 @@ config.example.json     # sample configuration
   (sub-agents included). An unknown `shell` name is a ConfigError, never a silent
   fallback. Arguments passed to a `.bat`/`.cmd` shim are re-parsed by cmd, so
   `external_agents.cmd_shim_risk` refuses prompts it could execute.
+- **`coded import`** (`agent_import.py`): reads the MCP servers other agents
+  configured (Claude Code, Claude Desktop, Cursor, VS Code, Gemini CLI, Codex
+  TOML, Windsurf; paths in `candidate_files`, `home`/`platform`/`env`
+  injectable), converts them with `convert`, prints every command verbatim and
+  writes one config file's raw JSON through `config_wizard.read_file`/
+  `write_file`, after a confirmation (non-TTY needs `--yes`). It never
+  overwrites a name the file has, skips URL servers (stdio only), refuses
+  literal `env` values for the project file and tightens the user file to 600
+  when it adds one. `mcp_client.server_params` expands `${VAR}`/`${VAR:-d}`
+  in command, args and env, the form other agents' configs use for secrets;
+  an unset one is named in `MCPManager.errors` (`unset_refs`).
+  It also copies Claude Code commands (`discover_commands`: `~/.claude/commands`
+  → the user commands dir, `./.claude/commands` → `./.coded/commands`, or all
+  into the project with `--project`) byte for byte, except a frontmatter
+  `model:` that is not a coded model, which is dropped (coded refuses an unknown
+  one). Built-in slash-command names and existing files are skipped.
 - **Interactive config** (`config_wizard.py`, `coded config setup`, REPL
   `/setup`): edits **one config file's raw JSON**, never a merged `Config` —
   otherwise another layer's models and plugin contributions would be written
@@ -474,7 +523,9 @@ config.example.json     # sample configuration
   `Prompter`, so the flow is testable without a TTY.
 - **A long turn must stay legible and interruptible**: task progress goes
   through `ui.todo_progress`/`todo_bar`/`todo_title`/`current_todo` (panel, REPL
-  toolbar and TUI status line all use them), and input typed mid-turn is queued
+  toolbar and TUI status line all use them), and in the REPL `ui.todo_dock` pins the
+  unfinished list under the spinner and the streaming view (transient, so the
+  final answer frame drops it), and input typed mid-turn is queued
   by `typeahead.TypeAhead` (REPL) or `CodedTUI._queued` and run as the next
   message. The type-ahead reader owns stdin during a turn, so a prompt that
   needs an answer asks it via `TypeAhead.ask()` instead of reading stdin itself.
@@ -540,7 +591,7 @@ one (e.g. `ruff`, `black`), record the commands here.
 
 - **argparse + free-form prompt**: the top-level parser has a `nargs="*"`
   positional `prompt`, which conflicts with argparse subparsers. Subcommands
-  (`config`, `models`, `agents`, `doctor`, `index`, `review`, `sessions`, `commit`, `skill`,
+  (`config`, `models`, `agents`, `doctor`, `index`, `review`, `sessions`, `commit`, `import`, `skill`,
   `plugin`, `prompts`, `acp`, `mcp-serve`) are therefore dispatched manually by the first token in
   `cli.main()` — keep new subcommands on that path, not on `add_subparsers`.
 - **ACP / MCP server modes keep stdout clean** (`ui.set_quiet(True)`): stdout

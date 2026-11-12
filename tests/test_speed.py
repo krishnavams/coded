@@ -99,8 +99,11 @@ def test_disabled_tools_load_from_config_files(tmp_path, monkeypatch):
 
 
 def test_nothing_changes_without_the_setting(tmp_path):
-    _, agent = _agent(tmp_path)
+    # A vision model gets every tool; one that cannot see loses only view_image.
+    _, agent = _agent(tmp_path, supports_vision=True)
     assert agent._tool_schema() == agent.registry.openai_schema()
+    _, blind = _agent(tmp_path)
+    assert blind._tool_schema() == blind.registry.openai_schema(exclude=["view_image"])
 
 
 # -- compact tool definitions -----------------------------------------------------

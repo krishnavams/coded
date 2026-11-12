@@ -9,7 +9,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import WordCompleter, merge_completers
 from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.filters import Condition, has_completions
+from prompt_toolkit.filters import Condition, has_completions, vi_navigation_mode
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
@@ -160,6 +160,7 @@ KEYS = {
     "Ctrl+G": "Write the message in $EDITOR.",
     "Ctrl+V": "Attach the image on the clipboard.",
     "Ctrl+R": "Search earlier messages.",
+    "Tab / →": "Accept the grey suggestion from earlier messages (Tab completes from the menu when it is open).",
 }
 
 
@@ -225,6 +226,21 @@ class Repl:
             self.agent.cycle_mode()
             event.app.invalidate()  # redraw the status bar
 
+        @Condition
+        def _suggestion_shown() -> bool:
+            from prompt_toolkit.application.current import get_app
+
+            buf = get_app().current_buffer
+            return bool(buf.suggestion and buf.suggestion.text
+                        and buf.document.is_cursor_at_the_end)
+
+        # Tab takes the grey suggestion from history (Right arrow does too);
+        # with the completion menu open, Tab still completes from the menu.
+        @bindings.add("tab", filter=_suggestion_shown & ~has_completions & ~vi_navigation_mode)
+        def _accept_suggestion(event) -> None:
+            buf = event.current_buffer
+            buf.insert_text(buf.suggestion.text)
+
         # A new line without sending: Alt+Enter, Ctrl+J, or `\` then Enter.
         @bindings.add("escape", "enter")
         @bindings.add("c-j")
@@ -269,6 +285,7 @@ class Repl:
         self._boxed = _box_input(self.prompt, self._bottom_toolbar)
         # Wire the permission prompt into the manager.
         self.agent.permissions.set_prompt(self._permission_prompt)
+        self.agent.permissions.set_question(self._question_prompt)
 
     # -- status bar ---------------------------------------------------------
     def _bottom_toolbar(self):
@@ -334,6 +351,19 @@ class Repl:
         except (EOFError, KeyboardInterrupt):
             return "no"
         return answer or "no"
+
+    def _question_prompt(self, question: str, options: list) -> Optional[str]:
+        """ask_user: show the question, return the answer ('' = skipped)."""
+        self.notifier.waiting("Question")
+        ui.console.print()
+        ui.question_panel(question, options)
+        if self._typeahead is not None and self._typeahead.available:
+            return ui.pick_answer(self._typeahead.ask() or "", options)
+        try:
+            answer = self.prompt.prompt(HTML("  <b>Answer:</b> "), bottom_toolbar=None)
+        except (EOFError, KeyboardInterrupt):
+            return ""
+        return ui.pick_answer(answer, options)
 
     def _grab_clipboard(self) -> Optional[str]:
         """Attach the clipboard's image to the next message; None if there is none."""

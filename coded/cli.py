@@ -40,6 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
                "`coded skill install|list|remove|update|info`, `coded prompts list|show|init`, "
                "`coded plugin install|list|remove|update|enable|disable|info|search|marketplace`, "
                "`coded review`, `coded commit`, `coded index`, `coded sessions`, `coded doctor`, "
+               "`coded import` (MCP servers from other agents), "
                "`coded acp` (Agent Client Protocol server), `coded mcp-serve` (MCP server).",
     )
     p.add_argument("prompt", nargs="*", help="Initial request. If omitted, starts the interactive REPL.")
@@ -697,6 +698,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         from coded.manage_cli import plugin_main
 
         return plugin_main(argv[1:])
+    if argv and argv[0] == "import":
+        from coded.agent_import import main as import_main
+
+        return import_main(argv[1:])
     if argv and argv[0] == "prompts":
         from coded.prompt_files import prompts_main
 

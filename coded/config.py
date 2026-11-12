@@ -264,6 +264,9 @@ class Config:
     # `pip install playwright && playwright install chromium`. true, or
     # {"executable_path": "/usr/bin/chromium"} to use an installed browser.
     browser: Any = False
+    # Code intelligence (the lsp tool): off unless enabled. true uses language
+    # servers found on PATH; a dict sets commands per language (see coded/lsp.py).
+    lsp: Any = False
     # REPL input: "emacs" (default) or "vi" key bindings.
     editing_mode: str = "emacs"
     plugins: list = field(default_factory=list)  # names of enabled plugins merged in
@@ -377,6 +380,8 @@ class Config:
         out = [str(x) for x in (self.disabled_tools or [])]
         if model is not None:
             out += [str(x) for x in (getattr(model, "disabled_tools", None) or [])]
+            if not getattr(model, "supports_vision", False):
+                out.append("view_image")  # a model that cannot see gains nothing from it
         return out
 
     def model_warnings(self) -> list:
@@ -485,7 +490,7 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
                 "show_reasoning", "parallel_tools", "injection_guard",
                 "detect_external_agents", "shell", "disabled_tools", "add_dirs",
                 "editing_mode", "max_cost", "notify", "notify_after", "accept_edits",
-                "diagnostics", "output_style", "update_check", "browser"):
+                "diagnostics", "output_style", "update_check", "browser", "lsp"):
         if key in data:
             setattr(cfg, key, data[key])
 

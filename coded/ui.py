@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
+from typing import Any, Optional
 
 from rich.box import ROUNDED
 from rich.console import Console, Group
@@ -59,10 +59,23 @@ class _NoStatus:
         return False
 
 
-def thinking(text: str = "Thinking"):
-    """A spinner shown while waiting on the model. No-op in quiet mode."""
+def thinking(text: str = "Thinking", tasks: Optional[list] = None):
+    """A spinner shown while waiting on the model. No-op in quiet mode.
+
+    With unfinished `tasks`, the task list is docked under the spinner, so it
+    stays at the bottom of the screen (next to the input) instead of
+    scrolling away with tool output."""
     if _quiet:
         return _NoStatus()
+    dock = todo_dock(tasks or [])
+    if dock is not None:
+        from rich.live import Live
+        from rich.spinner import Spinner
+
+        spinner = Spinner("dots", text=Text.from_markup(
+            f"[{ACCENT}]{text}…[/] [{MUTED}](Ctrl-C to interrupt)[/]"), style=ACCENT)
+        return Live(Group(spinner, dock), console=console, refresh_per_second=12,
+                    transient=True)
     return console.status(f"[{ACCENT}]{text}…[/] [{MUTED}](Ctrl-C to interrupt)[/]",
                           spinner="dots", spinner_style=ACCENT)
 
@@ -178,6 +191,10 @@ _TOOL_TITLES = {
     "repo_map": ("Map repo", None),
     "memory": ("Memory", None),
     "todo_write": ("Update tasks", None), "exit_plan_mode": ("Plan ready", None),
+    "enter_plan_mode": ("Plan mode", None), "ask_user": ("Question", "question"),
+    "view_image": ("View image", "path"),
+    "list_mcp_resources": ("MCP resources", "server"),
+    "read_mcp_resource": ("Read resource", "uri"),
 }
 _PATH_KEYS = {"path", "source", "destination", "cwd"}
 
@@ -195,6 +212,14 @@ def tool_title(name: str, args: dict, cwd: str = "") -> tuple:
         if val is None or val == "":
             return label, ""
         return label, _rel(val, cwd) if key in _PATH_KEYS else _one_line(val)
+    if name == "lsp":
+        op = str(args.get("operation") or "")
+        what = args.get("symbol") or args.get("query") or ""
+        where = _rel(args["path"], cwd) if args.get("path") else ""
+        if where and args.get("line"):
+            where += f":{args['line']}"
+        rest = " in ".join(x for x in (str(what), where) if x)
+        return "LSP", _one_line(f"{op} · {rest}" if rest else op, 120)
     if name == "move":
         return "Move", f"{_rel(args.get('source', ''), cwd)} → {_rel(args.get('destination', ''), cwd)}"
     label = name if name.startswith("mcp") else name[:1].upper() + name[1:]
@@ -241,6 +266,10 @@ def tool_result_text(content: str, is_error: bool = False, name: str = "",
     lines = content.splitlines()
     if name == "read" and not is_error and len(lines) > 1:
         lines = [f"Read {len(lines)} lines"]
+    elif name == "todo_write" and not is_error and lines:
+        # The list itself is already on screen (panel / dock); keep the
+        # headline and any nudge the tool gave the model.
+        lines = [lines[0].rstrip(":")] + [ln for ln in lines[1:] if ln.startswith("Note:")]
     shown = lines[:max_lines]
     text = "\n".join(shown)
     if len(text) > _MAX_RESULT_CHARS:
@@ -276,6 +305,28 @@ def error(msg: str) -> None:
 
 def success(msg: str) -> None:
     _log().print(f"[{ACCENT2}]✓[/] {msg}")
+
+
+def question_panel(question: str, options: list) -> None:
+    """The agent's question to the user (ask_user), with numbered choices."""
+    body = Text(question, style="bold")
+    for i, opt in enumerate(options, 1):
+        body.append(f"\n  {i}. ", style=ACCENT)
+        body.append(opt)
+    hint = ("a number or your own answer" if options else "your answer") + " · Enter to skip"
+    console.print(Panel(body, title=f"[{ACCENT}]? Question[/]", title_align="left",
+                        subtitle=f"[{MUTED}]{hint}[/]", subtitle_align="left",
+                        border_style=ACCENT, box=ROUNDED, expand=True))
+
+
+def pick_answer(answer: Optional[str], options: list) -> Optional[str]:
+    """A typed answer to a question: a choice's number becomes the choice."""
+    if answer is None:
+        return None
+    answer = answer.strip()
+    if answer.isdigit() and 1 <= int(answer) <= len(options):
+        return options[int(answer) - 1]
+    return answer
 
 
 def permission_panel(title: str, detail: str) -> None:
@@ -370,6 +421,38 @@ def current_todo(items: list) -> str:
         if item.get("status") == "in_progress":
             return item.get("content", "")
     return ""
+
+
+_DOCK_ITEMS = 6
+
+
+def todo_dock(items: list, max_items: int = _DOCK_ITEMS) -> Optional[Text]:
+    """A compact task list for the bottom of the screen during a turn.
+
+    None when there is nothing unfinished. Long lists show a window around
+    the current task, with a count of what is hidden."""
+    done, total, _ = todo_progress(items)
+    if not total or done == total:
+        return None
+    current = next((n for n, i in enumerate(items) if i.get("status") == "in_progress"),
+                   next((n for n, i in enumerate(items) if i.get("status") != "completed"), 0))
+    start = max(0, min(current - 1, total - max_items))
+    shown = items[start:start + max_items]
+    t = Text()
+    t.append(f"  {todo_title(items)}", style=ACCENT_SOFT)
+    if start:
+        t.append(f"\n    … {start} more above", style=MUTED)
+    for item in shown:
+        status = item.get("status", "pending")
+        mark, color = _TODO_MARK.get(status, ("☐", MUTED))
+        style = f"{MUTED} strike" if status == "completed" else (
+            "bold" if status == "in_progress" else "")
+        t.append(f"\n    {mark} ", style=color)
+        t.append(_one_line(item.get("content", ""), 90), style=style)
+    rest = total - start - len(shown)
+    if rest > 0:
+        t.append(f"\n    … {rest} more", style=MUTED)
+    return t
 
 
 def todos(items: list) -> None:

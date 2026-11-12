@@ -113,6 +113,41 @@ class PermissionModal(ModalScreen[str]):
             self.dismiss(mapping[event.key])
 
 
+class QuestionModal(ModalScreen[str]):
+    """ask_user: the agent's question, with its choices and a free answer."""
+
+    def __init__(self, question: str, options: list):
+        super().__init__()
+        self._question = question
+        self._options = list(options)
+
+    def compose(self) -> ComposeResult:
+        from textual.containers import Vertical
+        with Vertical(id="perm-box"):
+            yield Label(f"[b {ui.ACCENT}]? Question[/]", id="perm-title")
+            yield Static(Text(self._question), id="perm-detail")
+            if self._options:
+                with Vertical(id="question-options"):
+                    for i, opt in enumerate(self._options):
+                        yield Button(f"{i + 1}. {opt}", id=f"opt-{i}")
+            yield Input(placeholder="Your own answer (Enter to send, Esc to skip)",
+                        id="question-input")
+
+    def on_mount(self) -> None:
+        self.query_one("#question-input", Input).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(self._options[int(event.button.id.split("-", 1)[1])])
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(ui.pick_answer(event.value, self._options) or "")
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            event.stop()
+            self.dismiss("")
+
+
 # ---------------------------------------------------------------------------
 # The app
 # ---------------------------------------------------------------------------
@@ -143,6 +178,9 @@ class CodedTUI(App):
     #statusline {{ height: 1; padding: 0 2; color: {ui.MUTED}; }}
     #perm-box {{ background: #181426; border: round {ui.ACCENT}; padding: 1 2; width: 76; height: auto; }}
     #perm-buttons {{ height: auto; align: center middle; padding-top: 1; }}
+    #question-options {{ height: auto; padding-top: 1; }}
+    #question-options Button {{ width: 100%; margin: 0 0 0 0; }}
+    #question-input {{ margin-top: 1; }}
     PermissionModal {{ align: center middle; background: #100d1a 60%; }}
     """
 
@@ -162,6 +200,7 @@ class CodedTUI(App):
         self._on_turn = on_turn
         self.agent.on_event = self._agent_event  # called from the worker thread
         self.agent.permissions.set_prompt(self._permission_prompt, threadsafe=True)
+        self.agent.permissions.set_question(self._question_prompt)
         self._assistant_md: Optional[Markdown] = None
         self._assistant_buf = ""
         self._thought: Optional[Static] = None
@@ -454,6 +493,21 @@ class CodedTUI(App):
                 result["v"] = choice or "no"
                 done.set()
             self.push_screen(PermissionModal(title, detail), cb)
+
+        self.call_from_thread(ask)
+        done.wait()
+        return result["v"]
+
+    def _question_prompt(self, question: str, options: list) -> str:
+        done = threading.Event()
+        result = {"v": ""}
+        self.notifier.waiting("Question")
+
+        def ask():
+            def cb(answer):
+                result["v"] = answer or ""
+                done.set()
+            self.push_screen(QuestionModal(question, options), cb)
 
         self.call_from_thread(ask)
         done.wait()

@@ -25,8 +25,12 @@ runtime.
 - **Full tool suite** — `read`, `write`, `edit`, `multi_edit`, `apply_patch`,
   `ls`, `move`, `delete`, `glob`, `grep`, `semantic_search`, `bash` (+
   `bash_output` / `kill_shell` for background jobs), `git`, `github`,
-  `web_search`, `web_fetch`, `todo_write`, `exit_plan_mode`, `skill`, `task`
-  (sub-agents) and `external_agent` (outside agents).
+  `web_search`, `web_fetch`, `todo_write`, `enter_plan_mode`/`exit_plan_mode`,
+  `ask_user` (a question with choices), `view_image` (vision models),
+  `skill`, `task` (sub-agents) and `external_agent` (outside agents), plus
+  `list_mcp_resources`/`read_mcp_resource` when an MCP server offers resources,
+  and `lsp` (definitions, references, types, diagnostics from language servers;
+  `"lsp": true`).
 - **Task list & plan mode** — the agent tracks multi-step work with
   `todo_write`; `--plan` / `/plan` keeps it read-only until you approve a plan.
 - **Hooks** — run your own commands on `PreToolUse`, `PostToolUse`,
@@ -646,6 +650,49 @@ and no extra dependency, so it is an *outline*, not a parse tree. It lists
 definitions only, never code, and everything is bounded: files scanned, bytes
 per file, wall time, output. Binary, minified and generated files are skipped.
 
+### Code intelligence (language servers)
+
+With `"lsp": true` in the config the agent gets an `lsp` tool backed by the
+language servers you have installed — the same engine your editor uses — and
+can ask for a symbol's **definition**, **type definition**, **implementations**,
+all its **references**, its **hover** (type, signature, docs), a file's
+**outline**, a **project-wide symbol search**, and a file's **diagnostics**
+(type errors and warnings) after an edit. It names the symbol and its line;
+coded works out the column.
+
+Servers are found on PATH and started on first use, one per language, with
+the project as the workspace:
+
+| Language | Servers tried, in order |
+|---|---|
+| Python | `pyright-langserver`, `basedpyright-langserver`, `pylsp`, `jedi-language-server` |
+| TypeScript / JavaScript | `typescript-language-server` |
+| Go · Rust · C/C++ | `gopls` · `rust-analyzer` · `clangd` |
+| Java · Ruby · PHP · Lua · C# | `jdtls` · `ruby-lsp`/`solargraph` · `intelephense` · `lua-language-server` · `csharp-ls` |
+
+Pick a server, add a language or turn one off:
+
+```json
+{
+  "lsp": {
+    "python": ["pylsp"],
+    "zig": {"command": ["zls"], "extensions": [".zig"]},
+    "rust": false,
+    "timeout": 60
+  }
+}
+```
+
+`coded doctor` shows which servers it finds. Without a server for a file, the
+tool says so and the agent falls back to `grep`/`repo_map`.
+
+Two things to know. A language server is a program that analyses the project,
+and some run the project's own build steps while doing so (rust-analyzer runs
+build scripts and macros, gopls runs `go` commands), outside coded's sandbox
+and without a permission prompt — turn `lsp` on for code you trust. And
+results from files excluded by `.codedignore` show the location only, never
+the file's text.
+
 ### Project memory
 
 ```
@@ -859,6 +906,37 @@ Add servers under `mcp_servers` in config (install extras with
 Their tools appear to the agent as `mcp__<server>__<tool>` and go through the
 same permission gate.
 
+When a server offers resources (files, docs, records), the agent also gets
+`list_mcp_resources` and `read_mcp_resource`; without any, those two tools are
+not sent.
+
+Values like `"${GITHUB_TOKEN}"` (or `"${VAR:-default}"`) in `command`, `args`
+and `env` are filled in from your environment when coded starts. A reference
+to a variable that is not set is reported by name at start (and used as empty).
+
+**Reuse the servers you set up for other agents.** `coded import` looks for MCP
+servers configured for Claude Code (`~/.claude.json`, the project's `.mcp.json`),
+Claude Desktop, Cursor, VS Code (`.vscode/mcp.json`), Gemini CLI, Codex
+(`~/.codex/config.toml`) and Windsurf, shows each one's command verbatim, and
+asks which to copy into your coded config:
+
+```bash
+coded import --list                 # what it found; changes nothing
+coded import                        # pick which to copy (user config)
+coded import --from claude,cursor   # only these agents
+coded import --only github -y       # one server, no question
+coded import --project              # into ./.coded/config.json
+coded import mcp                    # only MCP servers (`commands`: only slash commands)
+```
+
+`coded import` also copies Claude Code's custom slash commands (see
+[Custom slash commands](#custom-slash-commands)).
+
+A server name you already have is left alone. URL (http/sse) servers are listed
+as skipped: coded runs stdio servers only. Literal `env` values (usually keys)
+go only into the user config, which is then written with mode 600; the project
+config, which is shared, refuses them but takes `${VAR}` references.
+
 ### Task list & plan mode
 
 For multi-step work the agent keeps a visible task list (`todo_write`), shown as
@@ -882,6 +960,16 @@ research with read-only tools only. When it has a plan it calls
 `exit_plan_mode`; you approve (implementation starts) or reject (it revises).
 Every risky action is refused while plan mode is on, including `git`/`github`
 writes and sub-agents' actions.
+The agent can also switch itself into plan mode (`enter_plan_mode`) before a
+large or risky change (only when someone is there to approve the plan; in
+`--print` and CI it is told to do the work directly), and ask you a question with a few choices when a
+decision is yours (`ask_user`): answer with a number or your own words, or
+press Enter to skip. Without anyone to answer (`--print`, ACP) it states its
+assumption and carries on.
+
+With a vision model (`"supports_vision": true`) the agent can look at image
+files itself (`view_image`): screenshots, diagrams, mockups. The tool is not
+offered to models that cannot see.
 
 ### Verification: don't claim success you haven't earned
 
@@ -1389,6 +1477,16 @@ and summarize the change. Extra notes: $ARGUMENTS
 
 Run with `/fix-issue 123`. `$ARGUMENTS` is the full argument string and `$1`…`$9`
 are individual arguments.
+
+**Already have Claude Code commands?** They use the same format.
+`coded import commands` copies `~/.claude/commands` into
+`~/.config/coded/commands` and the project's `.claude/commands` into
+`.coded/commands` (`--project` puts them all in the project), shows each one
+first, and never overwrites a command you have. A `model:` that is not one of
+your coded models is dropped so the command still runs; Claude's
+``!`command` `` lines are not run in advance (the summary points them out),
+and a name coded already uses (`/review`, `/init`, …) is skipped. Restart coded
+to use them.
 
 ### Tracing & observability
 

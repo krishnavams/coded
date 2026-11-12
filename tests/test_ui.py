@@ -35,6 +35,37 @@ def test_thinking_spinner_is_context_manager():
         ui.set_quiet(False)
 
 
+
+def _tasks(*statuses):
+    return [{"content": f"task {n}", "status": st} for n, st in enumerate(statuses, 1)]
+
+
+def test_todo_dock_shows_unfinished_lists_only():
+    assert ui.todo_dock([]) is None
+    assert ui.todo_dock(_tasks("completed", "completed")) is None
+    dock = ui.todo_dock(_tasks("completed", "in_progress", "pending")).plain
+    assert "Tasks  1/3" in dock
+    assert "task 1" in dock and "task 2" in dock and "task 3" in dock
+
+
+def test_todo_dock_windows_a_long_list_around_the_current_task():
+    items = _tasks(*(["completed"] * 8 + ["in_progress"] + ["pending"] * 6))
+    dock = ui.todo_dock(items, max_items=4).plain
+    assert "task 9" in dock and "task 8" in dock
+    assert "task 1\n" not in dock and "task 15" not in dock
+    assert "7 more above" in dock and "4 more" in dock
+
+
+def test_thinking_docks_the_task_list_under_the_spinner():
+    from rich.live import Live
+
+    live = ui.thinking(tasks=_tasks("in_progress", "pending"))
+    assert isinstance(live, Live) and live.transient
+    with live:
+        pass
+    # Nothing unfinished: the plain spinner, as before.
+    assert not isinstance(ui.thinking(tasks=_tasks("completed")), Live)
+
 def test_repl_bottom_toolbar(headless):
     from prompt_toolkit.formatted_text import to_formatted_text
 
@@ -152,3 +183,12 @@ def test_repl_shift_tab_is_bound_to_plan_mode(headless):
     assert "plan mode" in "".join(t[1] for t in to_formatted_text(repl._bottom_toolbar()))
     binding[0].handler(_Event())
     assert agent.mode == "default"
+
+
+def test_todo_write_result_does_not_repeat_the_list():
+    content = "Task list updated:\n◐ one\n☐ two\nNote: keep only one task in_progress at a time."
+    shown = ui.tool_result_text(content, name="todo_write").plain
+    assert "Task list updated" in shown and "Note: keep only one" in shown
+    assert "one\n" not in shown.replace("Note: keep only one", "") and "two" not in shown
+    # Errors are shown in full.
+    assert "two" in ui.tool_result_text(content, is_error=True, name="todo_write").plain
