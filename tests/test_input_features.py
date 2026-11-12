@@ -153,7 +153,13 @@ def test_the_terminal_is_restored(keys):
     reader(0.01)
     assert termios.tcgetattr(reader.fd)[3] & termios.ICANON == 0
     reader.close()
-    assert termios.tcgetattr(reader.fd) == before
+    after = termios.tcgetattr(reader.fd)
+    # Line mode and echo come back exactly. The kernel may flip bits it owns
+    # (macOS sets PENDIN on the way back to canonical mode), so compare the
+    # modes we change, not the whole flag word.
+    mask = termios.ICANON | termios.ECHO | termios.ISIG
+    assert after[3] & mask == before[3] & mask
+    assert after[:3] == before[:3] and after[6] == before[6]
 
 
 def test_escape_stops_the_turn_or_answers_no_to_a_waiting_prompt():

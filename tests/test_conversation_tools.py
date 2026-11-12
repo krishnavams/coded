@@ -125,7 +125,7 @@ def test_context_breakdown_and_export(tmp_path, fake_server):
     assert "## You\n\nwrite one.txt" in md and "Tool call: `write`" in md
     assert "<summary>Result: write</summary>" in md and "## coded\n\ndone" in md
     path = write_export(agent, "out/session.md")
-    assert path == tmp_path / "out" / "session.md" and path.read_text() == md
+    assert path == tmp_path / "out" / "session.md" and path.read_text(encoding="utf-8") == md
 
 
 # -- stream-json ------------------------------------------------------------------------

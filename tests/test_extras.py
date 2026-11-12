@@ -247,7 +247,7 @@ def test_browser_tool_renders_a_page(tmp_path):
 def test_the_github_actions_example_is_valid_and_uses_real_flags():
     yaml = pytest.importorskip("yaml")
     path = Path(__file__).parent.parent / "examples" / "github-actions" / "coded-review.yml"
-    wf = yaml.safe_load(path.read_text())
+    wf = yaml.safe_load(path.read_text(encoding="utf-8"))
     steps = wf["jobs"]["review"]["steps"]
     run = next(s["run"] for s in steps if s.get("id") == "review")
     for flag in ("--base-url", "--model-name", "--api-key", "--output"):
