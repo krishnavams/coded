@@ -89,6 +89,7 @@ coded/
 ├── plugins.py          # skill + plugin install, registry (installed.json), marketplaces,
 │                       # plugin contributions merged into skills/commands/config
 ├── manage_cli.py       # `coded skill …` and `coded plugin …` subcommands
+├── agent_import.py     # `coded import`: MCP servers from other agents' configs
 └── tools/
     ├── __init__.py     # build_registry(): assembles the tool suite
     ├── base.py         # Tool, ToolResult, ToolContext, ToolRegistry
@@ -135,6 +136,7 @@ tests/
 ├── test_big_models.py  # scaled limits, caps, overflow retry, max_turns, profiles, repo overview
 ├── test_windows.py     # shell resolution, line endings, UTF-8, shims (runs everywhere)
 ├── test_prompts.py     # prompt files: placement, override order, empty=remove, CLI
+├── test_agent_import.py  # `coded import`: each agent's format, skips, secrets, ${VAR}
 ├── test_plugins.py     # sources, zip safety, skill/plugin install/update/remove,
 │                       # Claude-format plugins, marketplaces, CLI
 └── test_modern_features.py  # todo/plan, hooks, sandbox, AGENTS.md, patch, parallel,
@@ -466,6 +468,16 @@ config.example.json     # sample configuration
   (sub-agents included). An unknown `shell` name is a ConfigError, never a silent
   fallback. Arguments passed to a `.bat`/`.cmd` shim are re-parsed by cmd, so
   `external_agents.cmd_shim_risk` refuses prompts it could execute.
+- **`coded import`** (`agent_import.py`): reads the MCP servers other agents
+  configured (Claude Code, Claude Desktop, Cursor, VS Code, Gemini CLI, Codex
+  TOML, Windsurf; paths in `candidate_files`, `home`/`platform`/`env`
+  injectable), converts them with `convert`, prints every command verbatim and
+  writes one config file's raw JSON through `config_wizard.read_file`/
+  `write_file`, after a confirmation (non-TTY needs `--yes`). It never
+  overwrites a name the file has, skips URL servers (stdio only), refuses
+  literal `env` values for the project file and tightens the user file to 600
+  when it adds one. `mcp_client.server_params` expands `${VAR}`/`${VAR:-d}`
+  in command, args and env, the form other agents' configs use for secrets.
 - **Interactive config** (`config_wizard.py`, `coded config setup`, REPL
   `/setup`): edits **one config file's raw JSON**, never a merged `Config` —
   otherwise another layer's models and plugin contributions would be written
@@ -543,7 +555,7 @@ one (e.g. `ruff`, `black`), record the commands here.
 
 - **argparse + free-form prompt**: the top-level parser has a `nargs="*"`
   positional `prompt`, which conflicts with argparse subparsers. Subcommands
-  (`config`, `models`, `agents`, `doctor`, `index`, `review`, `sessions`, `commit`, `skill`,
+  (`config`, `models`, `agents`, `doctor`, `index`, `review`, `sessions`, `commit`, `import`, `skill`,
   `plugin`, `prompts`, `acp`, `mcp-serve`) are therefore dispatched manually by the first token in
   `cli.main()` — keep new subcommands on that path, not on `add_subparsers`.
 - **ACP / MCP server modes keep stdout clean** (`ui.set_quiet(True)`): stdout

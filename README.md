@@ -859,6 +859,28 @@ Add servers under `mcp_servers` in config (install extras with
 Their tools appear to the agent as `mcp__<server>__<tool>` and go through the
 same permission gate.
 
+Values like `"${GITHUB_TOKEN}"` (or `"${VAR:-default}"`) in `command`, `args`
+and `env` are filled in from your environment when coded starts.
+
+**Reuse the servers you set up for other agents.** `coded import` looks for MCP
+servers configured for Claude Code (`~/.claude.json`, the project's `.mcp.json`),
+Claude Desktop, Cursor, VS Code (`.vscode/mcp.json`), Gemini CLI, Codex
+(`~/.codex/config.toml`) and Windsurf, shows each one's command verbatim, and
+asks which to copy into your coded config:
+
+```bash
+coded import --list                 # what it found; changes nothing
+coded import                        # pick which to copy (user config)
+coded import --from claude,cursor   # only these agents
+coded import --only github -y       # one server, no question
+coded import --project              # into ./.coded/config.json
+```
+
+A server name you already have is left alone. URL (http/sse) servers are listed
+as skipped: coded runs stdio servers only. Literal `env` values (usually keys)
+go only into the user config, which is then written with mode 600; the project
+config, which is shared, refuses them but takes `${VAR}` references.
+
 ### Task list & plan mode
 
 For multi-step work the agent keeps a visible task list (`todo_write`), shown as

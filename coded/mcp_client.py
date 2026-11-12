@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -23,6 +24,27 @@ except Exception:  # noqa: BLE001
 
 def mcp_available() -> bool:
     return _HAVE_MCP
+
+
+_REF = re.compile(r"\$\{(\w+)(?::-([^}]*))?\}")
+
+
+def expand_refs(value: str, env: Optional[Dict[str, str]] = None) -> str:
+    """`${VAR}` / `${VAR:-default}` → the environment value (other agents'
+    configs reference secrets this way). An unset VAR with no default is ''."""
+    env = os.environ if env is None else env
+    return _REF.sub(lambda m: env.get(m.group(1), m.group(2) or ""), str(value))
+
+
+def server_params(cfg: Dict[str, Any], env: Optional[Dict[str, str]] = None
+                  ) -> Tuple[str, List[str], Optional[Dict[str, str]]]:
+    """(command, args, env) for a configured server, with `${VAR}` expanded."""
+    env = dict(os.environ if env is None else env)
+    extra = {k: expand_refs(v, env) for k, v in (cfg.get("env") or {}).items()}
+    # Server-specific vars on top of our environment (keeps PATH etc.).
+    return (expand_refs(cfg["command"], env),
+            [expand_refs(a, env) for a in cfg.get("args", [])],
+            {**env, **extra} if extra else None)
 
 
 def _render_content(result: Any) -> str:
@@ -79,13 +101,8 @@ class MCPManager:
         async with AsyncExitStack() as stack:
             for name, cfg in self.servers.items():
                 try:
-                    params = StdioServerParameters(
-                        command=cfg["command"],
-                        args=cfg.get("args", []),
-                        # Server-specific vars on top of our environment (keeps PATH etc.).
-                        env={**os.environ, **{k: str(v) for k, v in cfg["env"].items()}}
-                        if cfg.get("env") else None,
-                    )
+                    command, args, env = server_params(cfg)
+                    params = StdioServerParameters(command=command, args=args, env=env)
                     read, write = await stack.enter_async_context(stdio_client(params))
                     session = await stack.enter_async_context(ClientSession(read, write))
                     await session.initialize()
