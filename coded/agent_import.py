@@ -1,4 +1,4 @@
-"""`coded import`: copy MCP servers configured for other coding agents.
+"""`coded import`: copy MCP servers and Claude Code slash commands into coded.
 
 Another agent's add-on tools come from MCP servers, and most agents keep
 those in a JSON (or TOML) file. This finds them, converts each to coded's
@@ -13,6 +13,14 @@ Rules:
 - Literal `env` values are usually secrets: they may go to the user file
   (written with mode 600) but never to the project file, which is shared.
   `${VAR}` references are fine anywhere (coded expands them at start).
+
+Claude Code's custom commands (`.claude/commands/**/*.md`) use the same format
+as coded's, so they are copied file for file, keeping their scope (user →
+~/.config/coded/commands, project → ./.coded/commands; `--project` puts them
+all in the project). A `model:` that is not a coded model is dropped (coded
+would refuse to run the command), and features coded does not have are
+named in the summary. Existing coded commands and built-in names are never
+overwritten.
 """
 
 from __future__ import annotations
@@ -245,18 +253,163 @@ def apply(data: Dict[str, Any], chosen: List[Found]) -> Dict[str, Any]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Claude Code slash commands
+# ---------------------------------------------------------------------------
+@dataclass
+class FoundCommand:
+    """One Claude Code command file, and where it would go in coded."""
+
+    name: str  # as typed in coded, without the slash
+    source: Path
+    dest: Path
+    text: str  # what would be written
+    skip: str = ""
+    notes: List[str] = field(default_factory=list)
+
+
+_SHELL_LINE = re.compile(r"(^|\s)!`")
+_FILE_REF = re.compile(r"(^|\s)@[\w./-]")
+
+
+def _drop_model(text: str, models: set) -> Tuple[str, str]:
+    """Remove a frontmatter `model:` coded does not know. (text, removed value)."""
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return text, ""
+    for end in range(1, len(lines)):
+        if lines[end].strip() == "---":
+            break
+    else:
+        return text, ""
+    for n in range(1, end):
+        m = re.match(r"\s*model\s*:\s*(.*?)\s*(#.*)?$", lines[n].rstrip("\r\n"))
+        if m:
+            value = m.group(1).strip("'\"")
+            if value and value not in models:
+                return "".join(lines[:n] + lines[n + 1:]), value
+            return text, ""
+    return text, ""
+
+
+def discover_commands(cwd: str, *, home: Optional[Path] = None, project: bool = False,
+                      models: Optional[set] = None, builtins: Optional[set] = None
+                      ) -> Tuple[List[FoundCommand], List[str]]:
+    from coded.config import user_config_path
+
+    home = Path(home or Path.home())
+    models = set(models or ())
+    builtins = set(builtins or ())
+    project_dest = Path(cwd) / ".coded" / "commands"
+    user_dest = user_config_path().parent / "commands"
+    sources = [(home / ".claude" / "commands", project_dest if project else user_dest),
+               (Path(cwd) / ".claude" / "commands", project_dest)]
+    found: List[FoundCommand] = []
+    problems: List[str] = []
+    taken: Dict[Path, FoundCommand] = {}
+    for base, dest_dir in sources:
+        if not base.is_dir():
+            continue
+        for md in sorted(base.rglob("*.md")):
+            if md.is_symlink() or not md.is_file():
+                continue
+            rel = md.relative_to(base)
+            name = ":".join(rel.with_suffix("").parts)
+            try:
+                with open(md, encoding="utf-8", newline="") as fh:
+                    original = fh.read()
+            except (OSError, UnicodeDecodeError) as exc:
+                problems.append(f"claude: {md}: could not read: {exc}")
+                continue
+            text, dropped = _drop_model(original, models)
+            item = FoundCommand(name=name, source=md, dest=dest_dir / rel, text=text)
+            if dropped:
+                item.notes.append(f"`model: {dropped}` is not a coded model; dropped, so it runs "
+                                  "on your current model")
+            if _SHELL_LINE.search(original):
+                item.notes.append("has !`…` lines: coded does not run them first; the agent "
+                                  "sees them as text and may run them itself (with permission)")
+            if re.search(r"(?m)^\s*allowed-tools\s*:", original):
+                item.notes.append("`allowed-tools` is ignored: coded asks permission as usual")
+            if name in builtins:
+                item.skip = f"coded has a built-in /{name}; rename the file to import it"
+            elif item.dest in taken:
+                item.skip = f"the name is taken by {taken[item.dest].source}"
+            elif item.dest.exists():
+                try:
+                    same = item.dest.read_text(encoding="utf-8") == text
+                except (OSError, UnicodeDecodeError):
+                    same = False
+                item.skip = ("already imported" if same
+                             else "a coded command with this name exists (left unchanged)")
+            taken.setdefault(item.dest, item)
+            found.append(item)
+    return found, problems
+
+
+def describe_command(item: FoundCommand, cwd: str) -> List[str]:
+    def short(path: Path) -> str:
+        try:
+            return "./" + path.relative_to(cwd).as_posix()
+        except ValueError:
+            try:
+                return "~/" + path.relative_to(Path.home()).as_posix()
+            except ValueError:
+                return str(path)
+
+    lines = [f"/{item.name}  ({short(item.source)} → {short(item.dest)})"]
+    if item.skip:
+        lines.append(f"    skipped: {item.skip}")
+        return lines
+    lines += [f"    note: {n}" for n in item.notes]
+    return lines
+
+
+def write_command(item: FoundCommand) -> None:
+    item.dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = item.dest.with_suffix(".md.tmp")
+    with open(tmp, "w", encoding="utf-8", newline="") as fh:
+        fh.write(item.text)
+    os.replace(tmp, item.dest)
+
+
+def _coded_models(cwd: str) -> set:
+    try:
+        from coded.config import load_config
+
+        return set(load_config(cwd).models)
+    except Exception:  # noqa: BLE001 - no config yet: no model names to keep
+        return set()
+
+
+def _builtin_commands() -> set:
+    try:
+        from coded.repl import SLASH_COMMANDS
+
+        return {c.lstrip("/") for c in SLASH_COMMANDS}
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+# ---------------------------------------------------------------------------
+# The command line
+# ---------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="coded import",
-        description="Copy MCP servers (the tools) set up for other coding agents "
-                    "into coded's config. Shows each command and asks first.")
+        description="Copy MCP servers (their tools) set up for other coding agents, and "
+                    "Claude Code's custom slash commands, into coded. Shows everything "
+                    "and asks first.")
+    p.add_argument("what", nargs="?", choices=("all", "mcp", "commands"), default="all",
+                   help="What to import (default: both).")
     p.add_argument("--from", dest="agents", default="",
                    help="Only these agents, comma-separated: " + ", ".join(AGENTS))
-    p.add_argument("--only", default="", help="Only these server names, comma-separated.")
+    p.add_argument("--only", default="",
+                   help="Only these server or command names, comma-separated.")
     p.add_argument("--list", action="store_true", help="Show what was found; change nothing.")
     p.add_argument("--project", action="store_true",
-                   help="Write ./.coded/config.json instead of the user config.")
-    p.add_argument("--config", default=None, help="Write this config file instead.")
+                   help="Write into the project (./.coded/config.json, ./.coded/commands).")
+    p.add_argument("--config", default=None, help="Write MCP servers into this config file.")
     p.add_argument("-y", "--yes", action="store_true",
                    help="Import everything importable without asking (after review).")
     return p
@@ -280,32 +433,53 @@ def main(argv: List[str], *, cwd: Optional[str] = None, home: Optional[Path] = N
     if unknown:
         out(f"Unknown agent(s): {', '.join(unknown)}. Choose from: {', '.join(AGENTS)}.")
         return 2
+    wanted = {n.strip().lstrip("/") for n in args.only.split(",") if n.strip()}
 
-    found, problems = discover(cwd, agents, home=home)
-    if args.only:
-        wanted = {n.strip() for n in args.only.split(",") if n.strip()}
-        found = [f for f in found if f.name in wanted]
+    servers: List[Found] = []
+    commands: List[FoundCommand] = []
+    problems: List[str] = []
+    if args.what in ("all", "mcp"):
+        servers, more = discover(cwd, agents, home=home)
+        problems += more
+    if args.what in ("all", "commands") and (not agents or "claude" in agents):
+        commands, more = discover_commands(cwd, home=home, project=args.project,
+                                           models=_coded_models(cwd),
+                                           builtins=_builtin_commands())
+        problems += more
+    if wanted:
+        servers = [f for f in servers if f.name in wanted]
+        commands = [c for c in commands if c.name in wanted]
     for p in problems:
         out(f"! {p}")
-    if not found:
-        out("No MCP servers found in other agents' configs"
+    if not servers and not commands:
+        kind = {"mcp": "MCP servers", "commands": "Claude Code commands"}.get(
+            args.what, "MCP servers or Claude Code commands")
+        out(f"No {kind} found in other agents' configs"
             + (f" ({', '.join(agents)})" if agents else "") + ".")
         return 0
 
-    try:
-        path = cw.target_path(project=args.project, config_path=args.config, cwd=cwd)
-        data = cw.read_file(path)
-    except ConfigError as exc:
-        out(f"Error: {exc}")
-        return 1
-    plan(found, data.get("mcp_servers") or {}, project=args.project)
-    out(f"MCP servers found in other agents (target: {path}):")
-    for item in found:
-        for line in describe(item):
-            out("  " + line)
-    ready = [f for f in found if not f.skip]
-    if args.list or not ready:
-        if not ready:
+    path, data = None, {}
+    if servers:
+        try:
+            path = cw.target_path(project=args.project, config_path=args.config, cwd=cwd)
+            data = cw.read_file(path)
+        except ConfigError as exc:
+            out(f"Error: {exc}")
+            return 1
+        plan(servers, data.get("mcp_servers") or {}, project=args.project)
+        out(f"MCP servers found in other agents (target: {path}):")
+        for item in servers:
+            for line in describe(item):
+                out("  " + line)
+    if commands:
+        out("Claude Code slash commands:")
+        for cmd in commands:
+            for line in describe_command(cmd, cwd):
+                out("  " + line)
+    ready_servers = [f for f in servers if not f.skip]
+    ready_commands = [c for c in commands if not c.skip]
+    if args.list or not (ready_servers or ready_commands):
+        if not (ready_servers or ready_commands):
             out("Nothing to import.")
         return 0
 
@@ -316,21 +490,40 @@ def main(argv: List[str], *, cwd: Optional[str] = None, home: Optional[Path] = N
             out("Not running interactively: re-run with --yes after reviewing the above.")
             return 1
         prompter = prompter or cw.console_prompter()
-        out("Each server's command runs on your machine when coded starts.")
+        if ready_servers:
+            out("Each server's command runs on your machine when coded starts.")
+        labels = [f.name for f in ready_servers] + [f"/{c.name}" for c in ready_commands]
         try:
-            if len(ready) == 1:
-                chosen = ready if prompter.yes(f"Import {ready[0].name}?") else []
+            if len(labels) == 1:
+                picked = labels if prompter.yes(f"Import {labels[0]}?") else []
             else:
-                names = prompter.choose_many(
+                picked = prompter.choose_many(
                     "Import which? (numbers like 1,3-4, names, or * for all; empty = none)",
-                    [f.name for f in ready])
-                chosen = [f for f in ready if f.name in names]
+                    labels)
         except cw.Abort:
-            chosen = []
+            picked = []
+        chosen = [f for f in ready_servers if f.name in picked]
+        chosen_cmds = [c for c in ready_commands if f"/{c.name}" in picked]
     else:
-        chosen = ready
-    if not chosen:
+        chosen, chosen_cmds = ready_servers, ready_commands
+    if not chosen and not chosen_cmds:
         out("Nothing imported.")
+        return 0
+
+    if chosen_cmds:
+        done = []
+        for cmd in chosen_cmds:
+            try:
+                write_command(cmd)
+                done.append(cmd)
+            except OSError as exc:
+                out(f"Error: could not write {cmd.dest}: {exc}")
+        if done:
+            out(f"Imported {len(done)} command(s): "
+                + ", ".join(f"/{c.name}" for c in done) + ". Restart coded to use them.")
+        if len(done) < len(chosen_cmds):
+            return 1
+    if not chosen:
         return 0
 
     secret = any(f.literal_env for f in chosen)

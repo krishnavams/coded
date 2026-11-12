@@ -90,7 +90,7 @@ coded/
 ├── plugins.py          # skill + plugin install, registry (installed.json), marketplaces,
 │                       # plugin contributions merged into skills/commands/config
 ├── manage_cli.py       # `coded skill …` and `coded plugin …` subcommands
-├── agent_import.py     # `coded import`: MCP servers from other agents' configs
+├── agent_import.py     # `coded import`: other agents' MCP servers + Claude Code commands
 └── tools/
     ├── __init__.py     # build_registry(): assembles the tool suite
     ├── base.py         # Tool, ToolResult, ToolContext, ToolRegistry
@@ -139,7 +139,7 @@ tests/
 ├── test_big_models.py  # scaled limits, caps, overflow retry, max_turns, profiles, repo overview
 ├── test_windows.py     # shell resolution, line endings, UTF-8, shims (runs everywhere)
 ├── test_prompts.py     # prompt files: placement, override order, empty=remove, CLI
-├── test_agent_import.py  # `coded import`: each agent's format, skips, secrets, ${VAR}
+├── test_agent_import.py  # `coded import`: each agent's format, skips, secrets, ${VAR}, commands
 ├── test_new_tools.py  # ask_user, view_image, enter_plan_mode, MCP resources
 ├── test_lsp.py        # the lsp tool against tests/fake_lsp.py (a scripted server)
 ├── test_plugins.py     # sources, zip safety, skill/plugin install/update/remove,
@@ -504,6 +504,11 @@ config.example.json     # sample configuration
   literal `env` values for the project file and tightens the user file to 600
   when it adds one. `mcp_client.server_params` expands `${VAR}`/`${VAR:-d}`
   in command, args and env, the form other agents' configs use for secrets.
+  It also copies Claude Code commands (`discover_commands`: `~/.claude/commands`
+  → the user commands dir, `./.claude/commands` → `./.coded/commands`, or all
+  into the project with `--project`) byte for byte, except a frontmatter
+  `model:` that is not a coded model, which is dropped (coded refuses an unknown
+  one). Built-in slash-command names and existing files are skipped.
 - **Interactive config** (`config_wizard.py`, `coded config setup`, REPL
   `/setup`): edits **one config file's raw JSON**, never a merged `Config` —
   otherwise another layer's models and plugin contributions would be written

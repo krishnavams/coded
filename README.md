@@ -918,7 +918,11 @@ coded import                        # pick which to copy (user config)
 coded import --from claude,cursor   # only these agents
 coded import --only github -y       # one server, no question
 coded import --project              # into ./.coded/config.json
+coded import mcp                    # only MCP servers (`commands`: only slash commands)
 ```
+
+`coded import` also copies Claude Code's custom slash commands (see
+[Custom slash commands](#custom-slash-commands)).
 
 A server name you already have is left alone. URL (http/sse) servers are listed
 as skipped: coded runs stdio servers only. Literal `env` values (usually keys)
@@ -1464,6 +1468,16 @@ and summarize the change. Extra notes: $ARGUMENTS
 
 Run with `/fix-issue 123`. `$ARGUMENTS` is the full argument string and `$1`…`$9`
 are individual arguments.
+
+**Already have Claude Code commands?** They use the same format.
+`coded import commands` copies `~/.claude/commands` into
+`~/.config/coded/commands` and the project's `.claude/commands` into
+`.coded/commands` (`--project` puts them all in the project), shows each one
+first, and never overwrites a command you have. A `model:` that is not one of
+your coded models is dropped so the command still runs; Claude's
+``!`command` `` lines are not run in advance (the summary points them out),
+and a name coded already uses (`/review`, `/init`, …) is skipped. Restart coded
+to use them.
 
 ### Tracing & observability
 

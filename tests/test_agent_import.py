@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -154,3 +155,83 @@ def test_cli_dispatches_import(setup, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     assert cli.main(["import", "--list"]) == 0
+
+
+# -- Claude Code slash commands ----------------------------------------------------
+FIX = """---
+description: Fix an issue
+argument-hint: <n>
+model: haiku
+allowed-tools: Bash(git:*)
+---
+Fix issue #$1. Status: !`git status`
+"""
+
+
+@pytest.fixture
+def commands(setup):
+    home, proj = setup
+    _write(home / ".claude/commands/fix-issue.md", FIX)
+    _write(home / ".claude/commands/git/pr.md", "Open a PR titled $ARGUMENTS\r\n")
+    _write(home / ".claude/commands/review.md", "Shadowed by the built-in /review\n")
+    _write(proj / ".claude/commands/deploy.md", "---\nmodel: smart\n---\nDeploy $1\n")
+    _write(proj / ".claude/commands/git/pr.md", "the project's own pr\n")
+    return home, proj
+
+
+def _user_cmds():
+    return Path(os.environ["CODED_CONFIG"]).parent / "commands"
+
+
+def test_commands_are_copied_with_their_scope(setup, commands):
+    home, proj = commands
+    # `smart` is a coded model here, so the project command keeps its model line.
+    _write(Path(os.environ["CODED_CONFIG"]), {"models": {"smart": {"model": "x", "base_url": "http://x/v1"}}})
+    code, out = _run(setup, ["commands", "-y"])
+    assert code == 0, out
+    fix = (_user_cmds() / "fix-issue.md").read_text()
+    assert "model:" not in fix and "description: Fix an issue" in fix and "!`git status`" in fix
+    assert "`model: haiku` is not a coded model" in out
+    assert "has !`…` lines" in out and "`allowed-tools` is ignored" in out
+    with open(_user_cmds() / "git/pr.md", newline="") as fh:
+        assert fh.read() == "Open a PR titled $ARGUMENTS\r\n"      # bytes kept, CRLF too
+    assert (proj / ".coded/commands/deploy.md").read_text() == "---\nmodel: smart\n---\nDeploy $1\n"
+    assert (proj / ".coded/commands/git/pr.md").read_text() == "the project's own pr\n"
+    assert not (_user_cmds() / "review.md").exists()
+    assert "coded has a built-in /review" in out
+    # coded reads them back under the names the summary showed.
+    from coded.commands import discover_commands
+    found = discover_commands(str(proj))
+    assert {"fix-issue", "git:pr", "deploy"} <= set(found)
+    assert found["fix-issue"].model is None and found["deploy"].model == "smart"
+    # A second run changes nothing.
+    code, out = _run(setup, ["commands", "-y"])
+    assert "already imported" in out and "Nothing to import" in out
+
+
+def test_project_flag_and_conflicts(setup, commands):
+    home, proj = commands
+    _write(proj / ".coded/commands/deploy.md", "mine\n")
+    code, out = _run(setup, ["commands", "--project", "-y"])
+    assert code == 0, out
+    assert (proj / ".coded/commands/fix-issue.md").exists()          # user one, into project
+    assert not _user_cmds().exists()
+    assert (proj / ".coded/commands/deploy.md").read_text() == "mine\n"   # never overwritten
+    assert "a coded command with this name exists" in out
+    # user git/pr went first; the project's git/pr would land on the same file
+    assert "the name is taken by" in out
+
+
+def test_choosing_listing_and_filters(setup, commands):
+    home, proj = commands
+    code, out = _run(setup, ["--list"])
+    assert code == 0 and "/fix-issue" in out and "github" in out    # both kinds shown
+    assert not _user_cmds().exists()
+    code, out = _run(setup, ["--only", "/git:pr,local"], answers=["*"])
+    assert code == 0, out
+    assert (_user_cmds() / "git/pr.md").exists() and not (_user_cmds() / "fix-issue.md").exists()
+    assert list(json.load(open(os.environ["CODED_CONFIG"]))["mcp_servers"]) == ["local"]
+    code, out = _run(setup, ["mcp", "--list"])
+    assert "/fix-issue" not in out
+    code, out = _run(setup, ["commands", "--from", "cursor"])
+    assert "No Claude Code commands found" in out
