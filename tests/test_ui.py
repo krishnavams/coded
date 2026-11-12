@@ -54,6 +54,29 @@ def test_repl_bottom_toolbar(headless):
     assert "2.0k" in text  # 2000 tokens
 
 
+def test_repl_shows_the_tasks_right_above_the_prompt(headless, capsys):
+    cfg = Config()
+    m = ModelConfig(name="gpt-4o", model="gpt-4o", base_url="http://x/v1", api_key="k")
+    cfg.add_model(m, make_default=True)
+    agent = create_agent(model=m, config=cfg, cwd=".",
+                         permissions=PermissionManager(), stream=False, verbose=False)
+    repl = Repl(agent, cfg)
+    assert not repl._show_tasks_above_prompt()  # no tasks: nothing between rule and prompt
+
+    agent.todos.items = [{"content": "Write it", "status": "completed"},
+                         {"content": "Test it", "status": "in_progress"}]
+    capsys.readouterr()
+    assert repl._show_tasks_above_prompt()
+    out = capsys.readouterr().out
+    assert "Test it" in out and "1/2" in out
+    assert repl._show_tasks_above_prompt()  # unfinished: shown before every prompt
+
+    agent.todos.items = [{"content": "Write it", "status": "completed"},
+                         {"content": "Test it", "status": "completed"}]
+    assert repl._show_tasks_above_prompt()  # the finished list, once...
+    assert not repl._show_tasks_above_prompt()  # ...then not again
+
+
 def test_tool_titles_are_readable_and_relative():
     assert ui.tool_title("edit", {"path": "/proj/src/app.py", "old_string": "x"}, "/proj") == \
         ("Edit", "src/app.py")

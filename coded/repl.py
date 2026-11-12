@@ -106,6 +106,7 @@ class Repl:
         self.config = config
         self._typeahead = None  # set while a turn runs
         self._prefill = ""  # a line half-typed when the last turn ended
+        self._tasks_shown: list = []  # the task list as last shown above the prompt
         self._on_turn = on_turn  # called after each completed turn (autosave)
         self._pending_images: Optional[list] = None
         from coded.commands import discover_commands
@@ -202,6 +203,20 @@ class Repl:
         short = text if len(text) <= 60 else text[:57] + "…"
         ui.console.print(f"[{ui.ACCENT_SOFT}]  ⏎ queued ({waiting}): {short}[/]")
 
+    def _show_tasks_above_prompt(self) -> bool:
+        """Show the task list right above the input, as the TUI docks it.
+
+        Shown while any task is unfinished, and once more when the list has
+        changed since it was last shown (so the finished list appears once,
+        not before every prompt from then on)."""
+        items = [dict(i) for i in self.agent.todos.items]
+        done, total, _ = ui.todo_progress(items)
+        if not total or (done == total and items == self._tasks_shown):
+            return False
+        self._tasks_shown = items
+        ui.todos(items)
+        return True
+
     def run(self, initial: Optional[str] = None, images: Optional[list] = None) -> None:
         ui.banner(self.agent.model.name, self.agent.cwd)
         queued: List[str] = [initial] if initial else []
@@ -214,6 +229,7 @@ class Repl:
                 try:
                     ui.console.print()
                     ui.console.rule(style=ui.ACCENT_DEEP)
+                    self._show_tasks_above_prompt()
                     text = self.prompt.prompt(HTML("<prompt>&gt;</prompt> "),
                                               default=self._prefill)
                     self._prefill = ""
