@@ -172,7 +172,9 @@ Fix issue #$1. Status: !`git status`
 def commands(setup):
     home, proj = setup
     _write(home / ".claude/commands/fix-issue.md", FIX)
-    _write(home / ".claude/commands/git/pr.md", "Open a PR titled $ARGUMENTS\r\n")
+    # Bytes, not text: text mode on Windows would turn \r\n into \r\r\n here.
+    (home / ".claude/commands/git").mkdir(parents=True, exist_ok=True)
+    (home / ".claude/commands/git/pr.md").write_bytes(b"Open a PR titled $ARGUMENTS\r\n")
     _write(home / ".claude/commands/review.md", "Shadowed by the built-in /review\n")
     _write(proj / ".claude/commands/deploy.md", "---\nmodel: smart\n---\nDeploy $1\n")
     _write(proj / ".claude/commands/git/pr.md", "the project's own pr\n")
@@ -193,8 +195,7 @@ def test_commands_are_copied_with_their_scope(setup, commands):
     assert "model:" not in fix and "description: Fix an issue" in fix and "!`git status`" in fix
     assert "`model: haiku` is not a coded model" in out
     assert "has !`…` lines" in out and "`allowed-tools` is ignored" in out
-    with open(_user_cmds() / "git/pr.md", newline="") as fh:
-        assert fh.read() == "Open a PR titled $ARGUMENTS\r\n"      # bytes kept, CRLF too
+    assert (_user_cmds() / "git/pr.md").read_bytes() == b"Open a PR titled $ARGUMENTS\r\n"
     assert (proj / ".coded/commands/deploy.md").read_text() == "---\nmodel: smart\n---\nDeploy $1\n"
     assert (proj / ".coded/commands/git/pr.md").read_text() == "the project's own pr\n"
     assert not (_user_cmds() / "review.md").exists()
