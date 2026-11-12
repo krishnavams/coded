@@ -54,6 +54,26 @@ def test_repl_bottom_toolbar(headless):
     assert "2.0k" in text  # 2000 tokens
 
 
+def test_repl_input_is_boxed_with_the_status_line_right_under_it(headless):
+    from prompt_toolkit.layout import FloatContainer, HSplit
+
+    cfg = Config()
+    m = ModelConfig(name="gpt-4o", model="gpt-4o", base_url="http://x/v1", api_key="k")
+    cfg.add_model(m, make_default=True)
+    agent = create_agent(model=m, config=cfg, cwd=".",
+                         permissions=PermissionManager(), stream=False, verbose=False)
+    repl = Repl(agent, cfg)
+    assert repl._boxed
+    root = repl.prompt.app.layout.container
+    assert isinstance(root, FloatContainer) and root.floats  # menus open over the filler
+    rows = root.content.children
+    assert isinstance(rows[0], type(rows[2]))  # top edge, input, bottom edge
+    status = rows[3].content.content.text   # the status line comes straight after
+    assert status == repl._bottom_toolbar
+    assert repl.prompt.bottom_toolbar is None  # nothing pinned to the terminal's last row
+    assert repl.prompt.reserve_space_for_menu == 0
+
+
 def test_repl_shows_the_tasks_right_above_the_prompt(headless, capsys):
     cfg = Config()
     m = ModelConfig(name="gpt-4o", model="gpt-4o", base_url="http://x/v1", api_key="k")

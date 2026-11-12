@@ -27,12 +27,70 @@ _PT_STYLE = Style.from_dict({
     "rule": ui.ACCENT_DEEP,
     "bottom-toolbar": f"{ui.MUTED} bg:#15121f noreverse",
     "bottom-toolbar.accent": f"{ui.ACCENT} bg:#15121f",
+    "box": ui.ACCENT_DEEP,
     "completion-menu.completion": "bg:#1c1830 #cfc8e8",
     "completion-menu.completion.current": f"bg:{ui.ACCENT} #120f1d bold",
     "completion-menu.meta.completion": "bg:#1c1830 #7d7699",
     "completion-menu.meta.completion.current": f"bg:{ui.ACCENT_DEEP} #f3efff",
     "auto-suggestion": "#5b5475",
 })
+
+def _box_input(session: PromptSession, status) -> bool:
+    """Frame the input in a box with the status line right under it.
+
+    prompt_toolkit pins a `bottom_toolbar` to the last row of the terminal, so
+    the status bar would float far below the input; its own `show_frame`
+    stretches the frame down to it. Instead the layout becomes: top edge,
+    `│ input │`, bottom edge, status line, then a filler that takes the spare
+    rows (the completion menu opens over it). The edges stay in the scrollback
+    after Enter; the status line and the filler do not. Returns False, leaving
+    the stock toolbar, if this prompt_toolkit lays its prompt out differently.
+    """
+    from prompt_toolkit.filters import is_done, to_filter
+    from prompt_toolkit.layout import (ConditionalContainer, FloatContainer,
+                                       FormattedTextControl, HSplit, VSplit, Window)
+    from prompt_toolkit.layout.dimension import Dimension
+
+    try:
+        root = session.app.layout.container
+        input_window = session.app.layout.current_window
+        if not isinstance(root, HSplit) or len(root.children) < 2:
+            return False
+        children = list(root.children)
+        main, rest = children[0], children[1:-1]   # the last child is the toolbar
+        # The input with its floats (completion menus, right prompt). The menus
+        # move to the whole layout, or they would be clipped to the input row.
+        input_floats = main.alternative_content
+        if not isinstance(input_floats, FloatContainer):
+            return False
+        menus = [f for f in input_floats.floats if f.ycursor]
+        if not menus:
+            return False
+
+        def edge(left: str, right: str) -> VSplit:
+            return VSplit([Window(width=1, height=1, char=left, style="class:box"),
+                           Window(height=1, char="─", style="class:box"),
+                           Window(width=1, height=1, char=right, style="class:box")])
+
+        body = VSplit([Window(width=1, char="│", style="class:box"), Window(width=1, char=" "),
+                       main,
+                       Window(width=1, char=" "), Window(width=1, char="│", style="class:box")])
+        # The input keeps its own height; the spare rows go to the filler.
+        input_window.dont_extend_height = to_filter(True)
+        status_line = ConditionalContainer(
+            Window(FormattedTextControl(status), height=1, style="class:bottom-toolbar"),
+            filter=~is_done)
+        filler = ConditionalContainer(Window(height=Dimension(min=0)), filter=~is_done)
+        session.reserve_space_for_menu = 0   # the menu opens over the filler instead
+        input_floats.floats[:] = [f for f in input_floats.floats if not f.ycursor]
+        session.app.layout.container = FloatContainer(
+            HSplit([edge("╭", "╮"), body, edge("╰", "╯"), status_line, *rest, filler]),
+            floats=menus)
+        session.bottom_toolbar = None
+        return True
+    except Exception:  # noqa: BLE001 - a different layout: keep the stock one
+        return False
+
 
 def _prompt_session(**kwargs) -> PromptSession:
     """A PromptSession, with a readable error where there is no console.
@@ -138,6 +196,7 @@ class Repl:
             bottom_toolbar=self._bottom_toolbar,
             complete_while_typing=True,
         )
+        self._boxed = _box_input(self.prompt, self._bottom_toolbar)
         # Wire the permission prompt into the manager.
         self.agent.permissions.set_prompt(self._permission_prompt)
 
@@ -228,7 +287,8 @@ class Repl:
             else:
                 try:
                     ui.console.print()
-                    ui.console.rule(style=ui.ACCENT_DEEP)
+                    if not self._boxed:
+                        ui.console.rule(style=ui.ACCENT_DEEP)
                     self._show_tasks_above_prompt()
                     text = self.prompt.prompt(HTML("<prompt>&gt;</prompt> "),
                                               default=self._prefill)

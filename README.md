@@ -700,6 +700,8 @@ same permission gate.
 For multi-step work the agent keeps a visible task list (`todo_write`), shown as
 it changes and kept right above the input box — in the TUI always, in the REPL
 before each prompt while a task is unfinished (`/todos` to show it again).
+The REPL's input sits in a box like the TUI's, with the status line right
+under it.
 Each update shows progress — `Tasks 2/5 ▰▰▰▰▱▱▱▱▱▱ 40%`, the running item marked
 `← now` — and the status bar carries the same count and the current item while
 the agent works, so a long turn is never a silent one.
