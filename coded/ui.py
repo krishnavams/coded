@@ -212,6 +212,14 @@ def tool_title(name: str, args: dict, cwd: str = "") -> tuple:
         if val is None or val == "":
             return label, ""
         return label, _rel(val, cwd) if key in _PATH_KEYS else _one_line(val)
+    if name == "lsp":
+        op = str(args.get("operation") or "")
+        what = args.get("symbol") or args.get("query") or ""
+        where = _rel(args["path"], cwd) if args.get("path") else ""
+        if where and args.get("line"):
+            where += f":{args['line']}"
+        rest = " in ".join(x for x in (str(what), where) if x)
+        return "LSP", _one_line(f"{op} · {rest}" if rest else op, 120)
     if name == "move":
         return "Move", f"{_rel(args.get('source', ''), cwd)} → {_rel(args.get('destination', ''), cwd)}"
     label = name if name.startswith("mcp") else name[:1].upper() + name[1:]

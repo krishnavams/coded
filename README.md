@@ -28,7 +28,9 @@ runtime.
   `web_search`, `web_fetch`, `todo_write`, `enter_plan_mode`/`exit_plan_mode`,
   `ask_user` (a question with choices), `view_image` (vision models),
   `skill`, `task` (sub-agents) and `external_agent` (outside agents), plus
-  `list_mcp_resources`/`read_mcp_resource` when an MCP server offers resources.
+  `list_mcp_resources`/`read_mcp_resource` when an MCP server offers resources,
+  and `lsp` (definitions, references, types, diagnostics from language servers;
+  `"lsp": true`).
 - **Task list & plan mode** — the agent tracks multi-step work with
   `todo_write`; `--plan` / `/plan` keeps it read-only until you approve a plan.
 - **Hooks** — run your own commands on `PreToolUse`, `PostToolUse`,
@@ -647,6 +649,42 @@ Rust, JS/TS, Java/Kotlin, Ruby, PHP, C/C++, Swift, Lua, shell) — no tree-sitte
 and no extra dependency, so it is an *outline*, not a parse tree. It lists
 definitions only, never code, and everything is bounded: files scanned, bytes
 per file, wall time, output. Binary, minified and generated files are skipped.
+
+### Code intelligence (language servers)
+
+With `"lsp": true` in the config the agent gets an `lsp` tool backed by the
+language servers you have installed — the same engine your editor uses — and
+can ask for a symbol's **definition**, **type definition**, **implementations**,
+all its **references**, its **hover** (type, signature, docs), a file's
+**outline**, a **project-wide symbol search**, and a file's **diagnostics**
+(type errors and warnings) after an edit. It names the symbol and its line;
+coded works out the column.
+
+Servers are found on PATH and started on first use, one per language, with
+the project as the workspace:
+
+| Language | Servers tried, in order |
+|---|---|
+| Python | `pyright-langserver`, `basedpyright-langserver`, `pylsp`, `jedi-language-server` |
+| TypeScript / JavaScript | `typescript-language-server` |
+| Go · Rust · C/C++ | `gopls` · `rust-analyzer` · `clangd` |
+| Java · Ruby · PHP · Lua · C# | `jdtls` · `ruby-lsp`/`solargraph` · `intelephense` · `lua-language-server` · `csharp-ls` |
+
+Pick a server, add a language or turn one off:
+
+```json
+{
+  "lsp": {
+    "python": ["pylsp"],
+    "zig": {"command": ["zls"], "extensions": [".zig"]},
+    "rust": false,
+    "timeout": 60
+  }
+}
+```
+
+`coded doctor` shows which servers it finds. Without a server for a file, the
+tool says so and the agent falls back to `grep`/`repo_map`.
 
 ### Project memory
 

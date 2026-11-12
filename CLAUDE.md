@@ -74,6 +74,7 @@ coded/
 ├── mentions.py         # `@path` mentions: expansion (Agent.run) + the REPL path completer
 ├── documents.py        # PDF/DOCX/XLSX/PPTX → text sections for the read tool
 ├── mcp_client.py       # optional MCP stdio client (background asyncio loop)
+├── lsp.py              # LSP client: one language server per language, shared per process
 ├── hooks.py            # HookRunner: PreToolUse/PostToolUse/UserPromptSubmit/SessionStart/Stop
 ├── sandbox.py          # bwrap / sandbox-exec wrapping for bash (no Windows backend)
 ├── shells.py           # shell resolution (Git Bash/PowerShell/cmd), tree kill, UTF-8, rmtree
@@ -99,6 +100,7 @@ coded/
     ├── browser.py      # browser (Playwright; opt-in "browser"): render, steps, console, screenshot
     ├── todo.py         # todo_write (TodoStore), enter_plan_mode, exit_plan_mode
     ├── interact.py     # ask_user (PermissionManager.question), view_image (vision)
+    ├── lsp.py          # lsp (opt-in "lsp"): definition/references/hover/symbols/diagnostics
     ├── external_agent.py  # external_agent (delegate to an outside CLI agent)
     ├── search.py       # glob, grep
     ├── repo_map.py     # repo_map (ranked outline of the codebase)
@@ -139,6 +141,7 @@ tests/
 ├── test_prompts.py     # prompt files: placement, override order, empty=remove, CLI
 ├── test_agent_import.py  # `coded import`: each agent's format, skips, secrets, ${VAR}
 ├── test_new_tools.py  # ask_user, view_image, enter_plan_mode, MCP resources
+├── test_lsp.py        # the lsp tool against tests/fake_lsp.py (a scripted server)
 ├── test_plugins.py     # sources, zip safety, skill/plugin install/update/remove,
 │                       # Claude-format plugins, marketplaces, CLI
 └── test_modern_features.py  # todo/plan, hooks, sandbox, AGENTS.md, patch, parallel,
@@ -263,6 +266,16 @@ config.example.json     # sample configuration
   model without `supports_vision`, so it is neither offered nor runnable.
   MCP `list_mcp_resources`/`read_mcp_resource` are built only when a server
   reported resources at start (`MCPManager.resource_servers`).
+- **Code intelligence** (`lsp.py`, the `lsp` tool, opt-in `config.lsp`, like
+  `browser`, so the default request is unchanged): plain JSON-RPC over the
+  server's stdio, no dependency. `get_manager(root, settings)` is process-wide
+  (sub-agents get the tool and share servers); `stop_all` runs at exit. Files
+  are re-sent when their mtime changes (`LSPClient.sync`), so answers match
+  disk. Server requests (`workspace/configuration`, …) are always answered or
+  some servers wait forever. Positions are named by `line` + `symbol`; LSP
+  columns are UTF-16 (`utf16_col`/`py_col`). A missing server or unknown
+  extension is a `ToolResult.error` pointing at grep/repo_map. Tests run
+  against `tests/fake_lsp.py`, never a real server (one optional test skips).
 - **Prompts from worker threads**: `PermissionManager.set_prompt(fn,
   threadsafe=True)` (TUI, ACP) allows tools that may prompt to run in parallel;
   prompts are serialized by a lock either way. `ask()` is a raw yes/no question

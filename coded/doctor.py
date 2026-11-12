@@ -141,6 +141,21 @@ def run_checks(cwd: str, *, config_path: Optional[str] = None, network: bool = F
     else:
         out.append(Check("terminal", WARN, "not a terminal (fine for --print and CI)"))
 
+    if cfg is not None:
+        from coded.lsp import find_command, server_specs
+
+        if not cfg.lsp:
+            out.append(Check("code intelligence", OK,
+                             'off (set "lsp": true to use language servers)'))
+        else:
+            specs, _ = server_specs(cfg.lsp)
+            found = [(s.language, find_command(s, which)) for s in specs]
+            have = [f"{lang}: {os.path.basename(argv[0])}" for lang, argv in found if argv]
+            missing = [lang for lang, argv in found if not argv]
+            out.append(Check("code intelligence", OK if have else WARN,
+                             (", ".join(have) if have else "no language server found on PATH")
+                             + (f" · not found: {', '.join(missing)}" if missing else "")))
+
     from coded.images import clipboard_commands
 
     clip = clipboard_commands("x.png", sys.platform, which)

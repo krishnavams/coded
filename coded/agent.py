@@ -32,7 +32,7 @@ _FILE_TOOLS = ("read", "edit", "multi_edit", "write")
 # Tools whose path arguments .codedignore can refuse, and those whose result
 # gets the configured diagnostics after a successful change.
 _PATH_TOOLS = ("read", "write", "edit", "multi_edit", "notebook_edit", "move", "delete", "ls",
-               "view_image")
+               "view_image", "lsp")
 _CHECKED_TOOLS = ("write", "edit", "multi_edit", "apply_patch", "notebook_edit")
 
 
@@ -1042,6 +1042,10 @@ class Agent:
             sub_system = build_subagent_prompt(sub_cwd, sub_model)
             sub_session = Session(system_prompt=sub_system)
             sub_registry = build_registry(include_task=False)
+            if self.config.lsp:
+                from coded.tools.lsp import LspTool
+
+                sub_registry.register(LspTool(self.config.lsp))
             sub_agent = Agent(
                 model=sub_model,
                 config=self.config,
@@ -1101,6 +1105,10 @@ def create_agent(
 
         settings = config.browser if isinstance(config.browser, dict) else {}
         registry.register(BrowserTool(str(settings.get("executable_path") or "")))
+    if config.lsp:
+        from coded.tools.lsp import LspTool
+
+        registry.register(LspTool(config.lsp))
 
     if checkpoints is None:
         checkpoints = CheckpointManager(cwd)
