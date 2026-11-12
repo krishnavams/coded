@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import threading
 import time
@@ -28,7 +29,8 @@ def _call(name, args, cid="c1"):
 def _plain(renderable, width=100) -> str:
     from rich.console import Console
 
-    con = Console(width=width, record=True, color_system=None)
+    con = Console(width=width, record=True, color_system=None,
+                  file=io.StringIO())
     con.print(renderable)
     return con.export_text()
 
@@ -211,7 +213,8 @@ def test_the_dock_shows_running_tasks_with_their_latest_steps():
 def test_ctrl_o_expands_and_collapses_tool_output(monkeypatch):
     from rich.console import Console
 
-    con = Console(width=100, record=True, color_system=None)
+    con = Console(width=100, record=True, color_system=None,
+                  file=io.StringIO())
     monkeypatch.setattr(ui, "console", con)
     monkeypatch.setattr(ui, "_last_cut", None)
     monkeypatch.setattr(ui, "_expanded", False)
@@ -261,7 +264,8 @@ def test_control_keys_reach_their_handlers_mid_turn():
     assert pressed == ["b"] and ta.pending == 0
 
 
-def test_repl_wakes_the_agent_with_a_finished_background_report(tmp_path, monkeypatch):
+def test_repl_wakes_the_agent_with_a_finished_background_report(headless, tmp_path,
+                                                                monkeypatch):
     from tests.test_progress_and_typeahead import _repl_agent, _repl_config
 
     from coded.repl import Repl

@@ -80,7 +80,8 @@ def test_the_up_arrow_is_recognised_from_the_terminal():
 def _plain(renderable) -> str:
     from rich.console import Console
 
-    con = Console(width=100, record=True, color_system=None)
+    con = Console(width=100, record=True, color_system=None,
+                  file=io.StringIO())
     con.print(renderable)
     return con.export_text()
 
@@ -94,7 +95,7 @@ def test_the_dock_lists_queued_messages_with_the_edit_hint():
     assert "↑ edit queued" in text
 
 
-def test_messages_left_from_earlier_turns_stay_editable(tmp_path, monkeypatch):
+def test_messages_left_from_earlier_turns_stay_editable(headless, tmp_path, monkeypatch):
     from coded.repl import Repl
     from tests.test_progress_and_typeahead import _repl_agent, _repl_config
 

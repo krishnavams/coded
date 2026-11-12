@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import threading
 import time
 
@@ -69,7 +70,8 @@ def test_btw_is_answered_while_a_turn_is_running(tmp_path, fake_server):
     assert not any("quick one?" in str(m.get("content")) for m in agent.session.messages)
 
 
-def test_btw_typed_mid_turn_is_answered_not_queued(tmp_path, fake_server, monkeypatch):
+def test_btw_typed_mid_turn_is_answered_not_queued(headless, tmp_path, fake_server,
+                                                   monkeypatch):
     from rich.console import Console
 
     from coded import ui
@@ -77,7 +79,8 @@ def test_btw_typed_mid_turn_is_answered_not_queued(tmp_path, fake_server, monkey
     from coded.typeahead import TypeAhead
     from tests.test_progress_and_typeahead import _repl_config
 
-    con = Console(width=100, record=True, color_system=None)
+    con = Console(width=100, record=True, color_system=None,
+                  file=io.StringIO())
     monkeypatch.setattr(ui, "console", con)
 
     def script(body):
@@ -119,7 +122,8 @@ async def test_tui_btw_mid_turn(tmp_path, fake_server):
                     break
             from rich.console import Console
 
-            con = Console(width=100, record=True, color_system=None)
+            con = Console(width=100, record=True, color_system=None,
+                  file=io.StringIO())
             panel = app.query_one(".btw")
             con.print(getattr(panel, "renderable", None) or panel.content)
             text = con.export_text()
