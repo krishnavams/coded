@@ -96,6 +96,7 @@ class SessionStore:
                 "cached_tokens": session.total_usage.cached_tokens,
                 "cost": session.cost,
             },
+            "todos": [dict(t) for t in session.todos],
             "system_prompt": session.system_prompt,
             "messages": session.messages,
         }
@@ -128,6 +129,8 @@ class SessionStore:
         s._priced = bool(u.get("cost"))
         s.turns = data.get("turns", 0)
         s.compactions = data.get("compactions", 0)
+        s.todos = [dict(t) for t in data.get("todos") or []
+                   if isinstance(t, dict) and t.get("content")]
         return s
 
     def latest(self, cwd: Optional[str] = None) -> Optional[str]:

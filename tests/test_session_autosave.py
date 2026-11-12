@@ -103,3 +103,51 @@ def test_the_next_turn_after_an_interrupted_tool_is_valid(tmp_path, fake_server)
         agent.run("again")
     roles = [m["role"] for m in seen[-1]]
     assert roles[-3:] == ["assistant", "tool", "user"]
+
+
+TASKS = [{"content": "Review API suites", "status": "completed"},
+         {"content": "Review UI suites", "status": "in_progress"},
+         {"content": "Write the report", "status": "pending"}]
+
+
+def test_the_task_list_is_saved_and_loaded(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODED_SESSIONS_DIR", str(tmp_path / "sessions"))
+    store = SessionStore()
+    s = Session(system_prompt="SYS")
+    s.todos = [dict(t) for t in TASKS]
+    store.save(s, session_id="t", cwd="/p", model="m")
+    assert store.load("t").todos == TASKS
+    # A session saved before task lists were stored loads with none.
+    old = Session(system_prompt="SYS")
+    store.save(old, session_id="old", cwd="/p", model="m")
+    path = tmp_path / "sessions" / "old.json"
+    data = json.loads(path.read_text())
+    del data["todos"]
+    path.write_text(json.dumps(data))
+    assert store.load("old").todos == []
+
+
+def test_resume_restores_the_task_list_into_the_agent(tmp_path, fake_server, monkeypatch):
+    from coded import cli
+
+    monkeypatch.setenv("CODED_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    store = SessionStore()
+    s = Session(system_prompt="SYS")
+    s.add_user("review the tests")
+    s.todos = [dict(t) for t in TASKS]
+    store.save(s, session_id="r1", cwd=str(tmp_path), model="m")
+
+    seen = []
+
+    def script(body):
+        seen.append(body)
+        return {"role": "assistant", "content": "carrying on"}, {"prompt_tokens": 1,
+                                                                 "completion_tokens": 1}
+
+    with fake_server(script) as server:
+        code = cli.main(["--resume", "r1", "--cwd", str(tmp_path), "--base-url",
+                         server.base_url, "--model-name", "m", "-p", "continue"])
+    assert code == 0 and seen
+    # Restored into the agent, so the next autosave writes it back unchanged.
+    assert store.load("r1").todos == TASKS

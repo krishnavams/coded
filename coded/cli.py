@@ -805,6 +805,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         loaded = store.load(resume_id)
         if loaded is not None:
             agent.session = loaded
+            agent.todos.items = [dict(t) for t in loaded.todos]
             session_id = resume_id
             ui.info(f"Resumed session {resume_id} ({len(loaded.messages)} messages).")
         else:
@@ -819,6 +820,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         ui.warn(f"Model '{model.name}' is not marked supports_vision; images may be ignored.")
 
     def autosave():
+        agent.session.todos = [dict(t) for t in agent.todos.items]
         try:
             store.save(agent.session, session_id=session_id, cwd=cwd, model=model.name)
         except OSError:

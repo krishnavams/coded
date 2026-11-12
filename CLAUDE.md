@@ -490,7 +490,9 @@ config.example.json     # sample configuration
 - **Sessions survive a crash**: `Agent.on_step` (main agent only; the CLI sets
   it to autosave) runs after the user message, each tool step and the final
   answer, so a kill loses at most one step; the REPL also saves after Ctrl-C.
-  `SessionStore.save` writes atomically (temp + `os.replace`).
+  `SessionStore.save` writes atomically (temp + `os.replace`). The task list
+  rides along as `Session.todos`: the CLI's autosave copies `agent.todos.items`
+  into it, and `--continue`/`--resume` put it back into `agent.todos`.
   `sessions_store.close_tool_calls` gives unanswered tool calls an
   `INTERRUPTED_RESULT`: applied on load and at the start of every
   `Agent.run`, since endpoints reject a history with an orphan tool call.

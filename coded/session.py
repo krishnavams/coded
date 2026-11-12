@@ -32,6 +32,9 @@ class Session:
     # Cost accrued per answering model (routing and pools change it mid-session).
     cost: float = 0.0
     _priced: bool = False
+    # The agent's task list (todo_write) as of the last save, so a resumed
+    # session picks up where the work stood.
+    todos: List[Dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.messages:
