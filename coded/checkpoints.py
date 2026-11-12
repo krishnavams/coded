@@ -97,7 +97,20 @@ class CheckpointManager:
         dirs = self._group_dirs()
         if not dirs:
             return "Nothing to undo."
-        group_dir = dirs[-1]
+        return self._undo_dir(dirs[-1])
+
+    def undo_since(self, group_id: Optional[str]) -> str:
+        """Undo every group from `group_id` on, newest first (for /rewind).
+        Groups sort by id, so "since" is a string comparison."""
+        if not group_id:
+            return "No file changes to restore."
+        dirs = [d for d in self._group_dirs() if d.name >= group_id]
+        if not dirs:
+            return "No file changes to restore."
+        notes = [self._undo_dir(d) for d in reversed(dirs)]
+        return f"Restored files from {len(dirs)} checkpoint(s): " + " ".join(notes)
+
+    def _undo_dir(self, group_dir: Path) -> str:
         try:
             manifest = json.loads((group_dir / "manifest.json").read_text())
         except (OSError, json.JSONDecodeError) as exc:

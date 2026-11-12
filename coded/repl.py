@@ -7,9 +7,9 @@ from typing import List, Optional
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.completion import WordCompleter, merge_completers
 from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.filters import has_completions
+from prompt_toolkit.filters import Condition, has_completions
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
@@ -27,12 +27,70 @@ _PT_STYLE = Style.from_dict({
     "rule": ui.ACCENT_DEEP,
     "bottom-toolbar": f"{ui.MUTED} bg:#15121f noreverse",
     "bottom-toolbar.accent": f"{ui.ACCENT} bg:#15121f",
+    "box": ui.ACCENT_DEEP,
     "completion-menu.completion": "bg:#1c1830 #cfc8e8",
     "completion-menu.completion.current": f"bg:{ui.ACCENT} #120f1d bold",
     "completion-menu.meta.completion": "bg:#1c1830 #7d7699",
     "completion-menu.meta.completion.current": f"bg:{ui.ACCENT_DEEP} #f3efff",
     "auto-suggestion": "#5b5475",
 })
+
+def _box_input(session: PromptSession, status) -> bool:
+    """Frame the input in a box with the status line right under it.
+
+    prompt_toolkit pins a `bottom_toolbar` to the last row of the terminal, so
+    the status bar would float far below the input; its own `show_frame`
+    stretches the frame down to it. Instead the layout becomes: top edge,
+    `│ input │`, bottom edge, status line, then a filler that takes the spare
+    rows (the completion menu opens over it). The edges stay in the scrollback
+    after Enter; the status line and the filler do not. Returns False, leaving
+    the stock toolbar, if this prompt_toolkit lays its prompt out differently.
+    """
+    from prompt_toolkit.filters import is_done, to_filter
+    from prompt_toolkit.layout import (ConditionalContainer, FloatContainer,
+                                       FormattedTextControl, HSplit, VSplit, Window)
+    from prompt_toolkit.layout.dimension import Dimension
+
+    try:
+        root = session.app.layout.container
+        input_window = session.app.layout.current_window
+        if not isinstance(root, HSplit) or len(root.children) < 2:
+            return False
+        children = list(root.children)
+        main, rest = children[0], children[1:-1]   # the last child is the toolbar
+        # The input with its floats (completion menus, right prompt). The menus
+        # move to the whole layout, or they would be clipped to the input row.
+        input_floats = main.alternative_content
+        if not isinstance(input_floats, FloatContainer):
+            return False
+        menus = [f for f in input_floats.floats if f.ycursor]
+        if not menus:
+            return False
+
+        def edge(left: str, right: str) -> VSplit:
+            return VSplit([Window(width=1, height=1, char=left, style="class:box"),
+                           Window(height=1, char="─", style="class:box"),
+                           Window(width=1, height=1, char=right, style="class:box")])
+
+        body = VSplit([Window(width=1, char="│", style="class:box"), Window(width=1, char=" "),
+                       main,
+                       Window(width=1, char=" "), Window(width=1, char="│", style="class:box")])
+        # The input keeps its own height; the spare rows go to the filler.
+        input_window.dont_extend_height = to_filter(True)
+        status_line = ConditionalContainer(
+            Window(FormattedTextControl(status), height=1, style="class:bottom-toolbar"),
+            filter=~is_done)
+        filler = ConditionalContainer(Window(height=Dimension(min=0)), filter=~is_done)
+        session.reserve_space_for_menu = 0   # the menu opens over the filler instead
+        input_floats.floats[:] = [f for f in input_floats.floats if not f.ycursor]
+        session.app.layout.container = FloatContainer(
+            HSplit([edge("╭", "╮"), body, edge("╰", "╯"), status_line, *rest, filler]),
+            floats=menus)
+        session.bottom_toolbar = None
+        return True
+    except Exception:  # noqa: BLE001 - a different layout: keep the stock one
+        return False
+
 
 def _prompt_session(**kwargs) -> PromptSession:
     """A PromptSession, with a readable error where there is no console.
@@ -62,6 +120,9 @@ SLASH_COMMANDS = {
     "/skill": "Invoke a skill now: /skill <name> [task].",
     "/review": "Run reviewer→qa→security sub-agents on the changes: /review [target].",
     "/plan": "Toggle plan mode (read-only research, then approve a plan). Also Shift+Tab.",
+    "/permissions": "Show or change what may run without asking: "
+                    "/permissions [allow|deny|remove <rule>] [mode <name>] [save].",
+    "/budget": "Show or set the session's spending limit: /budget [dollars|off].",
     "/todos": "Show the agent's current task list.",
     "/shells": "List background shells; /shells kill <id>.",
     "/agents": "List outside agents available to delegate to (external_agent tool).",
@@ -70,7 +131,14 @@ SLASH_COMMANDS = {
     "/prompts": "Show which prompt files are in use (override with `coded prompts init`).",
     "/init": "Analyze the repo and write a CODED.md project guide.",
     "/image": "Attach image(s) to your next message: /image <path>... [prompt].",
+    "/paste": "Attach the image on the clipboard to your next message (also Ctrl+V).",
+    "/vim": "Toggle vi key bindings in the input (config: \"editing_mode\": \"vi\").",
     "/undo": "Undo the last file changes (checkpoint).",
+    "/rewind": "Go back to an earlier request (conversation and files): /rewind [n] [--keep-files].",
+    "/context": "Show what fills the context window.",
+    "/style": "Change how the agent talks: /style [name|off] (no name: list styles).",
+    "/add-dir": "Let the agent work in another folder too: /add-dir <path> (no path: list).",
+    "/export": "Save the conversation as Markdown: /export [path].",
     "/checkpoints": "List saved checkpoints.",
     "/compact": "Summarize the conversation now to free up context.",
     "/cost": "Show token usage and estimated cost this session.",
@@ -81,6 +149,17 @@ SLASH_COMMANDS = {
     "/verify": "Run the project's checks (and the verify model) over the last change.",
     "/memory": "Project memory: /memory [list|add <note>|forget <id>|clear].",
     "/exit": "Quit (also /quit).",
+}
+
+
+KEYS = {
+    "@path": "Attach a file (@app.py, @app.py#L10-40), a folder listing or an image. Tab completes.",
+    "Alt+Enter / Ctrl+J": "New line without sending (or end the line with \\ and press Enter).",
+    "Esc": "Stop the agent mid-turn (Ctrl-C works too).",
+    "Shift+Tab": "Cycle mode: normal → accept edits (file edits run without asking) → plan.",
+    "Ctrl+G": "Write the message in $EDITOR.",
+    "Ctrl+V": "Attach the image on the clipboard.",
+    "Ctrl+R": "Search earlier messages.",
 }
 
 
@@ -106,8 +185,23 @@ class Repl:
         self.config = config
         self._typeahead = None  # set while a turn runs
         self._prefill = ""  # a line half-typed when the last turn ended
+        self._tasks_shown: list = []  # the task list as last shown above the prompt
         self._on_turn = on_turn  # called after each completed turn (autosave)
         self._pending_images: Optional[list] = None
+        from coded.notify import Notifier
+
+        self.notifier = Notifier.from_config(config)
+        from coded.statusline import StatusLine, status_data
+
+        def _redraw() -> None:
+            from prompt_toolkit.application.current import get_app_or_none
+
+            app = get_app_or_none()
+            if app is not None and app.is_running:
+                app.invalidate()
+
+        self.statusline = StatusLine(config.statusline, lambda: status_data(self.agent),
+                                     on_change=_redraw)
         from coded.commands import discover_commands
 
         self.commands = discover_commands(agent.cwd)
@@ -118,15 +212,47 @@ class Repl:
         meta.update({f"/{n}": f"command · {c.description}"[:60] for n, c in self.commands.items()})
         meta.update({name: f"model · {mc.model}" for name, mc in config.models.items()})
         meta.update({name: "skill" for name in agent.skills})
-        completer = WordCompleter(words, meta_dict=meta, sentence=True)
+        from coded.mentions import MentionCompleter
+
+        self.mentions = MentionCompleter(agent.cwd)
+        completer = merge_completers([WordCompleter(words, meta_dict=meta, sentence=True),
+                                      self.mentions])
 
         bindings = KeyBindings()
 
         @bindings.add("s-tab", filter=~has_completions)
-        def _toggle_plan(event) -> None:  # Shift+Tab: plan mode on/off
-            self.agent.set_mode("default" if self.agent.mode == "plan" else "plan",
-                                announce=False)
+        def _cycle_mode(event) -> None:  # Shift+Tab: normal → accept edits → plan
+            self.agent.cycle_mode()
             event.app.invalidate()  # redraw the status bar
+
+        # A new line without sending: Alt+Enter, Ctrl+J, or `\` then Enter.
+        @bindings.add("escape", "enter")
+        @bindings.add("c-j")
+        def _newline(event) -> None:
+            event.current_buffer.insert_text("\n")
+
+        @Condition
+        def _ends_with_backslash() -> bool:
+            from prompt_toolkit.application.current import get_app
+
+            buf = get_app().current_buffer
+            return buf.document.text_before_cursor.endswith("\\")
+
+        @bindings.add("enter", filter=_ends_with_backslash & ~has_completions)
+        def _continue_line(event) -> None:
+            buf = event.current_buffer
+            buf.delete_before_cursor(1)
+            buf.insert_text("\n")
+
+        @bindings.add("c-g")
+        def _edit_in_editor(event) -> None:  # Ctrl+G: write the message in $EDITOR
+            event.current_buffer.open_in_editor(validate_and_handle=False)
+
+        @bindings.add("c-v")
+        def _paste_image(event) -> None:  # Ctrl+V: attach the clipboard's image
+            path = self._grab_clipboard()
+            if path:
+                event.current_buffer.insert_text(f"[image {len(self._pending_images or [])}] ")
 
         self.prompt = _prompt_session(
             key_bindings=bindings,
@@ -136,20 +262,31 @@ class Repl:
             style=_PT_STYLE,
             bottom_toolbar=self._bottom_toolbar,
             complete_while_typing=True,
+            vi_mode=str(config.editing_mode).lower() == "vi",
+            # Lines after the first line up under the text, not under `>`.
+            prompt_continuation=lambda width, line, wrapped: " " * min(width, 2),
         )
+        self._boxed = _box_input(self.prompt, self._bottom_toolbar)
         # Wire the permission prompt into the manager.
         self.agent.permissions.set_prompt(self._permission_prompt)
 
     # -- status bar ---------------------------------------------------------
     def _bottom_toolbar(self):
+        custom = self.statusline.text()
+        if custom is not None:
+            from prompt_toolkit.formatted_text import ANSI
+
+            return ANSI("  " + custom)
         s = self.agent.session
         u = s.total_usage
         cost = s.estimated_cost(self.agent.model)
         tok = u.prompt_tokens + u.completion_tokens
         tok_str = f"{tok/1000:.1f}k" if tok >= 1000 else str(tok)
         compact = "  ⟳ compacted" if getattr(s, "compactions", 0) else ""
-        mode = ("  ·  <style fg='%s'><b>⏸ plan mode</b></style>" % ui.WARN
-                if self.agent.mode == "plan" else "")
+        mode = {
+            "plan": f"  ·  <style fg='{ui.WARN}'><b>⏸ plan mode</b></style>",
+            "accept-edits": f"  ·  <style fg='{ui.ACCENT2}'><b>⏵⏵ accept edits</b></style>",
+        }.get(self.agent.permission_mode, "")
         done, total, _ = ui.todo_progress(self.agent.todos.items)
         if not total:
             tasks = ""
@@ -163,10 +300,11 @@ class Repl:
             f"  ·  {s.turns} turns"
             f"  ·  {tok_str} tokens"
             f"  ·  ~${cost:.4f}{compact}{tasks}"
-            f"  ·  shift+tab plan  ·  /help"
+            f"  ·  @ files  ·  shift+tab mode  ·  /help"
         )
 
     def _permission_prompt(self, title: str, detail: str) -> str:
+        self.notifier.waiting(title)
         ui.console.print()
         ui.permission_panel(title, detail)
         if self._typeahead is not None and self._typeahead.available:
@@ -197,13 +335,70 @@ class Repl:
             return "no"
         return answer or "no"
 
+    def _grab_clipboard(self) -> Optional[str]:
+        """Attach the clipboard's image to the next message; None if there is none."""
+        from prompt_toolkit.application import run_in_terminal
+
+        from coded.images import clipboard_hint, grab_clipboard_image
+
+        path = grab_clipboard_image()
+
+        def say() -> None:
+            if path:
+                ui.info(f"Attached the clipboard image ({Path(path).name}) to your next message.")
+            else:
+                ui.warn("No image on the clipboard — " + clipboard_hint())
+
+        from prompt_toolkit.application.current import get_app_or_none
+
+        app = get_app_or_none()
+        if app is not None and app.is_running:  # Ctrl+V inside the prompt
+            run_in_terminal(say)
+        else:  # /paste
+            say()
+        if path:
+            self._pending_images = list(self._pending_images or []) + [path]
+        return path
+
+    def _escape(self) -> None:
+        """Esc during a turn: stop it, as Ctrl-C does."""
+        self.agent.interrupt()
+        import os
+        import signal
+
+        if os.name == "nt":
+            import _thread
+
+            _thread.interrupt_main()
+        else:
+            os.kill(os.getpid(), signal.SIGINT)
+
     # -- main loop ----------------------------------------------------------
     def _queued_note(self, text: str, waiting: int) -> None:
         short = text if len(text) <= 60 else text[:57] + "…"
         ui.console.print(f"[{ui.ACCENT_SOFT}]  ⏎ queued ({waiting}): {short}[/]")
 
+    def _show_tasks_above_prompt(self) -> bool:
+        """Show the task list right above the input, as the TUI docks it.
+
+        Shown while any task is unfinished, and once more when the list has
+        changed since it was last shown (so the finished list appears once,
+        not before every prompt from then on)."""
+        items = [dict(i) for i in self.agent.todos.items]
+        done, total, _ = ui.todo_progress(items)
+        if not total or (done == total and items == self._tasks_shown):
+            return False
+        self._tasks_shown = items
+        ui.todos(items)
+        return True
+
     def run(self, initial: Optional[str] = None, images: Optional[list] = None) -> None:
         ui.banner(self.agent.model.name, self.agent.cwd)
+        from coded.update_check import notice
+
+        update = notice(self.config.update_check)
+        if update:
+            ui.info(update)
         queued: List[str] = [initial] if initial else []
         self._pending_images = images
         while True:
@@ -213,7 +408,9 @@ class Repl:
             else:
                 try:
                     ui.console.print()
-                    ui.console.rule(style=ui.ACCENT_DEEP)
+                    if not self._boxed:
+                        ui.console.rule(style=ui.ACCENT_DEEP)
+                    self._show_tasks_above_prompt()
                     text = self.prompt.prompt(HTML("<prompt>&gt;</prompt> "),
                                               default=self._prefill)
                     self._prefill = ""
@@ -232,10 +429,13 @@ class Repl:
                 ui.user_prefix()
                 # Keep reading stdin during the turn: anything typed is queued
                 # and run next, instead of being swallowed by the busy terminal.
-                with TypeAhead(default_poll(), on_queue=self._queued_note) as ta:
+                with TypeAhead(default_poll(), on_queue=self._queued_note,
+                               on_escape=self._escape) as ta:
                     self._typeahead = ta
+                    self.notifier.start()
                     try:
-                        self.agent.run(text, images=self._pending_images)
+                        answer = self.agent.run(text, images=self._pending_images)
+                        self.notifier.finished(answer)
                     finally:
                         self._typeahead = None
                         queued += ta.drain()
@@ -278,6 +478,14 @@ class Repl:
             self._cmd_tools()
         elif cmd == "/image":
             self._cmd_image(args)
+        elif cmd == "/paste":
+            self._grab_clipboard()
+        elif cmd == "/vim":
+            from prompt_toolkit.enums import EditingMode
+
+            vi = self.prompt.editing_mode != EditingMode.VI
+            self.prompt.editing_mode = EditingMode.VI if vi else EditingMode.EMACS
+            ui.info(f"{'vi' if vi else 'emacs'} key bindings in the input.")
         elif cmd == "/undo":
             ui.info(self.agent.checkpoints.undo_last() if self.agent.checkpoints else "Checkpoints disabled.")
         elif cmd == "/checkpoints":
@@ -298,6 +506,26 @@ class Repl:
             self.agent.run(_INIT_PROMPT, route_hint="/init")
         elif cmd == "/cost":
             self._cmd_cost()
+        elif cmd == "/rewind":
+            self._cmd_rewind(args)
+        elif cmd == "/style":
+            self._cmd_style(args)
+        elif cmd == "/add-dir":
+            self._cmd_add_dir(args)
+        elif cmd == "/context":
+            from coded.transcript import context_breakdown, render_context
+
+            ui.console.print(render_context(context_breakdown(self.agent)), markup=False,
+                             highlight=False)
+        elif cmd == "/export":
+            from coded.transcript import write_export
+
+            path = write_export(self.agent, " ".join(args) or None)
+            ui.success(f"Saved the conversation to {path}")
+        elif cmd == "/permissions":
+            self._cmd_permissions(args)
+        elif cmd == "/budget":
+            self._cmd_budget(args)
         elif cmd in ("/clear", "/reset"):
             self.agent.session.reset()
             ui.success("Conversation cleared.")
@@ -414,6 +642,137 @@ class Repl:
             table.add_row(f"/{n}", c.argument_hint, c.description)
         ui.console.print(table)
 
+    def _cmd_permissions(self, args: List[str]) -> None:
+        """/permissions [allow|deny|remove <rule>] [mode default|accept-edits|plan] [save]"""
+        perms = self.agent.permissions
+        if args and args[0] in ("allow", "deny") and len(args) > 1:
+            rule = " ".join(args[1:])
+            added = perms.add_rule(args[0], rule)
+            ui.info(f"{args[0].title()} rule {'added' if added else 'already there'}: {rule} "
+                    f"(this session; /permissions save keeps it)")
+            return
+        if args and args[0] == "remove" and len(args) > 1:
+            rule = " ".join(args[1:])
+            ui.info(f"Removed: {rule}" if perms.remove_rule(rule) else f"No such rule: {rule}")
+            return
+        if args and args[0] == "mode" and len(args) > 1:
+            wanted = args[1]
+            if wanted not in ("default", "accept-edits", "plan"):
+                ui.warn("Modes: default, accept-edits, plan.")
+                return
+            while self.agent.permission_mode != wanted:
+                self.agent.cycle_mode()
+            ui.info(f"Mode: {wanted}.")
+            return
+        if args and args[0] == "save":
+            from coded.config import project_config_path
+            from coded.config_wizard import read_file, write_file
+
+            path = project_config_path(self.agent.cwd)
+            data = read_file(path)
+            data["permissions"] = {"allow": list(perms.allow_rules), "deny": list(perms.deny_rules)}
+            write_file(path, data)
+            ui.success(f"Saved {len(perms.allow_rules)} allow and {len(perms.deny_rules)} deny "
+                       f"rule(s) to {path}.")
+            return
+        if args:
+            ui.warn("Usage: /permissions [allow|deny|remove <rule>] [mode <name>] [save]")
+            return
+        mode = self.agent.permission_mode
+        table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
+        table.add_row("[cyan]mode[/cyan]", mode + ("  (yolo: everything runs)"
+                                                   if perms.auto_approve else ""))
+        table.add_row("[cyan]allow[/cyan]", ", ".join(perms.allow_rules) or "[dim]none[/dim]")
+        table.add_row("[cyan]deny[/cyan]", ", ".join(perms.deny_rules) or "[dim]none[/dim]")
+        table.add_row("[cyan]always (session)[/cyan]",
+                      ", ".join(perms.always_allowed) or "[dim]none[/dim]")
+        ui.console.print(table)
+        ui.console.print(f"[{ui.MUTED}]Rules look like bash, bash(git *), edit(src/*). "
+                         f"Deny always wins. Shift+Tab cycles the mode.[/]")
+
+    def _cmd_style(self, args: List[str]) -> None:
+        from coded.styles import discover_styles
+
+        styles = discover_styles(self.agent.cwd)
+        if not args:
+            current = self.config.output_style or "default"
+            table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
+            table.add_row(("● " if current == "default" else "  ") + "[cyan]default[/cyan]",
+                          "coded's normal voice")
+            for name, style in styles.items():
+                mark = "● " if name == current else "  "
+                table.add_row(f"{mark}[cyan]{name}[/cyan]", style.description)
+            ui.console.print(table)
+            ui.console.print(f"[{ui.MUTED}]Add your own in .coded/styles/<name>.md.[/]")
+            return
+        name = args[0]
+        if name in ("off", "default", "none"):
+            self.config.output_style = None
+        elif name in styles:
+            self.config.output_style = name
+        else:
+            ui.warn(f"No style '{name}'. Styles: default, {', '.join(styles)}.")
+            return
+        self.agent.refresh_system_prompt()
+        ui.success(f"Output style: {self.config.output_style or 'default'}.")
+
+    def _cmd_add_dir(self, args: List[str]) -> None:
+        import os
+
+        if not args:
+            dirs = self.config.add_dirs
+            ui.info("Extra folders: " + (", ".join(dirs) if dirs else "none") +
+                    "  (/add-dir <path> adds one)")
+            return
+        path = os.path.abspath(os.path.join(self.agent.cwd, os.path.expanduser(" ".join(args))))
+        if not os.path.isdir(path):
+            ui.warn(f"{path} is not a folder.")
+            return
+        if path not in self.config.add_dirs:
+            self.config.add_dirs.append(path)
+            self.agent.refresh_system_prompt()
+        ui.success(f"The agent may now work in {path} too.")
+
+    def _cmd_rewind(self, args: List[str]) -> None:
+        """/rewind lists requests; /rewind N goes back to just before request N
+        (its text is put back in the input to edit and resend)."""
+        keep = "--keep-files" in args
+        args = [a for a in args if a != "--keep-files"]
+        turns = self.agent.turn_history()
+        if not turns:
+            ui.info("Nothing to rewind in this conversation.")
+            return
+        if not args:
+            table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
+            for n, turn in enumerate(turns, 1):
+                text = " ".join(turn["text"].split())
+                table.add_row(f"[cyan]{n}[/cyan]", text[:90] + ("…" if len(text) > 90 else ""))
+            ui.console.print(table)
+            ui.console.print(f"[{ui.MUTED}]/rewind N goes back to just before request N and "
+                             f"undoes its file changes (--keep-files leaves files alone).[/]")
+            return
+        try:
+            summary, text = self.agent.rewind(int(args[0]), restore_files=not keep)
+        except ValueError as exc:
+            ui.warn(str(exc) if "between" in str(exc) else "Usage: /rewind [n] [--keep-files]")
+            return
+        ui.success(summary)
+        self._prefill = text  # edit it and send again, or clear it
+
+    def _cmd_budget(self, args: List[str]) -> None:
+        spent = self.agent.session.estimated_cost(self.agent.model)
+        if args:
+            if args[0] in ("off", "none"):
+                self.config.max_cost = None
+            else:
+                try:
+                    self.config.max_cost = float(args[0].lstrip("$"))
+                except ValueError:
+                    ui.warn("Usage: /budget [dollars|off]")
+                    return
+        limit = self.config.max_cost
+        ui.info(f"Spent ~${spent:.4f}; limit: " + (f"${limit:.2f}" if limit is not None else "none"))
+
     def _cmd_help(self) -> None:
         table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
         for name, desc in SLASH_COMMANDS.items():
@@ -421,6 +780,12 @@ class Repl:
         for name, c in self.commands.items():
             table.add_row(f"[cyan]/{name}[/cyan]", f"{c.description} [dim](custom)[/dim]")
         ui.console.print(table)
+        keys = Table(show_header=False, box=None, padding=(0, 2, 0, 0), title="Keys",
+                     title_justify="left")
+        for key, desc in KEYS.items():
+            keys.add_row(f"[cyan]{key}[/cyan]", desc)
+        ui.console.print()
+        ui.console.print(keys)
 
     def _cmd_models(self) -> None:
         table = Table(title="Configured models")
@@ -688,9 +1053,10 @@ class Repl:
     def _cmd_cost(self) -> None:
         u = self.agent.session.total_usage
         cost = self.agent.session.estimated_cost(self.agent.model)
+        cached = f" [dim](cached {u.cached_tokens:,})[/dim]" if u.cached_tokens else ""
         ui.console.print(
             f"[dim]Turns:[/dim] {self.agent.session.turns}   "
-            f"[dim]Input tokens:[/dim] {u.prompt_tokens:,}   "
+            f"[dim]Input tokens:[/dim] {u.prompt_tokens:,}{cached}   "
             f"[dim]Output tokens:[/dim] {u.completion_tokens:,}   "
             f"[dim]Est. cost:[/dim] ${cost:.4f}"
         )

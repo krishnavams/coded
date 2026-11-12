@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Subcommands: `coded config setup|init|path|show`, `coded models [--check]`, "
                "`coded skill install|list|remove|update|info`, `coded prompts list|show|init`, "
                "`coded plugin install|list|remove|update|enable|disable|info|search|marketplace`, "
-               "`coded review`, `coded commit`, `coded index`, `coded sessions`, "
+               "`coded review`, `coded commit`, `coded index`, `coded sessions`, `coded doctor`, "
                "`coded acp` (Agent Client Protocol server), `coded mcp-serve` (MCP server).",
     )
     p.add_argument("prompt", nargs="*", help="Initial request. If omitted, starts the interactive REPL.")
@@ -48,6 +48,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Non-interactive: run the prompt once, print the result, and exit.")
     p.add_argument("--yolo", "--auto-approve", action="store_true", dest="auto_approve",
                    help="Auto-approve all tool actions (no permission prompts). Use with care.")
+    p.add_argument("--add-dir", action="append", metavar="DIR", dest="add_dirs",
+                   help="Another folder the agent may work in (repeatable).")
+    p.add_argument("--accept-edits", action="store_true",
+                   help="File edits run without asking (shell commands and deletes still ask).")
+    p.add_argument("--max-cost", type=float, metavar="DOLLARS",
+                   help="Stop once the session's estimated cost reaches this many dollars.")
     p.add_argument("--no-stream", action="store_true", help="Disable streaming output.")
     p.add_argument("--no-compact", action="store_true", help="Disable automatic context compaction.")
     p.add_argument("--cwd", help="Working directory for the agent (default: current dir).")
@@ -63,8 +69,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--continue", dest="continue_session", action="store_true",
                    help="Resume the most recent saved session for this directory.")
     p.add_argument("--resume", metavar="ID", help="Resume a specific saved session by id.")
-    p.add_argument("--output-format", choices=["text", "json"], default="text",
-                   help="Output format for --print mode (json emits content + usage + cost).")
+    p.add_argument("--output-format", choices=["text", "json", "stream-json"], default="text",
+                   help="Output format for --print mode: json emits content + usage + cost at "
+                        "the end; stream-json emits one JSON event per line as the agent works.")
     p.add_argument("--plan", action="store_true",
                    help="Start in plan mode (read-only research until you approve a plan).")
     p.add_argument("--shell", metavar="NAME",
@@ -112,6 +119,17 @@ def _apply_overrides(cfg: Config, args: argparse.Namespace) -> None:
         cfg.shell = args.shell
     if args.auto_approve:
         cfg.auto_approve = True
+    if getattr(args, "accept_edits", False):
+        cfg.accept_edits = True
+    base = getattr(args, "cwd", None) or os.getcwd()
+    dirs = list(cfg.add_dirs or []) + list(getattr(args, "add_dirs", None) or [])
+    cfg.add_dirs = list(dict.fromkeys(
+        os.path.abspath(os.path.join(base, os.path.expanduser(str(d)))) for d in dirs))
+    for d in cfg.add_dirs:
+        if not os.path.isdir(d):
+            raise ConfigError(f"--add-dir: {d} is not a folder.")
+    if getattr(args, "max_cost", None) is not None:
+        cfg.max_cost = args.max_cost
     if args.no_stream:
         cfg.stream = False
     if args.no_compact:
@@ -659,6 +677,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _handle_models_command(argv[1:])
     if argv and argv[0] == "agents":
         return _handle_agents_command(argv[1:])
+    if argv and argv[0] == "doctor":
+        from coded.doctor import main as doctor_main
+
+        return doctor_main(argv[1:])
     if argv and argv[0] == "index":
         return _handle_index_command(argv[1:])
     if argv and argv[0] == "review":
@@ -697,7 +719,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     prewarm()
 
     # In JSON print mode, keep stdout clean — send all log output to stderr.
-    if args.print_mode and args.output_format == "json":
+    if args.print_mode and args.output_format in ("json", "stream-json"):
         ui.set_quiet(True)
 
     if args.shell:  # before load_config: plugin hooks and prompts need the shell
@@ -833,10 +855,21 @@ def _run_print_mode(agent, prompt: Optional[str], images=None, *,
     if not prompt:
         ui.error("No prompt provided for --print mode.")
         return 1
+    import json as _json
+
+    def emit(event: dict) -> None:
+        print(_json.dumps(event, default=str, ensure_ascii=False), flush=True)
+
     if output_format == "json":
         # Keep stdout clean for machine parsing: no streaming/tool chatter.
         agent.stream = False
         agent.verbose = False
+    elif output_format == "stream-json":
+        # One JSON object per line: the agent's own events (assistant_delta,
+        # tool_call, tool_result, diff, todos, status…), then a "result".
+        agent.verbose = False
+        agent.on_event = emit
+        emit({"type": "start", "model": agent.model.name, "cwd": agent.cwd})
     # In print mode we auto-approve nothing by default; keep it non-interactive.
     try:
         result = agent.run(prompt, images=images)
@@ -844,17 +877,24 @@ def _run_print_mode(agent, prompt: Optional[str], images=None, *,
         from coded.llm import explain_failure
 
         ui.error(explain_failure(exc))
+        if output_format == "stream-json":
+            emit({"type": "error", "message": explain_failure(exc)})
         return 1
     if on_done:
         on_done()
-    if output_format == "json":
-        import json as _json
-
+    if output_format == "stream-json":
+        u = agent.session.total_usage
+        emit({"type": "result", "content": result, "model": agent.model.name,
+              "usage": {"input_tokens": u.prompt_tokens, "output_tokens": u.completion_tokens,
+                        "cached_input_tokens": u.cached_tokens},
+              "cost": round(agent.session.estimated_cost(agent.model), 6)})
+    elif output_format == "json":
         u = agent.session.total_usage
         print(_json.dumps({
             "content": result,
             "model": agent.model.name,
-            "usage": {"input_tokens": u.prompt_tokens, "output_tokens": u.completion_tokens},
+            "usage": {"input_tokens": u.prompt_tokens, "output_tokens": u.completion_tokens,
+                      "cached_input_tokens": u.cached_tokens},
             "cost": round(agent.session.estimated_cost(agent.model), 6),
         }, indent=2))
     elif result and not agent.stream and not agent.verbose:

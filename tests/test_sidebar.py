@@ -155,7 +155,7 @@ async def test_the_panel_opens_on_a_wide_terminal_and_stays_shut_on_a_narrow_one
 
 
 @pytest.mark.asyncio
-async def test_a_turn_fills_the_panel_and_tasks_move_into_it(tmp_path, fake_server):
+async def test_a_turn_fills_the_panel_and_tasks_stay_by_the_input(tmp_path, fake_server):
     from textual.widgets import Input, Static
 
     from coded.tui import CodedTUI
@@ -172,10 +172,13 @@ async def test_a_turn_fills_the_panel_and_tasks_move_into_it(tmp_path, fake_serv
 
             body = str(app.query_one("#side-body", Static).render())
             assert "Changed last turn" in body and "hello.py" in body and "new +2" in body
-            assert "Write hello.py" in body
-            # The inline task list is hidden while the panel shows the tasks...
-            assert not app.query_one("#tasks").has_class("shown")
+            # The tasks stay docked right above the input, not in the panel...
+            assert "Write hello.py" not in body
+            tasks, prompt = app.query_one("#tasks"), app.query_one("#prompt")
+            assert tasks.has_class("shown")
+            assert "Write hello.py" in str(tasks.render())
+            assert tasks.region.bottom == prompt.region.y
             await pilot.press("ctrl+b")
             await pilot.pause()
-            # ...and comes back when the panel is closed.
-            assert app.query_one("#tasks").has_class("shown")
+            # ...and stay there when the panel is closed.
+            assert tasks.has_class("shown") and tasks.region.bottom == prompt.region.y

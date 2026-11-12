@@ -14,6 +14,11 @@ from enum import Enum
 from typing import Callable, List, Optional, Set
 
 
+# File-editing tools that "accept edits" mode lets through without asking.
+# Deleting files and running commands still ask.
+EDIT_KEYS = frozenset({"write", "edit", "multi_edit", "apply_patch", "move", "notebook_edit"})
+
+
 class Decision(Enum):
     ALLOW = "allow"
     DENY = "deny"
@@ -55,6 +60,8 @@ class PermissionManager:
         self.deny_rules: List[str] = list(rules.get("deny") or [])
         # Plan mode: every risky action is refused (read-only research).
         self.plan_mode = False
+        # Accept-edits mode: file edits (EDIT_KEYS) run without asking.
+        self.accept_edits = False
         # Set once untrusted content (web pages, PR bodies, MCP output) entered the
         # context this turn. "strict" then ignores auto-approval; "warn" flags prompts.
         self.injection_guard = injection_guard
@@ -82,6 +89,33 @@ class PermissionManager:
     def allow_always(self, key: str) -> None:
         self._always.add(key)
 
+    @property
+    def always_allowed(self) -> List[str]:
+        """Tools approved with "always" this session."""
+        return sorted(self._always)
+
+    def add_rule(self, kind: str, rule: str) -> bool:
+        """Add an allow/deny rule for this session; False if already there."""
+        rules = self.allow_rules if kind == "allow" else self.deny_rules
+        rule = rule.strip()
+        if not rule or rule in rules:
+            return False
+        rules.append(rule)
+        return True
+
+    def remove_rule(self, rule: str) -> bool:
+        """Remove a rule from either list (or a session "always" approval)."""
+        rule = rule.strip()
+        found = False
+        for rules in (self.allow_rules, self.deny_rules):
+            if rule in rules:
+                rules.remove(rule)
+                found = True
+        if rule in self._always:
+            self._always.discard(rule)
+            found = True
+        return found
+
     def _matches(self, patterns: List[str], key: str, target: str) -> bool:
         return any(_rule_matches(p, key, target) for p in patterns)
 
@@ -104,6 +138,8 @@ class PermissionManager:
         strict = self.tainted and self.injection_guard == "strict"
         if not strict:
             if auto_allowed or self.auto_approve or key in self._always:
+                return Decision.ALLOW
+            if self.accept_edits and key in EDIT_KEYS:
                 return Decision.ALLOW
             if self._matches(self.allow_rules, key, target):
                 return Decision.ALLOW

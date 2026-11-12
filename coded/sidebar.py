@@ -5,7 +5,8 @@ the TUI only places the returned `Text` in a widget.
 
 Sections, each shown only when it has something to say:
   Session   model, mode, context fill, turns/tokens/cost
-  Tasks     the todo list with its progress bar
+  Tasks     the todo list with its progress bar (the TUI passes tasks=False:
+            it docks the list above the input instead)
   Changed   files written this turn (or last turn), with +/- line counts
   Queued    messages typed while the agent was busy
   Shells    background shells and whether they are still running
@@ -125,7 +126,8 @@ def _heading(t: Text, title: str, extra: str = "") -> None:
 
 
 def render(agent: Any, *, busy: bool = False, queued: Sequence[str] = (),
-           changes: Iterable[FileChange] = (), width: int = PANEL_WIDTH) -> Text:
+           changes: Iterable[FileChange] = (), width: int = PANEL_WIDTH,
+           tasks: bool = True) -> Text:
     # The widget spends 3 columns on its border and padding; lines are indented 2.
     inner = max(width - 5, 16)
     t = Text(no_wrap=True, overflow="ellipsis")
@@ -161,7 +163,7 @@ def render(agent: Any, *, busy: bool = False, queued: Sequence[str] = (),
         t.append(f"  compacted {s.compactions}×\n", style=ui.MUTED)
 
     # -- tasks ----------------------------------------------------------------
-    items = list(getattr(agent.todos, "items", []) or [])
+    items = list(getattr(agent.todos, "items", []) or []) if tasks else []
     if items:
         done, total, _ = ui.todo_progress(items)
         _heading(t, "Tasks", f"{done}/{total}")

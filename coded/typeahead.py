@@ -7,7 +7,8 @@ was the only thing that could read a key.
 `TypeAhead` owns stdin for the duration of a turn. Lines typed while the agent
 works are queued and run as the next messages; when the agent needs an answer
 (the permission prompt), `ask()` takes the next line instead, so the two never
-race for the same keystrokes.
+race for the same keystrokes. A lone Esc stops the turn (`on_escape`), or
+answers a waiting prompt with "no".
 
 Reading is polled, never blocking, so the reader thread stops the moment the
 turn ends and never steals the first line typed at the next prompt. The poll is
@@ -23,11 +24,121 @@ import threading
 from typing import Callable, List, Optional
 
 POLL_SECONDS = 0.05
+# Returned by a poll when Esc is pressed on its own (not as part of an arrow
+# key's escape sequence): the user wants the running turn stopped.
+ESCAPE = "\x1b"
 
 
 # ---------------------------------------------------------------------------
 # Platform readers: return a complete line, or None if nothing was typed.
 # ---------------------------------------------------------------------------
+class _PosixKeys:
+    """Key-by-key reading on a POSIX terminal, so a bare Esc can stop a turn.
+
+    The terminal is put in non-canonical, no-echo mode for the turn (signals
+    stay on, so Ctrl-C still works); characters are echoed and collected here,
+    Backspace and Ctrl-U edit the line, and Enter hands it over. An escape
+    sequence (arrow keys, function keys) arrives as several bytes at once and is
+    dropped; a lone Esc is returned as `ESCAPE`. A line still being typed when
+    the turn ends stays in `buf` for the next prompt. `close()` restores the
+    terminal (TypeAhead.stop calls it).
+    """
+
+    def __init__(self, fd: Optional[int] = None, out=None) -> None:
+        import codecs
+
+        self.fd = sys.stdin.fileno() if fd is None else fd
+        self.out = out or sys.stdout
+        self.buf: List[str] = []
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self._saved = None
+        self._pending = ""
+
+    def _raw(self) -> None:
+        if self._saved is not None:
+            return
+        import termios
+
+        self._saved = termios.tcgetattr(self.fd)
+        attrs = termios.tcgetattr(self.fd)
+        attrs[3] &= ~(termios.ICANON | termios.ECHO)
+        attrs[6][termios.VMIN] = 0
+        attrs[6][termios.VTIME] = 0
+        termios.tcsetattr(self.fd, termios.TCSANOW, attrs)
+
+    def close(self) -> None:
+        if self._saved is None:
+            return
+        import termios
+
+        try:
+            termios.tcsetattr(self.fd, termios.TCSANOW, self._saved)
+        finally:
+            self._saved = None
+
+    def _echo(self, text: str) -> None:
+        try:
+            self.out.write(text)
+            self.out.flush()
+        except Exception:  # noqa: BLE001 - echo is cosmetic
+            pass
+
+    def _read(self, timeout: float) -> str:
+        import select
+
+        ready, _, _ = select.select([self.fd], [], [], timeout)
+        if not ready:
+            return ""
+        data = os.read(self.fd, 1024)
+        if not data:
+            raise EOFError
+        return self._decoder.decode(data)
+
+    def __call__(self, timeout: float) -> Optional[str]:
+        self._raw()
+        chunk = self._pending or self._read(timeout)
+        self._pending = ""
+        i = 0
+        while i < len(chunk):
+            ch = chunk[i]
+            i += 1
+            if ch == "\x1b":
+                rest = chunk[i:] or self._read(0.03)
+                if not rest:
+                    self._pending = ""
+                    return ESCAPE
+                # An escape sequence: skip it (CSI ends at a byte in @..~).
+                j = 0
+                if rest[:1] in ("[", "O"):
+                    j = 1
+                    while j < len(rest) and not ("@" <= rest[j] <= "~"):
+                        j += 1
+                    j += 1
+                else:
+                    j = 1
+                chunk, i = rest[j:], 0
+                continue
+            if ch in ("\r", "\n"):
+                self._echo("\n")
+                line, self.buf = "".join(self.buf), []
+                self._pending = chunk[i:]
+                return line
+            if ch in ("\x7f", "\x08"):
+                if self.buf:
+                    self.buf.pop()
+                    self._echo("\b \b")
+                continue
+            if ch == "\x15":  # Ctrl-U: clear the line
+                self._echo("\b \b" * len(self.buf))
+                self.buf = []
+                continue
+            if ch < " " and ch != "\t":
+                continue
+            self.buf.append(ch)
+            self._echo(ch)
+        return None
+
+
 def _posix_poll(timeout: float) -> Optional[str]:
     import select
 
@@ -68,6 +179,8 @@ class _WindowsPoll:
                         sys.stdout.write("\b \b")
                         sys.stdout.flush()
                     continue
+                if ch == "\x1b":  # Esc: stop the turn
+                    return ESCAPE
                 if ch == "\x03":  # Ctrl-C: the console signals the process itself
                     self.buf = []
                     return None
@@ -97,9 +210,16 @@ def default_poll() -> Optional[Callable[[float], Optional[str]]]:
         return _WindowsPoll()
     try:
         import select  # noqa: F401
-    except ImportError:
-        return None
-    return _posix_poll
+        import termios
+
+        termios.tcgetattr(sys.stdin.fileno())
+    except Exception:  # noqa: BLE001 - no termios: line mode, no Esc
+        try:
+            import select  # noqa: F401,F811
+        except ImportError:
+            return None
+        return _posix_poll
+    return _PosixKeys()
 
 
 # ---------------------------------------------------------------------------
@@ -107,9 +227,11 @@ class TypeAhead:
     """Collects lines typed while a turn runs; routes one to a waiting prompt."""
 
     def __init__(self, poll: Optional[Callable[[float], Optional[str]]] = None,
-                 on_queue: Optional[Callable[[str, int], None]] = None):
+                 on_queue: Optional[Callable[[str, int], None]] = None,
+                 on_escape: Optional[Callable[[], None]] = None):
         self._poll = poll
         self._on_queue = on_queue
+        self._on_escape = on_escape
         self._queued: "queue.Queue[str]" = queue.Queue()
         self._answers: "queue.Queue[str]" = queue.Queue()
         self._want_answer = threading.Event()
@@ -133,6 +255,12 @@ class TypeAhead:
         thread, self._thread = self._thread, None
         if thread is not None:
             thread.join(timeout=1.0)
+        close = getattr(self._poll, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception:  # noqa: BLE001 - restoring the terminal is best effort
+                pass
 
     def __enter__(self) -> "TypeAhead":
         self.start()
@@ -150,7 +278,19 @@ class TypeAhead:
                 return
             if line is None:
                 continue
+            if line == ESCAPE:
+                self.escape()
+                continue
             self.feed(line)
+
+    def escape(self) -> None:
+        """Esc: answer a waiting prompt with "no", otherwise stop the turn."""
+        if self._want_answer.is_set():
+            self._want_answer.clear()
+            self._answers.put("n")
+            return
+        if self._on_escape:
+            self._on_escape()
 
     def feed(self, line: str) -> None:
         """Deliver one typed line (also the test entry point)."""
@@ -201,9 +341,8 @@ class TypeAhead:
 
     @property
     def partial(self) -> str:
-        """A line the user was still typing when the turn ended (Windows only;
-        on POSIX the terminal keeps it until Enter). The caller pre-fills the
-        next prompt with it so nothing typed is lost."""
+        """A line the user was still typing when the turn ended. The caller
+        pre-fills the next prompt with it so nothing typed is lost."""
         buf = getattr(self._poll, "buf", None)
         if not buf:
             return ""

@@ -115,7 +115,8 @@ def welcome(model_name: str, cwd: str) -> Panel:
     right.append(" to interrupt", style=MUTED)
     grid = Table.grid(padding=(0, 2))
     grid.add_row(logo_text(), right)
-    return Panel(grid, box=ROUNDED, border_style=ACCENT, padding=(0, 1), expand=False)
+    # Full width, like the input box, so the boxes line up at any terminal size.
+    return Panel(grid, box=ROUNDED, border_style=ACCENT, padding=(0, 1), expand=True)
 
 
 def banner(model_name: str, cwd: str) -> None:
@@ -166,7 +167,8 @@ def _one_line(value: Any, width: int = 100) -> str:
 # How each tool call is titled: display name + which argument is the headline.
 _TOOL_TITLES = {
     "read": ("Read", "path"), "write": ("Write", "path"), "edit": ("Edit", "path"),
-    "multi_edit": ("Edit", "path"), "ls": ("List", "path"), "delete": ("Delete", "path"),
+    "multi_edit": ("Edit", "path"), "notebook_edit": ("Edit notebook", "path"),
+    "browser": ("Browser", "url"), "ls": ("List", "path"), "delete": ("Delete", "path"),
     "glob": ("Glob", "pattern"), "grep": ("Search", "pattern"),
     "semantic_search": ("Search", "query"), "bash": ("Bash", "command"),
     "bash_output": ("BashOutput", "shell_id"), "kill_shell": ("KillShell", "shell_id"),
@@ -385,5 +387,6 @@ def todos(items: list) -> None:
         if status == "in_progress":
             t.append("   ← now", style=WARN)
         t.append("\n")
+    t.rstrip()
     console.print(Panel(t, title=todo_title(items), title_align="left", border_style=MUTED,
-                        box=ROUNDED, expand=False))
+                        box=ROUNDED, expand=True))

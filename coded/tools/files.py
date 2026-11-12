@@ -44,9 +44,9 @@ class ReadTool(Tool):
 1-indexed line numbers in `cat -n` format. Use `offset` and `limit` for large files. \
 Prefer this over `cat`/`head` via the shell.
 
-Also reads documents as text: PDF (per page), Word .docx (headings, paragraphs and \
+Also reads Jupyter notebooks (.ipynb) cell by cell with their outputs, and documents as text: PDF (per page), Word .docx (headings, paragraphs and \
 tables in order), Excel .xlsx (each sheet as numbered rows of cell values) and \
-PowerPoint .pptx (per slide, with speaker notes). For those, `pages` picks pages, \
+PowerPoint .pptx (per slide, with speaker notes). For those, `pages` picks cells, pages, \
 slides or sheets — "3", "2-5", "1,4" or a sheet name — before `offset`/`limit` apply."""
     parameters = {
         "type": "object",
@@ -260,10 +260,13 @@ class LsTool(Tool):
         if not p.is_dir():
             return ToolResult.error(f"{p} is not a directory.")
         entries = []
+        from coded.ignore import rules_for
+
+        rules = rules_for(ctx.cwd)
         try:
             for child in sorted(p.iterdir(), key=lambda c: (not c.is_dir(), c.name.lower())):
-                if child.name.startswith(".") and child.name not in (".env", ".coded"):
-                    pass  # still show, but dotfiles are common; keep them
+                if rules and rules.ignored(child):
+                    continue  # excluded by .codedignore
                 suffix = "/" if child.is_dir() else ""
                 entries.append(f"{child.name}{suffix}")
         except OSError as exc:

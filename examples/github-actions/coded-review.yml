@@ -1,0 +1,82 @@
+# Review every pull request with coded's reviewer -> qa -> security pipeline.
+#
+# Copy this file to .github/workflows/coded-review.yml in your repository, then
+# in Settings -> Secrets and variables -> Actions add:
+#   secret   CODED_API_KEY   the API key for your model's endpoint
+#   variable CODED_BASE_URL  e.g. https://api.openai.com/v1 (any OpenAI-compatible URL)
+#   variable CODED_MODEL     e.g. gpt-4o
+#
+# The report is posted as a PR comment (updated on each push) and the job fails
+# when the verdict is NEEDS_CHANGES. Remove `--fail-on` handling below if you
+# only want the comment.
+name: coded review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: coded-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Forks do not get secrets; skip them rather than fail.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install coded
+        run: pip install "git+https://github.com/krishnavams/coded"
+
+      - name: Review the changes
+        id: review
+        env:
+          CODED_API_KEY: ${{ secrets.CODED_API_KEY }}
+        run: |
+          set +e
+          git diff "origin/${{ github.base_ref }}...HEAD" > /tmp/pr.diff
+          coded review \
+            --base-url "${{ vars.CODED_BASE_URL }}" \
+            --model-name "${{ vars.CODED_MODEL }}" \
+            --api-key "$CODED_API_KEY" \
+            --output review.md \
+            "the changes in this pull request against origin/${{ github.base_ref }} (diff in /tmp/pr.diff)"
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Post the report on the pull request
+        if: always() && hashFiles('review.md') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "<!-- coded-review -->"
+            echo "## coded review"
+            echo
+            cat review.md
+          } > comment.md
+          id=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+                 --jq '.[] | select(.body | startswith("<!-- coded-review -->")) | .id' | head -n1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$id" -F body=@comment.md
+          else
+            gh pr comment "${{ github.event.pull_request.number }}" --body-file comment.md
+          fi
+
+      - name: Fail on NEEDS_CHANGES
+        if: steps.review.outputs.exit_code != '0'
+        run: |
+          echo "coded review found problems (see the PR comment)."
+          exit 1

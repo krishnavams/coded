@@ -68,12 +68,36 @@ class ToolCall:
 class Usage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # Of prompt_tokens, how many the provider served from its prompt cache
+    # (billed cheaper by most providers; see ModelConfig.cached_input_cost).
+    cached_tokens: int = 0
 
     def __add__(self, other: "Usage") -> "Usage":
         return Usage(
             self.prompt_tokens + other.prompt_tokens,
             self.completion_tokens + other.completion_tokens,
+            self.cached_tokens + other.cached_tokens,
         )
+
+
+def usage_from(raw: Any) -> "Usage":
+    """Usage from an SDK usage object, reading cached prompt tokens where the
+    provider reports them (OpenAI-style prompt_tokens_details.cached_tokens,
+    DeepSeek's prompt_cache_hit_tokens)."""
+    if not raw:
+        return Usage()
+    cached = 0
+    details = getattr(raw, "prompt_tokens_details", None)
+    if details is not None:
+        cached = (details.get("cached_tokens") if isinstance(details, dict)
+                  else getattr(details, "cached_tokens", 0)) or 0
+    if not cached:
+        cached = getattr(raw, "prompt_cache_hit_tokens", 0) or 0
+        extra = getattr(raw, "model_extra", None) or {}
+        cached = cached or extra.get("prompt_cache_hit_tokens", 0) or 0
+    prompt = getattr(raw, "prompt_tokens", 0) or 0
+    return Usage(prompt, getattr(raw, "completion_tokens", 0) or 0,
+                 min(int(cached), prompt))
 
 
 @dataclass
@@ -480,7 +504,7 @@ class LLMClient:
             tool_calls.append(ToolCall(tc.id, tc.function.name, tc.function.arguments or "{}"))
         usage = Usage()
         if resp.usage:
-            usage = Usage(resp.usage.prompt_tokens or 0, resp.usage.completion_tokens or 0)
+            usage = usage_from(resp.usage)
         reasoning = getattr(msg, "reasoning_content", None) or getattr(msg, "reasoning", None) or ""
         return Completion(msg.content or "", tool_calls, usage, choice.finish_reason,
                           reasoning if isinstance(reasoning, str) else "")
@@ -497,7 +521,7 @@ class LLMClient:
 
         for chunk in stream:
             if getattr(chunk, "usage", None):
-                usage = Usage(chunk.usage.prompt_tokens or 0, chunk.usage.completion_tokens or 0)
+                usage = usage_from(chunk.usage)
             if not chunk.choices:
                 continue
             choice = chunk.choices[0]

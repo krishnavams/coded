@@ -3,9 +3,10 @@
 Layout:
   ┌ transcript (scrollable) ──────────────┬ side panel (Ctrl+B) ─┐
   │ welcome card, requests, tool calls,   │ session · context    │
-  │ diffs, answers                        │ tasks · files changed│
-  │ task list (when the panel is shut)    │ queued · shells      │
+  │ diffs, answers                        │ files changed        │
+  │                                       │ queued · shells      │
   └───────────────────────────────────────┴──────────────────────┘
+  task list (while the agent has one), docked right above the input
   ╭ input ─────────────────────────────────────────────╮
   status line: model · mode · turns · tokens · cost · key hints
 
@@ -135,7 +136,7 @@ class CodedTUI(App):
                 border-left: tall #2a2342; background: #120f1f;
                 scrollbar-color: {ui.ACCENT_DEEP}; }}
     #sidebar.open {{ display: block; }}
-    #tasks {{ height: auto; max-height: 10; padding: 0 2; margin: 1 0 0 0; display: none; }}
+    #tasks {{ height: auto; max-height: 12; padding: 0 2; margin: 1 1 0 1; display: none; }}
     #tasks.shown {{ display: block; }}
     #prompt {{ border: round #3b3260; background: #100d1a; margin: 0 1; }}
     #prompt:focus {{ border: round {ui.ACCENT}; }}
@@ -149,7 +150,7 @@ class CodedTUI(App):
         Binding("ctrl+c", "quit", "Quit", priority=True),
         Binding("ctrl+l", "clear", "Clear"),
         Binding("ctrl+u", "undo", "Undo edits"),
-        Binding("shift+tab", "toggle_plan", "Plan mode", priority=True),
+        Binding("shift+tab", "toggle_plan", "Mode", priority=True),
         Binding("ctrl+b", "toggle_sidebar", "Side panel", priority=True),
     ]
 
@@ -168,6 +169,22 @@ class CodedTUI(App):
         self._queued: list = []  # messages typed while a turn was running
         self._panel_choice: Optional[bool] = None  # None: follow the terminal width
         self._changes: list = []  # sidebar.FileChange, recomputed after tool results
+        from coded import notify
+
+        def _send(title: str, message: str, mode: str) -> str:
+            if mode == "bell":  # Textual owns the terminal: ring through it
+                self.call_from_thread(self.bell)
+                return "bell"
+            return notify.send(title, message, mode)
+
+        from coded.statusline import StatusLine, status_data
+
+        self.statusline = StatusLine(
+            getattr(agent.config, "statusline", None), lambda: status_data(self.agent),
+            on_change=lambda: self.call_from_thread(self._refresh_sidebar))
+        self.notifier = notify.Notifier(getattr(agent.config, "notify", "bell"),
+                                        getattr(agent.config, "notify_after", 30.0),
+                                        sender=_send)
         from coded.commands import discover_commands
 
         self.commands = discover_commands(agent.cwd)
@@ -177,9 +194,10 @@ class CodedTUI(App):
         with Horizontal(id="main"):
             with Vertical(id="left"):
                 yield VerticalScroll(id="transcript")
-                yield Static("", id="tasks")
             with VerticalScroll(id="sidebar"):
                 yield Static("", id="side-body")
+        # Docked by the input, panel open or not, so progress stays in view.
+        yield Static("", id="tasks")
         yield Input(placeholder="Ask coded to build, fix, explain…", id="prompt")
         yield Static(self._status_text(), id="statusline")
 
@@ -207,6 +225,11 @@ class CodedTUI(App):
 
     # -- status line + task list --------------------------------------------
     def _status_text(self) -> Text:
+        custom = self.statusline.text()
+        if custom is not None:
+            line = Text.from_ansi(custom, no_wrap=True, overflow="ellipsis")
+            line.pad_left(1)
+            return line
         s = self.agent.session
         u = s.total_usage
         tok = u.prompt_tokens + u.completion_tokens
@@ -223,11 +246,13 @@ class CodedTUI(App):
                 t.append("  ·  working…", style=ui.ACCENT_SOFT)
         if self.agent.mode == "plan":
             t.append("  ·  plan mode (read-only)", style=f"bold {ui.WARN}")
+        elif self.agent.permission_mode == "accept-edits":
+            t.append("  ·  ⏵⏵ accept edits", style=f"bold {ui.ACCENT2}")
         t.append(f"  ·  {s.turns} turns  ·  {tok_str} tokens  ·  "
                  f"~${s.estimated_cost(self.agent.model):.4f}")
         if getattr(s, "compactions", 0):
             t.append(f"  ·  compacted {s.compactions}×")
-        t.append("  ·  shift+tab plan  ^B panel  ^C quit  ^L clear  ^U undo")
+        t.append("  ·  shift+tab mode  ^B panel  ^C quit  ^L clear  ^U undo")
         return t
 
     def _tasks_text(self) -> Text:
@@ -251,17 +276,16 @@ class CodedTUI(App):
         disk, so it is done after a tool result or a turn, not per token."""
         try:
             self.query_one("#statusline", Static).update(self._status_text())
-            panel_open = self.panel_open
             tasks = self.query_one("#tasks", Static)
             tasks.update(self._tasks_text())
-            # With the panel open, the tasks live there instead.
-            tasks.set_class(bool(self.agent.todos.items) and not panel_open, "shown")
-            if not panel_open:
+            tasks.set_class(bool(self.agent.todos.items), "shown")
+            if not self.panel_open:
                 return
             if files:
                 self._changes = sidebar.file_changes(self.agent.checkpoints, self.agent.cwd)
             self.query_one("#side-body", Static).update(sidebar.render(
-                self.agent, busy=self.busy, queued=self._queued, changes=self._changes))
+                self.agent, busy=self.busy, queued=self._queued, changes=self._changes,
+                tasks=False))
         except Exception:  # noqa: BLE001 - the panel must never break a turn
             pass
 
@@ -287,7 +311,7 @@ class CodedTUI(App):
         self._apply_panel()
 
     def _tick(self) -> None:
-        if self.panel_open and self.agent.shells.list():
+        if (self.panel_open and self.agent.shells.list()) or self.statusline.enabled:
             self._refresh_sidebar()
 
     # -- transcript helpers -------------------------------------------------
@@ -341,8 +365,9 @@ class CodedTUI(App):
 
     @work(thread=True, exclusive=True)
     def _run_agent(self, text: str) -> None:
+        self.notifier.start()
         try:
-            self.agent.run(text)
+            self.notifier.finished(self.agent.run(text))
         except Exception as exc:  # noqa: BLE001
             self.call_from_thread(self._mount, StatusNote(explain_failure(exc)))
         finally:
@@ -422,6 +447,7 @@ class CodedTUI(App):
     def _permission_prompt(self, title: str, detail: str) -> str:
         done = threading.Event()
         result = {"v": "no"}
+        self.notifier.waiting(title)
 
         def ask():
             def cb(choice):
@@ -444,7 +470,7 @@ class CodedTUI(App):
     def action_toggle_plan(self) -> None:
         if self.busy:
             return  # not while a turn is running
-        self.agent.set_mode("default" if self.agent.mode == "plan" else "plan", announce=False)
+        self.agent.cycle_mode()  # normal → accept edits → plan
         self._refresh_sidebar()
 
     def action_undo(self) -> None:

@@ -36,7 +36,8 @@ coded/
 ├── llm.py              # LLMClient: OpenAI-compatible streaming + tool calls
 ├── agent.py            # Agent: the agentic loop; sub-agent spawning
 ├── session.py          # Session: message history + usage/cost tracking
-├── permissions.py      # PermissionManager: approve/deny/always gate
+├── permissions.py      # PermissionManager: approve/deny/always gate, accept-edits mode
+├── notify.py           # Notifier: bell/desktop notification when a long turn ends or asks
 ├── prompts.py          # assembles main/sub-agent prompts + AGENTS.md/CODED.md/CLAUDE.md hierarchy
 ├── prompt_files.py     # prompt-file loading/overrides/profiles + `coded prompts` CLI
 ├── limits.py           # per-model limits scaled by context_window; result/step caps
@@ -50,18 +51,27 @@ coded/
 │                       # compact/ and full/ hold per-profile variants
 ├── repl.py             # interactive REPL and slash commands
 ├── tui.py              # full-screen Textual app (coded --tui), optional
-├── sidebar.py          # the TUI's right panel: session, tasks, changed files, queue, shells
+├── sidebar.py          # the TUI's right panel: session, changed files, queue, shells
 ├── ui.py               # rich-based rendering helpers (single Console)
 ├── skills.py           # skill discovery, frontmatter parsing, prompt section
 ├── review.py           # /review pipeline: reviewer→qa→security sub-agents
 ├── builtin_skills/     # bundled roles: planner, reviewer, debugger (bodies from prompt files), qa, security
 ├── compaction.py       # context auto-compaction (summarize old messages)
 ├── sessions_store.py   # persist/restore sessions (--continue/--resume)
-├── checkpoints.py      # CheckpointManager: per-turn file snapshots for /undo
+├── checkpoints.py      # CheckpointManager: per-turn file snapshots for /undo and /rewind
+├── transcript.py       # /context breakdown and /export Markdown
+├── ignore.py           # .codedignore (gitignore syntax): rules_for(cwd), cached by mtime
+├── diagnostics.py      # per-file checks after an edit (config "diagnostics"), off by default
+├── styles.py           # output styles (/style): builtin_styles/*.md < user < project
+├── builtin_styles/     # explanatory, concise, learning (.md, package-data)
+├── statusline.py       # user status-line command (JSON on stdin, cached, background)
+├── doctor.py           # `coded doctor`: requirements, config, keys, tools, --network probes
+├── update_check.py     # daily background `git ls-remote` for git checkouts; notice at start
 ├── embeddings.py       # EmbeddingClient + embedding-model resolution
 ├── index.py            # CodeIndex: chunk/embed/store + cosine search
 ├── websearch.py        # web-search backends + HTML→text fetch
-├── images.py           # image → base64 data URL for vision models
+├── images.py           # image → base64 data URL for vision models; clipboard image grab
+├── mentions.py         # `@path` mentions: expansion (Agent.run) + the REPL path completer
 ├── documents.py        # PDF/DOCX/XLSX/PPTX → text sections for the read tool
 ├── mcp_client.py       # optional MCP stdio client (background asyncio loop)
 ├── hooks.py            # HookRunner: PreToolUse/PostToolUse/UserPromptSubmit/SessionStart/Stop
@@ -84,6 +94,8 @@ coded/
     ├── base.py         # Tool, ToolResult, ToolContext, ToolRegistry
     ├── files.py        # read, write, edit, ls, move, delete
     ├── patch.py        # multi_edit, apply_patch (Codex patch format)
+    ├── notebook.py     # notebook_edit (replace/insert/delete a cell; read renders .ipynb)
+    ├── browser.py      # browser (Playwright; opt-in "browser"): render, steps, console, screenshot
     ├── todo.py         # todo_write (TodoStore), exit_plan_mode
     ├── external_agent.py  # external_agent (delegate to an outside CLI agent)
     ├── search.py       # glob, grep
@@ -130,6 +142,7 @@ tests/
                         # worktrees, injection guard, external agents, ACP, MCP server
 examples/skills/        # example SKILL.md packs + install guide
 examples/plugins/       # example plugin (code-quality) + plugin layout guide
+examples/github-actions/coded-review.yml  # PR review workflow (copy to .github/workflows)
 examples/.coded-plugin/marketplace.json  # examples folder doubles as a marketplace
 config.example.json     # sample configuration
 ```
@@ -274,12 +287,35 @@ config.example.json     # sample configuration
 - **Tools must never raise into the loop**: return `ToolResult.error(...)` for
   expected failures. `Agent._run_tool` also catches unexpected exceptions and
   feeds them back to the model as text, so the agent can recover.
+- **Modes** (`Agent.permission_mode`/`cycle_mode`, Shift+Tab): default →
+  accept-edits (`PermissionManager.accept_edits`: `EDIT_KEYS` run unasked; deny
+  rules, plan mode and the strict injection guard still apply) → plan.
+  `Config.max_cost` is checked by `Agent.over_budget()` at the top of every
+  loop step (main agent only), so a turn stops cleanly with a note.
 - **Per-call permission** (git/github): a tool that is safe for some inputs and
   risky for others sets `requires_permission = False` and calls
   `ctx.permissions.request(...)` itself for the risky branch. Static-risk tools
   use the class flag instead.
 - **Checkpoints**: mutating file tools call `ctx.checkpoints.record(path)` before
-  writing so `/undo` works. `bash` changes are intentionally not tracked. New
+  writing so `/undo` works. `/rewind` uses `Agent._turn_marks` (one per
+  `Agent.run` of the main agent: the user message **by identity**, the typed
+  text and the checkpoint group id); `turn_history()` drops marks whose message
+  compaction or `/clear` removed, and `CheckpointManager.undo_since(id)` undoes
+  that group and every later one, newest first.
+- **`.codedignore`** is enforced in `Agent._run_tool` for path tools
+  (`_PATH_TOOLS`, plus apply_patch's file headers via `_tool_paths`), in
+  `search._walk` (grep/glob), `ls`, and `@mentions`/their completion. bash is
+  not covered (documented). **Diagnostics** run after `_CHECKED_TOOLS` succeed,
+  only when `config.diagnostics` is set, and are appended to the tool result.
+  `add_dirs` reach the Environment section only when non-empty (the prompt is
+  otherwise byte-identical), the sandbox's writable list and mentions.
+- **Opt-in extras must not change the default request**: the `browser` tool is
+  registered only with `config.browser`, an output style only adds a prompt
+  section when set, and `statusline`/`update_check` never block (background
+  threads; tests set `CODED_NO_UPDATE_CHECK=1` via an autouse fixture).
+- **Usage** carries `cached_tokens` (`llm.usage_from` reads OpenAI's
+  `prompt_tokens_details.cached_tokens` and DeepSeek's `prompt_cache_hit_tokens`);
+  `session.usage_cost` prices them at `cached_input_cost` when a model sets it. `bash` changes are intentionally not tracked. New
   mutating file tools must record.
 - **Network/optional-key tools** (github/web/semantic_search) must degrade to a
   clear `ToolResult.error` when the key/backend/index is missing — never crash.
@@ -443,7 +479,17 @@ config.example.json     # sample configuration
   message. The type-ahead reader owns stdin during a turn, so a prompt that
   needs an answer asks it via `TypeAhead.ask()` instead of reading stdin itself.
   Polling (never a blocking read) is what lets the reader stop with the turn
-  instead of stealing the next prompt's first line.
+  instead of stealing the next prompt's first line. On POSIX the reader
+  (`typeahead._PosixKeys`) puts the terminal in non-canonical, no-echo mode for
+  the turn (signals stay on) so a lone **Esc** is seen; escape sequences (arrow
+  keys) are dropped, and `TypeAhead.stop()` must restore the terminal (`close()`).
+  Esc stops the turn by sending this process SIGINT, so it behaves exactly as
+  Ctrl-C.
+- **`@path` mentions** (`mentions.py`) are expanded in `Agent.run` (main agent
+  only) so every front-end gets them: a mention starts the message or follows
+  whitespace and must name something that exists (cwd or `add_dirs`), so emails
+  and decorators are left alone. The original text is kept; the files follow in
+  a `<mentioned-files>` block, images go to the image list for vision models.
 - **Config is layered**: presets → user file → project file → CLI flags. Don't
   hard-code paths or keys; go through `config.py`. Dict-valued settings
   (`hooks`, `sandbox`, `telemetry`, `external_agents`, `model_roles`) merge
@@ -494,7 +540,7 @@ one (e.g. `ruff`, `black`), record the commands here.
 
 - **argparse + free-form prompt**: the top-level parser has a `nargs="*"`
   positional `prompt`, which conflicts with argparse subparsers. Subcommands
-  (`config`, `models`, `agents`, `index`, `review`, `sessions`, `commit`, `skill`,
+  (`config`, `models`, `agents`, `doctor`, `index`, `review`, `sessions`, `commit`, `skill`,
   `plugin`, `prompts`, `acp`, `mcp-serve`) are therefore dispatched manually by the first token in
   `cli.main()` — keep new subcommands on that path, not on `add_subparsers`.
 - **ACP / MCP server modes keep stdout clean** (`ui.set_quiet(True)`): stdout

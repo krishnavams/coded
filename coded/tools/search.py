@@ -26,11 +26,20 @@ def _resolve(ctx: ToolContext, path: str) -> Path:
     return p
 
 
-def _walk(root: Path):
+def _walk(root: Path, cwd: str = ""):
+    """Files under root, skipping dependency/VCS folders and whatever the
+    project's .codedignore excludes."""
+    from coded.ignore import rules_for
+
+    rules = rules_for(cwd) if cwd else None
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in _IGNORE_DIRS]
+        dirnames[:] = [d for d in dirnames if d not in _IGNORE_DIRS
+                       and not (rules and rules.ignored(Path(dirpath) / d))]
         for fn in filenames:
-            yield Path(dirpath) / fn
+            f = Path(dirpath) / fn
+            if rules and rules.ignored(f):
+                continue
+            yield f
 
 
 class GlobTool(Tool):
@@ -53,7 +62,7 @@ matching paths. Fast; use this to locate files by name."""
         pattern = args["pattern"]
         matches: List[str] = []
         try:
-            for f in _walk(root):
+            for f in _walk(root, ctx.cwd):
                 rel = f.relative_to(root).as_posix()
                 if fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(f.name, pattern):
                     matches.append(str(f))
@@ -97,7 +106,7 @@ shell grep."""
         results: List[str] = []
         files_with_matches = 0
         try:
-            for f in _walk(root):
+            for f in _walk(root, ctx.cwd):
                 if file_glob and not (
                     fnmatch.fnmatch(f.name, file_glob)
                     or fnmatch.fnmatch(f.relative_to(root).as_posix(), file_glob)

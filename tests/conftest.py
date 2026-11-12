@@ -108,6 +108,13 @@ def _loud_ui():
 
 
 @pytest.fixture(autouse=True)
+def _no_update_check(monkeypatch):
+    """Tests run from a git checkout of coded: never let the REPL start a real
+    `git ls-remote` in the background."""
+    monkeypatch.setenv("CODED_NO_UPDATE_CHECK", "1")
+
+
+@pytest.fixture(autouse=True)
 def _fresh_model_state():
     """Endpoints and pool rotation are process-wide; reset them per test so an
     ephemeral port reused by another server can't inherit stale state."""

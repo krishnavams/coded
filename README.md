@@ -287,6 +287,7 @@ Each entry under `models` accepts:
 | `context_window` | no | Total context size (informational; default 128000). |
 | `input_cost` | no | USD per **million** input tokens (used by `/cost`). |
 | `output_cost` | no | USD per **million** output tokens. |
+| `cached_input_cost` | no | USD per million input tokens served from the provider's prompt cache (most providers bill these cheaper). Unset: priced like `input_cost`. `/cost` shows how many input tokens were cached. |
 | `supports_tools` | no | Set `false` for models without function-calling (e.g. search-only models); the agent then runs without tools. |
 | `extra_headers` | no | Extra HTTP headers (e.g. OpenRouter's `HTTP-Referer`/`X-Title`). |
 
@@ -343,10 +344,12 @@ coded --no-mcp                 # disable MCP servers for this run
 coded --continue               # resume the most recent session here
 coded --resume <id>            # resume a specific session
 coded -p --output-format json "..."   # machine-readable result
+coded -p --output-format stream-json "..."  # one JSON event per line as it works
 coded models                   # list configured models
 coded index                    # build the semantic search index
 coded review [target]          # non-interactive review pipeline (CI); exit 1 on NEEDS_CHANGES
 coded commit [--commit]        # draft a Conventional Commits message from staged changes
+coded doctor [--network]       # check install, config, keys, tools (and endpoints)
 coded sessions                 # list saved sessions
 ```
 
@@ -354,13 +357,14 @@ coded sessions                 # list saved sessions
 
 `coded --tui` launches a Textual app: a scrolling transcript (user turns,
 streamed assistant Markdown, tool calls shown as `● Edit(app.py)` with their
-results, line-numbered diffs), the task list while the agent has one, an input
+results, line-numbered diffs), the task list while the agent has one (docked
+right above the input, so progress stays in view), an input
 box with a **status line** under it (model, mode, turns, tokens, cost), and a **permission modal** for gated actions. Keys: `Enter` send,
 `Ctrl+B` side panel, `Ctrl+L` clear, `Ctrl+U` undo edits, `Ctrl+C` quit.
 
 A **side panel** on the right shows, each part only when it has something:
 the session (model, plan mode, how full the context window is and where it
-compacts, turns/tokens/cost), the task list with its progress bar, the files
+compacts, turns/tokens/cost), the files
 changed this turn with `+added −removed` line counts, messages queued while the
 agent works, and background shells with their state. It opens by itself when
 the terminal is at least 110 columns wide; `Ctrl+B` opens or closes it at any
@@ -385,7 +389,14 @@ pip install -e '.[tui]'      # adds Textual
 | `/skill <name> [task]` | Invoke a skill now |
 | `/review [target]` | Run reviewer→qa→security sub-agents and aggregate |
 | `/image <path>... [prompt]` | Attach image(s) for a vision model |
+| `/paste` | Attach the image on the clipboard (also **Ctrl+V**) |
+| `/vim` | Toggle vi key bindings in the input |
 | `/undo` | Revert the last turn's file changes |
+| `/rewind [n] [--keep-files]` | Go back to before request *n*: conversation and its file changes |
+| `/context` | What fills the context window |
+| `/add-dir [path]` | Let the agent work in another folder too |
+| `/style [name\|off]` | List or switch output styles |
+| `/export [path]` | Save the conversation as Markdown |
 | `/checkpoints` | List saved checkpoints |
 | `/compact` | Summarize the conversation to free context |
 | `/init` | Analyze the repo and write a `CODED.md` guide |
@@ -400,7 +411,23 @@ pip install -e '.[tui]'      # adds Textual
 | `/plugins` | List installed plugins |
 | `/prompts` | Show which prompt files are in use |
 | `/<custom> [args]` | Run a custom command from `.coded/commands/` |
+| `/permissions [...]` | Show or change the mode and allow/deny rules; `save` keeps them |
+| `/budget [dollars\|off]` | Show or set the spending limit |
 | `/exit`, `/quit` | Quit |
+
+### Typing in the REPL
+
+| Key / syntax | What it does |
+|---|---|
+| `@path` | Attach a file to the message: `explain @src/app.py`, just some lines with `@app.py#L10-40`, a folder listing with `@src/`, an image with `@shot.png`; quote paths with spaces (`@"my notes.md"`). **Tab** completes paths. Works in the TUI and `coded -p` too. |
+| **Alt+Enter**, **Ctrl+J**, or `\` then Enter | New line without sending |
+| **Esc** | Stop the agent mid-turn (Ctrl-C works too); at a permission question, Esc means "no" |
+| **Shift+Tab** | Cycle mode: normal → accept edits → plan |
+| **Ctrl+G** | Write the message in `$EDITOR` |
+| **Ctrl+V** | Attach the clipboard's image (macOS: built in, faster with `pngpaste`; Linux: needs `wl-clipboard` or `xclip`; Windows: PowerShell) |
+| **Ctrl+R** | Search earlier messages |
+
+Set `"editing_mode": "vi"` in your config for vi key bindings (or toggle with `/vim`).
 
 ### Permissions
 
@@ -423,6 +450,37 @@ by pattern. Patterns are `tool` or `tool(glob)` matched against the command/path
   }
 }
 ```
+
+**Modes.** **Shift+Tab** (REPL and TUI) cycles three modes, shown in the status
+bar: *normal* (ask before changes), **⏵⏵ accept edits** (file edits — `write`,
+`edit`, `multi_edit`, `apply_patch`, `move` — run without asking; deleting
+files and running commands still ask) and **⏸ plan** (read-only). Start in
+accept-edits mode with `--accept-edits` or `"accept_edits": true`.
+
+**`/permissions`** shows the mode and every rule, and changes them for the
+session: `/permissions allow bash(npm test*)`, `/permissions deny bash(curl*)`,
+`/permissions remove <rule>`, `/permissions mode accept-edits`. `/permissions save`
+writes the current rules to the project's `.coded/config.json`.
+
+### Spending limit
+
+Stop a session before it costs more than you meant to spend:
+
+```bash
+coded --max-cost 2.00            # dollars, from the models' input_cost/output_cost
+```
+
+or `"max_cost": 2.0` in config. The turn stops with a note once the session's
+estimated cost reaches the limit; `/budget 5` raises it, `/budget off` removes
+it, and `/budget` shows what has been spent.
+
+### Notifications
+
+On a turn that runs longer than `notify_after` seconds (default 30), coded
+rings the terminal bell when it finishes or stops to ask you something, so
+you can work in another window. `"notify": "desktop"` shows a desktop
+notification instead (osascript on macOS, `notify-send` on Linux; the bell
+elsewhere); `"notify": "off"` turns it off.
 
 ### Context & sessions
 
@@ -447,6 +505,92 @@ coded --continue        # resume the most recent session for this directory
 coded --resume <id>     # resume a specific one
 coded sessions          # list them
 ```
+
+### More folders, excluded paths
+
+**`--add-dir <path>`** (repeatable), `"add_dirs": [...]` in config, or `/add-dir
+<path>` in the REPL lets the agent work in folders besides the current one — a
+shared library next to the app, a backend and a frontend in separate repos. The
+agent is told about them, `@mentions` find files there, and with the sandbox on
+they are writable too.
+
+**`.codedignore`** in the project root lists paths the agent must never read or
+change, in `.gitignore` syntax:
+
+```gitignore
+secrets/
+*.pem
+/build
+!public.pem
+```
+
+The file tools refuse them, `grep`/`glob`/`ls` leave them out, and `@mentions`
+won't attach them. A shell command can still reach them, so add a deny rule
+(e.g. `"bash(*secrets*)"`) where that matters.
+
+### Checks after every edit
+
+`"diagnostics": true` runs a quick check on each file right after the agent
+writes or edits it and, if it fails, puts the error in front of the model in
+the same step — so a syntax error or a type error is fixed before it moves on.
+The built-in checks use what is installed: Python (`ruff`, else
+`python -m py_compile`), JSON, shell scripts (`bash -n`) and JavaScript
+(`node --check`). Add your own per file pattern, `{file}` being the edited file:
+
+```json
+"diagnostics": {
+  "commands": {"*.py": "mypy {file}", "*.ts": "npx tsc --noEmit -p ."},
+  "builtin": true,
+  "timeout": 20
+}
+```
+
+### Jupyter notebooks
+
+The `read` tool shows a notebook cell by cell (`cell 3 [code] id=…`) with its
+text outputs; `pages: "3-5"` picks cells. The agent edits notebooks with
+`notebook_edit` — replace, insert or delete one cell — which keeps the JSON
+valid and clears a changed cell's stale outputs.
+
+### Output styles
+
+`/style` lists styles and switches how the agent talks: **explanatory**
+(explains why it chose an approach and shares insights about your code),
+**concise** (results only, no preamble or recap) and **learning** (does the
+scaffolding and leaves small, key pieces for you to write). `/style off`
+returns to the default; `"output_style": "concise"` sets one in config. Add
+your own as `.coded/styles/<name>.md` (or `~/.config/coded/styles/`): a
+`description` in the frontmatter and the instructions as the body.
+
+### Your own status line
+
+Replace the status line under the input with your own script's output:
+
+```json
+"statusline": {"command": "~/bin/coded-status", "refresh": 5}
+```
+
+The command gets a JSON object on stdin — `model`, `cwd`, `mode`, `turns`,
+`input_tokens`, `output_tokens`, `cost`, `tasks` — and the first line it
+prints (ANSI colors work) is shown in the REPL and the TUI. It runs in the
+background at most every `refresh` seconds; while it hasn't answered, or if it
+fails, the built-in line is shown. For example, the git branch and the cost:
+
+```bash
+#!/bin/sh
+cost=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["cost"])')
+echo "⎇ $(git branch --show-current 2>/dev/null)  ·  \$$cost"
+```
+
+### Testing web apps in a browser
+
+With `"browser": true` the agent gets a `browser` tool that opens a page in
+headless Chromium, runs steps (click, fill, press, select, wait), and reports
+the rendered text, JavaScript console errors, failed requests and a screenshot
+(saved under `.coded/screenshots/`). Loading a page runs without asking;
+steps that act on the page ask first. Install it with
+`pip install 'coded[browser]' && playwright install chromium`, or use a
+Chrome/Chromium you already have: `"browser": {"executable_path": "/usr/bin/chromium"}`.
 
 ### Documents: PDF, Word, Excel, PowerPoint
 
@@ -566,6 +710,8 @@ then:
 coded --image screenshot.png "what's wrong with this UI?"
 # or in the REPL:
 /image mockup.png build this layout as HTML
+# or mention it, or paste it with Ctrl+V:
+look at @mockup.png and build this layout as HTML
 ```
 
 ### Checkpoints & undo
@@ -574,6 +720,25 @@ Every turn, changes made by `write`/`edit`/`move`/`delete` are snapshotted under
 `.coded/checkpoints/`. `/undo` restores the most recent turn (reverting edits and
 removing newly-created files); repeat `/undo` to step further back. `/checkpoints`
 lists them. Note: changes made by `bash` are **not** tracked.
+
+**`/rewind`** goes back further than files: `/rewind` lists your requests,
+and `/rewind 3` removes request 3 and everything after it from the conversation
+*and* undoes the file changes those turns made, then puts request 3 back in the
+input so you can change it and send it again. `--keep-files` rewinds only the
+conversation.
+
+### Context and exporting
+
+`/context` shows what fills the model's context window — system prompt, tool
+definitions, your messages, the model's replies and tool results — as estimated
+tokens and a share of the window, next to the count the endpoint reported for
+the last request. `/export [path]` saves the conversation as Markdown (default
+`coded-session-<time>.md` in the project), with tool calls and their results.
+
+With `--print`, `--output-format stream-json` prints one JSON object per line
+while the agent works — `start`, then the agent's events (`assistant_delta`,
+`tool_call`, `tool_result`, `diff`, `todos`, `status`, …) and finally `result`
+with the answer, usage and cost — so a script or CI job can follow progress.
 
 ### Git & GitHub
 
@@ -696,8 +861,11 @@ same permission gate.
 
 ### Task list & plan mode
 
-For multi-step work the agent keeps a visible task list (`todo_write`), shown in
-the REPL as it changes and above the TUI input box (`/todos` to show it again).
+For multi-step work the agent keeps a visible task list (`todo_write`), shown as
+it changes and kept right above the input box — in the TUI always, in the REPL
+before each prompt while a task is unfinished (`/todos` to show it again).
+The REPL's input sits in a box like the TUI's, with the status line right
+under it.
 Each update shows progress — `Tasks 2/5 ▰▰▰▰▱▱▱▱▱▱ 40%`, the running item marked
 `← now` — and the status bar carries the same count and the current item while
 the agent works, so a long turn is never a silent one.
@@ -1302,6 +1470,28 @@ Most of the wait is the model. The parts coded controls:
 - **Startup:** the model SDK now loads in the background, so `coded --version`,
   `coded agents`, `coded skill …` and the first prompt appear in ~0.2 s instead
   of ~0.7 s.
+
+## Checking your setup
+
+`coded doctor` checks everything coded depends on and prints one line per
+area: Python, the required packages and which extras are installed, the config
+files, every model and whether its API key is found, the shell, the sandbox,
+git, the terminal, and helpers like the clipboard reader. `coded doctor
+--network` also sends each model's endpoint the staged probe from `coded models
+--check`. It exits with 1 when something is broken, so it works in scripts.
+
+When coded runs from a git clone, it checks once a day in the background
+whether the clone's remote has moved on, and says so at the next start
+(`git -C <clone> pull` updates it). Turn that off with `"update_check": false`.
+
+## Reviewing pull requests in GitHub Actions
+
+[`examples/github-actions/coded-review.yml`](examples/github-actions/coded-review.yml)
+runs `coded review` on every pull request, posts the reviewer → qa → security
+report as a PR comment (updated on each push) and fails the check when the
+verdict is NEEDS_CHANGES. Copy it to `.github/workflows/`, and add a
+`CODED_API_KEY` secret plus `CODED_BASE_URL` and `CODED_MODEL` variables for any
+OpenAI-compatible endpoint.
 
 ## When a model errors
 

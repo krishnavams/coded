@@ -7,6 +7,7 @@ from coded.tools.files import DeleteTool, EditTool, LsTool, MoveTool, ReadTool, 
 from coded.tools.git import GitTool
 from coded.tools.github import GitHubTool
 from coded.tools.memory import MemoryTool
+from coded.tools.notebook import NotebookEditTool
 from coded.tools.patch import ApplyPatchTool, MultiEditTool
 from coded.tools.repo_map import RepoMapTool
 from coded.tools.search import GlobTool, GrepTool
@@ -33,6 +34,7 @@ def build_registry(include_task: bool = True) -> ToolRegistry:
     reg = ToolRegistry()
     tools = [
         ReadTool(), WriteTool(), EditTool(), MultiEditTool(), ApplyPatchTool(),
+        NotebookEditTool(),
         LsTool(), MoveTool(), DeleteTool(),
         GlobTool(), GrepTool(), SemanticSearchTool(), RepoMapTool(),
         BashTool(), BashOutputTool(), KillShellTool(),

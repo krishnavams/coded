@@ -76,6 +76,9 @@ class ModelConfig:
     # Optional cost tracking, USD per million tokens.
     input_cost: float = 0.0
     output_cost: float = 0.0
+    # Price of input tokens served from the provider's prompt cache (None:
+    # the same as input_cost, i.e. cached tokens are not discounted).
+    cached_input_cost: Optional[float] = None
     extra_headers: Dict[str, str] = field(default_factory=dict)
     # Some smaller/older models do not support the ``tools`` parameter.
     supports_tools: bool = True
@@ -235,6 +238,34 @@ class Config:
     # Outside coding agents (Claude Code, Codex, Gemini CLI, Aider, ...).
     external_agents: Dict[str, Any] = field(default_factory=dict)
     detect_external_agents: bool = True  # offer installed CLIs automatically
+    # More folders the agent may work in besides the cwd (--add-dir, /add-dir).
+    add_dirs: list = field(default_factory=list)
+    # Check files right after the agent edits them (see diagnostics.py):
+    # true for the built-in checks, or {"commands": {"*.py": "mypy {file}"}}.
+    diagnostics: Any = None
+    # Stop a session once its estimated cost passes this many dollars (--max-cost).
+    max_cost: Optional[float] = None
+    # Tell the user when a long turn ends or waits for an answer:
+    # "bell" (terminal bell), "desktop" (a desktop notification, bell as a
+    # fallback) or "off"; only for turns longer than notify_after seconds.
+    notify: str = "bell"
+    notify_after: float = 30.0
+    # Start in "accept-edits" mode: file edits run without asking.
+    accept_edits: bool = False
+    # How the agent talks: a style name from /style (see styles.py); None = default.
+    output_style: Optional[str] = None
+    # A command whose first output line replaces the REPL/TUI status line:
+    # {"command": "~/bin/coded-status", "refresh": 5}. It gets JSON on stdin.
+    statusline: Dict[str, Any] = field(default_factory=dict)
+    # Check (in the background, at most daily) whether a git checkout of coded
+    # is behind its remote, and say so at start-up.
+    update_check: bool = True
+    # The browser tool (Playwright): off unless enabled, since it needs
+    # `pip install playwright && playwright install chromium`. true, or
+    # {"executable_path": "/usr/bin/chromium"} to use an installed browser.
+    browser: Any = False
+    # REPL input: "emacs" (default) or "vi" key bindings.
+    editing_mode: str = "emacs"
     plugins: list = field(default_factory=list)  # names of enabled plugins merged in
     plugin_warnings: list = field(default_factory=list)
     source_paths: list = field(default_factory=list)  # config files that were loaded
@@ -444,7 +475,7 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
     if data.get("permissions"):
         cfg.permissions = data["permissions"]
     for key in ("hooks", "sandbox", "telemetry", "external_agents", "model_roles",
-                "pools", "routing", "verify"):
+                "pools", "routing", "verify", "statusline"):
         if data.get(key):
             merged = dict(getattr(cfg, key))
             merged.update(data[key])
@@ -452,7 +483,9 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
     for key in ("auto_approve", "max_turns", "stream", "auto_compact", "auto_fallback",
                 "compact_ratio",
                 "show_reasoning", "parallel_tools", "injection_guard",
-                "detect_external_agents", "shell", "disabled_tools"):
+                "detect_external_agents", "shell", "disabled_tools", "add_dirs",
+                "editing_mode", "max_cost", "notify", "notify_after", "accept_edits",
+                "diagnostics", "output_style", "update_check", "browser"):
         if key in data:
             setattr(cfg, key, data[key])
 

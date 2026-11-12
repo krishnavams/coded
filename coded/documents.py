@@ -33,6 +33,7 @@ FORMATS: Dict[str, Tuple[str, str, str]] = {
     ".xlsm": ("xlsx", "openpyxl", "openpyxl"),
     ".pptx": ("pptx", "pptx", "python-pptx"),
     ".pptm": ("pptx", "pptx", "python-pptx"),
+    ".ipynb": ("ipynb", "json", "json"),   # Jupyter notebooks: JSON, no extra needed
 }
 
 # Formats we recognise but cannot read, with what to do instead.
@@ -70,7 +71,8 @@ class Document:
     notes: List[str] = field(default_factory=list)  # caveats worth telling the model
 
     def unit(self) -> str:
-        return {"pdf": "page", "pptx": "slide", "xlsx": "sheet"}.get(self.kind, "section")
+        return {"pdf": "page", "pptx": "slide", "xlsx": "sheet",
+                "ipynb": "cell"}.get(self.kind, "section")
 
 
 def kind_of(path: Path, head: bytes = b"") -> Optional[str]:
@@ -88,7 +90,8 @@ def unsupported_reason(path: Path) -> Optional[str]:
     return UNSUPPORTED.get(path.suffix.lower())
 
 
-_LIBRARIES = {"pdf": ("pypdf", "pypdf"), "docx": ("docx", "python-docx"),
+_LIBRARIES = {"ipynb": ("json", "json"),
+              "pdf": ("pypdf", "pypdf"), "docx": ("docx", "python-docx"),
               "xlsx": ("openpyxl", "openpyxl"), "pptx": ("pptx", "python-pptx")}
 
 
@@ -107,7 +110,7 @@ def _require(kind: str):
 def load(path: Path, kind: str) -> Document:
     """Parse a document into sections. Raises DocumentError, never anything else."""
     reader: Dict[str, Callable[[Path], Document]] = {
-        "pdf": _pdf, "docx": _docx, "xlsx": _xlsx, "pptx": _pptx}
+        "pdf": _pdf, "docx": _docx, "xlsx": _xlsx, "pptx": _pptx, "ipynb": _ipynb}
     _require(kind)
     try:
         return reader[kind](path)
@@ -122,6 +125,49 @@ def load(path: Path, kind: str) -> Document:
 # ---------------------------------------------------------------------------
 # Formats
 # ---------------------------------------------------------------------------
+MAX_OUTPUT_LINES = 30
+
+
+def notebook_source(value) -> str:
+    return "".join(value) if isinstance(value, list) else str(value or "")
+
+
+def _ipynb(path: Path) -> Document:
+    """One section per cell: its source, then its text outputs (cut short).
+    Images and other rich outputs are named, not shown."""
+    import json
+
+    nb = json.loads(path.read_text(encoding="utf-8"))
+    sections: List[Section] = []
+    for i, cell in enumerate(nb.get("cells") or [], 1):
+        kind = cell.get("cell_type", "code")
+        cid = cell.get("id")
+        title = f"cell {i} [{kind}]" + (f" id={cid}" if cid else "")
+        lines = notebook_source(cell.get("source")).splitlines()
+        out: List[str] = []
+        for o in cell.get("outputs") or []:
+            if o.get("output_type") == "stream":
+                out += notebook_source(o.get("text")).splitlines()
+            elif o.get("output_type") in ("execute_result", "display_data"):
+                data = o.get("data") or {}
+                if "text/plain" in data:
+                    out += notebook_source(data["text/plain"]).splitlines()
+                others = [k for k in data if k != "text/plain"]
+                if others:
+                    out.append(f"<{', '.join(others)} output>")
+            elif o.get("output_type") == "error":
+                out.append(f"{o.get('ename', 'Error')}: {o.get('evalue', '')}")
+        if out:
+            if len(out) > MAX_OUTPUT_LINES:
+                out = out[:MAX_OUTPUT_LINES] + [f"… ({len(out) - MAX_OUTPUT_LINES} more lines)"]
+            lines += ["----- output -----"] + out
+        sections.append(Section(title, lines))
+    notes = [] if sections else ["the notebook has no cells"]
+    if sections:
+        notes.append("edit cells with notebook_edit (cell numbers as shown), not edit/write")
+    return Document("ipynb", sections, notes)
+
+
 def _pdf(path: Path) -> Document:
     from pypdf import PdfReader
 

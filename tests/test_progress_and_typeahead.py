@@ -321,7 +321,7 @@ async def test_a_queued_message_actually_runs_and_a_queued_command_acts_as_one(
         text = body["messages"][-1]["content"]
         seen.append(text)
         if text == "first":
-            time.sleep(0.4)  # long enough to type while it runs
+            time.sleep(1.5)  # long enough to type while it runs, even on a busy machine
         return ({"role": "assistant", "content": "ok"},
                 {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2})
 

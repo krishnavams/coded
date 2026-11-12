@@ -100,4 +100,6 @@ def sandbox_state(config: Any) -> tuple:
     settings = SandboxSettings.from_config(getattr(config, "sandbox", None))
     if not settings.enabled:
         return settings, None
+    settings.writable += [d for d in getattr(config, "add_dirs", None) or []
+                          if d not in settings.writable]
     return settings, available_backend()
