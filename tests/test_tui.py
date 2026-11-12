@@ -122,3 +122,39 @@ async def test_tui_shift_tab_cycles_accept_edits_then_plan_mode(tmp_path, fake_s
             await pilot.press("shift+tab")
             await pilot.pause()
             assert app.agent.mode == "default"
+
+
+@pytest.mark.asyncio
+async def test_tui_question_modal_answers_ask_user(tmp_path, fake_server):
+    """ask_user opens the question pop-up; a choice goes back to the model."""
+    from textual.widgets import Input
+
+    from coded.tui import QuestionModal
+
+    requests = []
+
+    def script(body):
+        requests.append(body)
+        usage = {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}
+        if any(m.get("role") == "tool" for m in body["messages"]):
+            return {"role": "assistant", "content": "Going with it."}, usage
+        return {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "q1", "type": "function", "function": {"name": "ask_user", "arguments": json.dumps(
+                {"question": "Which database?", "options": ["Postgres", "SQLite"]})}}]}, usage
+
+    with fake_server(script) as server:
+        app = CodedTUI(_agent(tmp_path, server.base_url))
+        async with app.run_test() as pilot:
+            app.query_one("#prompt", Input).value = "set up storage"
+            await pilot.press("enter")
+            for _ in range(80):
+                if isinstance(app.screen, QuestionModal):
+                    break
+                await pilot.pause()
+            assert isinstance(app.screen, QuestionModal)
+            app.screen.query_one("#question-input", Input).value = "2"
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+    tool_msg = next(m for m in requests[-1]["messages"] if m["role"] == "tool")
+    assert tool_msg["content"] == "The user answered: SQLite"

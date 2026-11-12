@@ -25,8 +25,10 @@ runtime.
 - **Full tool suite** — `read`, `write`, `edit`, `multi_edit`, `apply_patch`,
   `ls`, `move`, `delete`, `glob`, `grep`, `semantic_search`, `bash` (+
   `bash_output` / `kill_shell` for background jobs), `git`, `github`,
-  `web_search`, `web_fetch`, `todo_write`, `exit_plan_mode`, `skill`, `task`
-  (sub-agents) and `external_agent` (outside agents).
+  `web_search`, `web_fetch`, `todo_write`, `enter_plan_mode`/`exit_plan_mode`,
+  `ask_user` (a question with choices), `view_image` (vision models),
+  `skill`, `task` (sub-agents) and `external_agent` (outside agents), plus
+  `list_mcp_resources`/`read_mcp_resource` when an MCP server offers resources.
 - **Task list & plan mode** — the agent tracks multi-step work with
   `todo_write`; `--plan` / `/plan` keeps it read-only until you approve a plan.
 - **Hooks** — run your own commands on `PreToolUse`, `PostToolUse`,
@@ -859,6 +861,10 @@ Add servers under `mcp_servers` in config (install extras with
 Their tools appear to the agent as `mcp__<server>__<tool>` and go through the
 same permission gate.
 
+When a server offers resources (files, docs, records), the agent also gets
+`list_mcp_resources` and `read_mcp_resource`; without any, those two tools are
+not sent.
+
 Values like `"${GITHUB_TOKEN}"` (or `"${VAR:-default}"`) in `command`, `args`
 and `env` are filled in from your environment when coded starts.
 
@@ -904,6 +910,15 @@ research with read-only tools only. When it has a plan it calls
 `exit_plan_mode`; you approve (implementation starts) or reject (it revises).
 Every risky action is refused while plan mode is on, including `git`/`github`
 writes and sub-agents' actions.
+The agent can also switch itself into plan mode (`enter_plan_mode`) before a
+large or risky change, and ask you a question with a few choices when a
+decision is yours (`ask_user`): answer with a number or your own words, or
+press Enter to skip. Without anyone to answer (`--print`, ACP) it states its
+assumption and carries on.
+
+With a vision model (`"supports_vision": true`) the agent can look at image
+files itself (`view_image`): screenshots, diagrams, mockups. The tool is not
+offered to models that cannot see.
 
 ### Verification: don't claim success you haven't earned
 

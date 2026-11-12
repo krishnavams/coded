@@ -97,7 +97,8 @@ coded/
     ├── patch.py        # multi_edit, apply_patch (Codex patch format)
     ├── notebook.py     # notebook_edit (replace/insert/delete a cell; read renders .ipynb)
     ├── browser.py      # browser (Playwright; opt-in "browser"): render, steps, console, screenshot
-    ├── todo.py         # todo_write (TodoStore), exit_plan_mode
+    ├── todo.py         # todo_write (TodoStore), enter_plan_mode, exit_plan_mode
+    ├── interact.py     # ask_user (PermissionManager.question), view_image (vision)
     ├── external_agent.py  # external_agent (delegate to an outside CLI agent)
     ├── search.py       # glob, grep
     ├── repo_map.py     # repo_map (ranked outline of the codebase)
@@ -109,7 +110,7 @@ coded/
     ├── web.py          # web_search, web_fetch
     ├── task.py         # task (sub-agent delegation)
     ├── skill.py        # skill (loads a SKILL.md body into context)
-    └── mcp_tool.py     # wraps an MCP server tool as a coded Tool
+    └── mcp_tool.py     # wraps an MCP server tool; list_mcp_resources, read_mcp_resource
 tests/
 ├── conftest.py         # FakeServer + EmbeddingsServer + RouteServer (all offline)
 ├── test_agent_e2e.py   # full agent loop (tool call, streaming, permission)
@@ -137,6 +138,7 @@ tests/
 ├── test_windows.py     # shell resolution, line endings, UTF-8, shims (runs everywhere)
 ├── test_prompts.py     # prompt files: placement, override order, empty=remove, CLI
 ├── test_agent_import.py  # `coded import`: each agent's format, skips, secrets, ${VAR}
+├── test_new_tools.py  # ask_user, view_image, enter_plan_mode, MCP resources
 ├── test_plugins.py     # sources, zip safety, skill/plugin install/update/remove,
 │                       # Claude-format plugins, marketplaces, CLI
 └── test_modern_features.py  # todo/plan, hooks, sandbox, AGENTS.md, patch, parallel,
@@ -250,6 +252,17 @@ config.example.json     # sample configuration
 - **Shared agent state reaches tools via `ToolContext.extra`**: `todos`,
   `shells`, `get_mode`/`set_mode`. Sub-agents share the parent's
   `PermissionManager`, tracer and shells, but not todos/skills/Stop hooks.
+- **Asking the user** (`ask_user`): `PermissionManager.question(text, options)`
+  goes to the front-end's `set_question` callback (REPL: `ui.question_panel`
+  + `TypeAhead.ask()`; TUI: `QuestionModal`); None (no front-end: `--print`,
+  ACP) tells the model to state an assumption and go on. `ui.pick_answer`
+  maps a typed number to the choice. Main agent only, like `enter_plan_mode`.
+- **`view_image`** queues a path through `ctx.extra["attach_image"]`; after the
+  step's tool results the agent adds one user message with the images (a
+  `tool` message cannot carry one). `Config.disabled_tools_for` drops it for a
+  model without `supports_vision`, so it is neither offered nor runnable.
+  MCP `list_mcp_resources`/`read_mcp_resource` are built only when a server
+  reported resources at start (`MCPManager.resource_servers`).
 - **Prompts from worker threads**: `PermissionManager.set_prompt(fn,
   threadsafe=True)` (TUI, ACP) allows tools that may prompt to run in parallel;
   prompts are serialized by a lock either way. `ask()` is a raw yes/no question

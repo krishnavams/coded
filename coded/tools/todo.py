@@ -119,3 +119,22 @@ you should implement it; if rejected, revise the plan as the user asks."""
         return ToolResult.ok(
             "The user rejected the plan. Stay in plan mode and ask what to change, "
             "or revise the plan.")
+
+
+class EnterPlanModeTool(Tool):
+    name = "enter_plan_mode"
+    brief = "Switch to plan mode (read-only research, then exit_plan_mode with a plan)."
+    description = """Switch to plan mode before a large or risky change whose approach you should agree with the user first: research read-only (edits and commands are refused), then present the plan with exit_plan_mode. Not for small, clear tasks — just do those."""
+    parameters = {"type": "object", "properties": {}}
+
+    def run(self, args: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        get_mode = ctx.extra.get("get_mode")
+        set_mode = ctx.extra.get("set_mode")
+        if get_mode is None or set_mode is None:
+            return ToolResult.error("Plan mode is not available here.")
+        if get_mode() == "plan":
+            return ToolResult.ok("Already in plan mode. Present the plan with exit_plan_mode.")
+        set_mode("plan")
+        return ToolResult.ok(
+            "Plan mode is on: research read-only (edits and commands are refused), then "
+            "present your plan with exit_plan_mode for the user's approval.")

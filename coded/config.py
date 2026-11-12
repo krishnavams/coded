@@ -377,6 +377,8 @@ class Config:
         out = [str(x) for x in (self.disabled_tools or [])]
         if model is not None:
             out += [str(x) for x in (getattr(model, "disabled_tools", None) or [])]
+            if not getattr(model, "supports_vision", False):
+                out.append("view_image")  # a model that cannot see gains nothing from it
         return out
 
     def model_warnings(self) -> list:

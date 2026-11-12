@@ -31,7 +31,8 @@ _MAX_STOP_CONTINUATIONS = 3
 _FILE_TOOLS = ("read", "edit", "multi_edit", "write")
 # Tools whose path arguments .codedignore can refuse, and those whose result
 # gets the configured diagnostics after a successful change.
-_PATH_TOOLS = ("read", "write", "edit", "multi_edit", "notebook_edit", "move", "delete", "ls")
+_PATH_TOOLS = ("read", "write", "edit", "multi_edit", "notebook_edit", "move", "delete", "ls",
+               "view_image")
 _CHECKED_TOOLS = ("write", "edit", "multi_edit", "apply_patch", "notebook_edit")
 
 
@@ -93,6 +94,7 @@ class Agent:
         self._forced: Optional[tuple] = None    # one turn on a given model (command model:)
         self.llm = self._make_llm(model)
         self._compact_llm: Optional[LLMClient] = None
+        self._tool_images: List[str] = []  # queued by view_image for this step
         for t in extra_tools or []:
             self.registry.register(t)
         self.skills: dict = {}
@@ -416,6 +418,12 @@ class Agent:
                                        "request less at once")
                 budget = max(0, budget - len(content))
                 self.session.add_tool_result(tc.id, content)
+            if self._tool_images:
+                # A tool message cannot carry an image: view_image's pictures follow
+                # the step's results as one user message.
+                paths, self._tool_images[:] = list(self._tool_images), []
+                self.session.add_user_multimodal(
+                    "[view_image] " + ", ".join(ui._rel(p, self.cwd) for p in paths), paths)
         else:
             if not self._emit("status", text=f"Reached max turns ({self.max_turns})."):
                 if self.verbose:
@@ -833,6 +841,7 @@ class Agent:
                 "set_mode": self.set_mode,
                 "limits": self.limits,
                 "model": self.model,
+                "attach_image": self._tool_images.append,
             },
         )
 

@@ -285,6 +285,7 @@ class Repl:
         self._boxed = _box_input(self.prompt, self._bottom_toolbar)
         # Wire the permission prompt into the manager.
         self.agent.permissions.set_prompt(self._permission_prompt)
+        self.agent.permissions.set_question(self._question_prompt)
 
     # -- status bar ---------------------------------------------------------
     def _bottom_toolbar(self):
@@ -350,6 +351,19 @@ class Repl:
         except (EOFError, KeyboardInterrupt):
             return "no"
         return answer or "no"
+
+    def _question_prompt(self, question: str, options: list) -> Optional[str]:
+        """ask_user: show the question, return the answer ('' = skipped)."""
+        self.notifier.waiting("Question")
+        ui.console.print()
+        ui.question_panel(question, options)
+        if self._typeahead is not None and self._typeahead.available:
+            return ui.pick_answer(self._typeahead.ask() or "", options)
+        try:
+            answer = self.prompt.prompt(HTML("  <b>Answer:</b> "), bottom_toolbar=None)
+        except (EOFError, KeyboardInterrupt):
+            return ""
+        return ui.pick_answer(answer, options)
 
     def _grab_clipboard(self) -> Optional[str]:
         """Attach the clipboard's image to the next message; None if there is none."""

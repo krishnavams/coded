@@ -191,6 +191,10 @@ _TOOL_TITLES = {
     "repo_map": ("Map repo", None),
     "memory": ("Memory", None),
     "todo_write": ("Update tasks", None), "exit_plan_mode": ("Plan ready", None),
+    "enter_plan_mode": ("Plan mode", None), "ask_user": ("Question", "question"),
+    "view_image": ("View image", "path"),
+    "list_mcp_resources": ("MCP resources", "server"),
+    "read_mcp_resource": ("Read resource", "uri"),
 }
 _PATH_KEYS = {"path", "source", "destination", "cwd"}
 
@@ -293,6 +297,28 @@ def error(msg: str) -> None:
 
 def success(msg: str) -> None:
     _log().print(f"[{ACCENT2}]✓[/] {msg}")
+
+
+def question_panel(question: str, options: list) -> None:
+    """The agent's question to the user (ask_user), with numbered choices."""
+    body = Text(question, style="bold")
+    for i, opt in enumerate(options, 1):
+        body.append(f"\n  {i}. ", style=ACCENT)
+        body.append(opt)
+    hint = ("a number or your own answer" if options else "your answer") + " · Enter to skip"
+    console.print(Panel(body, title=f"[{ACCENT}]? Question[/]", title_align="left",
+                        subtitle=f"[{MUTED}]{hint}[/]", subtitle_align="left",
+                        border_style=ACCENT, box=ROUNDED, expand=True))
+
+
+def pick_answer(answer: Optional[str], options: list) -> Optional[str]:
+    """A typed answer to a question: a choice's number becomes the choice."""
+    if answer is None:
+        return None
+    answer = answer.strip()
+    if answer.isdigit() and 1 <= int(answer) <= len(options):
+        return options[int(answer) - 1]
+    return answer
 
 
 def permission_panel(title: str, detail: str) -> None:

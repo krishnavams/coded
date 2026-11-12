@@ -77,6 +77,7 @@ class MCPManager:
         # (server_name, tool_name, description, input_schema)
         self.tool_specs: List[Tuple[str, str, str, Dict[str, Any]]] = []
         self.errors: List[str] = []
+        self.resource_servers: List[str] = []  # servers that offer resources
 
     def start(self, timeout: float = 30.0) -> None:
         if not _HAVE_MCP or not self.servers:
@@ -108,6 +109,11 @@ class MCPManager:
                     await session.initialize()
                     listed = await session.list_tools()
                     self.sessions[name] = session
+                    try:  # servers without the resources capability refuse this
+                        if (await session.list_resources()).resources:
+                            self.resource_servers.append(name)
+                    except Exception:  # noqa: BLE001
+                        pass
                     for t in listed.tools:
                         self.tool_specs.append(
                             (name, t.name, t.description or "",
@@ -132,13 +138,51 @@ class MCPManager:
         result = await session.call_tool(tool, args)
         return _render_content(result)
 
-    def build_tools(self, manager_ref: "MCPManager") -> List[Any]:
-        from coded.tools.mcp_tool import MCPTool
+    def list_resources(self, server: Optional[str] = None, timeout: float = 60.0) -> str:
+        if not self.loop:
+            raise RuntimeError("MCP is not running.")
+        names = [server] if server else list(self.resource_servers)
+        lines: List[str] = []
+        for name in names:
+            session = self.sessions.get(name)
+            if session is None:
+                lines.append(f"[{name}] not connected")
+                continue
+            fut = asyncio.run_coroutine_threadsafe(session.list_resources(), self.loop)
+            for r in fut.result(timeout=timeout).resources:
+                mime = getattr(r, "mime_type", None) or getattr(r, "mimeType", None)
+                desc = f" — {r.description}" if getattr(r, "description", None) else ""
+                lines.append(f"[{name}] {r.uri}  {r.name}{f' ({mime})' if mime else ''}{desc}")
+        return "\n".join(lines) or "No resources."
 
-        return [
+    def read_resource(self, server: str, uri: str, timeout: float = 60.0) -> str:
+        if not self.loop:
+            raise RuntimeError("MCP is not running.")
+        session = self.sessions.get(server)
+        if session is None:
+            return f"ERROR: MCP server '{server}' is not connected."
+        fut = asyncio.run_coroutine_threadsafe(session.read_resource(uri), self.loop)
+        result = fut.result(timeout=timeout)
+        parts: List[str] = []
+        for c in getattr(result, "contents", []) or []:
+            if getattr(c, "text", None) is not None:
+                parts.append(c.text)
+            else:
+                mime = getattr(c, "mime_type", None) or getattr(c, "mimeType", None) or "binary"
+                parts.append(f"({mime} content, {len(getattr(c, 'blob', '') or '')} base64 "
+                             "chars; not shown)")
+        return "\n".join(parts) or "(empty resource)"
+
+    def build_tools(self, manager_ref: "MCPManager") -> List[Any]:
+        from coded.tools.mcp_tool import ListMcpResourcesTool, MCPTool, ReadMcpResourceTool
+
+        tools: List[Any] = [
             MCPTool(server, tool, desc, schema, manager_ref)
             for (server, tool, desc, schema) in self.tool_specs
         ]
+        if self.resource_servers:  # only then: their definitions go out with every request
+            tools += [ListMcpResourcesTool(manager_ref), ReadMcpResourceTool(manager_ref)]
+        return tools
 
     def stop(self) -> None:
         if self.loop and self._stop_event:
