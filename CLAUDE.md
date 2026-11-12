@@ -50,7 +50,7 @@ coded/
 │                       # compact/ and full/ hold per-profile variants
 ├── repl.py             # interactive REPL and slash commands
 ├── tui.py              # full-screen Textual app (coded --tui), optional
-├── sidebar.py          # the TUI's right panel: session, tasks, changed files, queue, shells
+├── sidebar.py          # the TUI's right panel: session, changed files, queue, shells
 ├── ui.py               # rich-based rendering helpers (single Console)
 ├── skills.py           # skill discovery, frontmatter parsing, prompt section
 ├── review.py           # /review pipeline: reviewer→qa→security sub-agents

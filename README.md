@@ -354,13 +354,14 @@ coded sessions                 # list saved sessions
 
 `coded --tui` launches a Textual app: a scrolling transcript (user turns,
 streamed assistant Markdown, tool calls shown as `● Edit(app.py)` with their
-results, line-numbered diffs), the task list while the agent has one, an input
+results, line-numbered diffs), the task list while the agent has one (docked
+right above the input, so progress stays in view), an input
 box with a **status line** under it (model, mode, turns, tokens, cost), and a **permission modal** for gated actions. Keys: `Enter` send,
 `Ctrl+B` side panel, `Ctrl+L` clear, `Ctrl+U` undo edits, `Ctrl+C` quit.
 
 A **side panel** on the right shows, each part only when it has something:
 the session (model, plan mode, how full the context window is and where it
-compacts, turns/tokens/cost), the task list with its progress bar, the files
+compacts, turns/tokens/cost), the files
 changed this turn with `+added −removed` line counts, messages queued while the
 agent works, and background shells with their state. It opens by itself when
 the terminal is at least 110 columns wide; `Ctrl+B` opens or closes it at any
