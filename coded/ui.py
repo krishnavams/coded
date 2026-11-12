@@ -385,5 +385,6 @@ def todos(items: list) -> None:
         if status == "in_progress":
             t.append("   ← now", style=WARN)
         t.append("\n")
+    t.rstrip()
     console.print(Panel(t, title=todo_title(items), title_align="left", border_style=MUTED,
                         box=ROUNDED, expand=False))
