@@ -261,11 +261,15 @@ def _locations(result: Any) -> List[Tuple[str, int, int]]:
 
 
 def _format_locations(locations: List[Tuple[str, int, int]], cwd: str) -> str:
+    from coded.ignore import rules_for
     from coded.lsp import py_col
 
+    ignore = rules_for(cwd)
     cache: Dict[str, Optional[List[str]]] = {}
     lines = []
     for path, line, col16 in locations:
+        if path not in cache and ignore.ignored(path):
+            cache[path] = None  # the location is an answer; the file's text is off limits
         if path not in cache:
             try:
                 cache[path] = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()

@@ -9,7 +9,7 @@ from coded.tools.base import Tool, ToolContext, ToolResult
 
 _MAX_OPTIONS = 6
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
-_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+_MAX_IMAGE_BYTES = 5 * 1024 * 1024  # base64 adds a third; most APIs refuse more
 
 
 class AskUserTool(Tool):
@@ -89,7 +89,8 @@ after this call, so you can see it in your next step. Needs a vision-capable mod
         size = path.stat().st_size
         if size > _MAX_IMAGE_BYTES:
             return ToolResult.error(f"{raw} is {size // (1024 * 1024)} MB; images over "
-                                    f"{_MAX_IMAGE_BYTES // (1024 * 1024)} MB are refused.")
+                                    f"{_MAX_IMAGE_BYTES // (1024 * 1024)} MB are refused. "
+                                    "Resize or crop it first (e.g. with bash).")
         attach(str(path))
         try:
             shown = str(path.relative_to(ctx.cwd))

@@ -50,6 +50,15 @@ def _tool_paths(name: str, args: Dict[str, Any]) -> List[str]:
             if isinstance(args.get(k), str) and args.get(k)]
 
 
+_TOOL_IMAGES = "[view_image] "
+
+
+def _is_tool_images(message: Dict[str, Any]) -> bool:
+    content = message.get("content")
+    return (isinstance(content, list) and bool(content) and isinstance(content[0], dict)
+            and str(content[0].get("text", "")).startswith(_TOOL_IMAGES))
+
+
 class Agent:
     def __init__(
         self,
@@ -423,7 +432,7 @@ class Agent:
                 # the step's results as one user message.
                 paths, self._tool_images[:] = list(self._tool_images), []
                 self.session.add_user_multimodal(
-                    "[view_image] " + ", ".join(ui._rel(p, self.cwd) for p in paths), paths)
+                    _TOOL_IMAGES + ", ".join(ui._rel(p, self.cwd) for p in paths), paths)
         else:
             if not self._emit("status", text=f"Reached max turns ({self.max_turns})."):
                 if self.verbose:
@@ -978,7 +987,9 @@ class Agent:
         """Halve every tool result since the last user message (and keep each under
         a quarter of the per-result cap) so the retry is guaranteed to be smaller."""
         msgs = self.session.messages
-        last_user = max((i for i, m in enumerate(msgs) if m.get("role") == "user"), default=0)
+        # view_image's pictures arrive as a user message mid-turn: not a boundary.
+        last_user = max((i for i, m in enumerate(msgs)
+                         if m.get("role") == "user" and not _is_tool_images(m)), default=0)
         for m in msgs[last_user:]:
             if m.get("role") == "tool" and isinstance(m.get("content"), str):
                 cap = max(2000, min(len(m["content"]) // 2, self.limits.tool_result_chars // 4))

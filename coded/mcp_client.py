@@ -36,6 +36,14 @@ def expand_refs(value: str, env: Optional[Dict[str, str]] = None) -> str:
     return _REF.sub(lambda m: env.get(m.group(1), m.group(2) or ""), str(value))
 
 
+def unset_refs(cfg: Dict[str, Any], env: Optional[Dict[str, str]] = None) -> List[str]:
+    """Names a server's `${VAR}` references (without a default) that are not set."""
+    env = os.environ if env is None else env
+    values = [cfg.get("command", ""), *cfg.get("args", []), *(cfg.get("env") or {}).values()]
+    names = [m.group(1) for v in values for m in _REF.finditer(str(v)) if m.group(2) is None]
+    return sorted({n for n in names if n not in env})
+
+
 def server_params(cfg: Dict[str, Any], env: Optional[Dict[str, str]] = None
                   ) -> Tuple[str, List[str], Optional[Dict[str, str]]]:
     """(command, args, env) for a configured server, with `${VAR}` expanded."""
@@ -101,6 +109,12 @@ class MCPManager:
         self._stop_event = asyncio.Event()
         async with AsyncExitStack() as stack:
             for name, cfg in self.servers.items():
+                missing = unset_refs(cfg)
+                if missing:
+                    self.errors.append(
+                        f"MCP server '{name}' uses ${{{'}, ${'.join(missing)}}}, which "
+                        f"{'is' if len(missing) == 1 else 'are'} not set in your environment "
+                        "(used as empty).")
                 try:
                     command, args, env = server_params(cfg)
                     params = StdioServerParameters(command=command, args=args, env=env)

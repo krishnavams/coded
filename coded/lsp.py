@@ -96,7 +96,7 @@ def py_col(text: str, col16: int) -> int:
 @dataclass
 class _Doc:
     version: int
-    mtime: float
+    mtime: Tuple[int, int]  # (st_mtime_ns, st_size): a quick second edit still shows
 
 
 class LSPClient:
@@ -238,7 +238,8 @@ class LSPClient:
     def sync(self, path: str) -> str:
         """Open the file, or send its new text if it changed on disk. Its URI."""
         uri = path_to_uri(path)
-        mtime = os.path.getmtime(path)
+        st = os.stat(path)
+        mtime = (st.st_mtime_ns, st.st_size)
         with self._doc_lock:
             doc = self._docs.get(uri)
             if doc is not None and doc.mtime == mtime:

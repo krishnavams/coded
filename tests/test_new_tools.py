@@ -81,19 +81,6 @@ def test_main_agent_only_tools():
     assert "view_image" in main and "view_image" in sub
 
 
-# -- enter_plan_mode -------------------------------------------------------------
-def test_enter_plan_mode_switches_the_agent(tmp_path, fake_server):
-    def script(body):
-        if any(m.get("role") == "tool" for m in body["messages"]):
-            return {"role": "assistant", "content": "Researching first."}, _USAGE
-        return _call("enter_plan_mode", {}), _USAGE
-
-    with fake_server(script) as server:
-        agent = _agent(tmp_path, server.base_url)
-        agent.run("redesign the storage layer")
-    assert agent.mode == "plan"
-
-
 # -- view_image ------------------------------------------------------------------
 def test_view_image_attaches_the_picture_after_the_tool_results(tmp_path, fake_server):
     (tmp_path / "shot.png").write_bytes(_PNG)
@@ -192,3 +179,61 @@ def test_no_resource_tools_without_resources():
     manager = MCPManager({})
     manager.tool_specs = [("s", "t", "", {})]
     assert [t.name for t in manager.build_tools(manager)] == ["mcp__s__t"]
+
+
+# -- review fixes ----------------------------------------------------------------
+def test_enter_plan_mode_is_refused_when_nobody_can_approve(tmp_path, fake_server):
+    """In --print/CI a plan could never be approved: the run must not go read-only."""
+    def script(body):
+        if any(m.get("role") == "tool" for m in body["messages"]):
+            return {"role": "assistant", "content": "Doing it directly."}, _USAGE
+        return _call("enter_plan_mode", {}), _USAGE
+
+    with fake_server(script) as server:
+        agent = _agent(tmp_path, server.base_url, perms=PermissionManager(auto_approve=True))
+        agent.run("small fix")           # no prompt callback: non-interactive
+    assert agent.mode != "plan"
+    tool_msg = next(m for m in agent.session.messages if m.get("role") == "tool")
+    assert "non-interactive" in tool_msg["content"]
+
+
+def test_enter_plan_mode_works_with_a_front_end(tmp_path, fake_server):
+    def script(body):
+        if any(m.get("role") == "tool" for m in body["messages"]):
+            return {"role": "assistant", "content": "Researching."}, _USAGE
+        return _call("enter_plan_mode", {}), _USAGE
+
+    perms = PermissionManager()
+    perms.set_prompt(lambda title, detail: "yes")
+    with fake_server(script) as server:
+        agent = _agent(tmp_path, server.base_url, perms=perms)
+        agent.run("redesign storage")
+    assert agent.mode == "plan"
+
+
+def test_big_images_are_refused_with_a_next_step(tmp_path):
+    big = tmp_path / "big.png"
+    big.write_bytes(b"\x89PNG" + b"0" * (6 * 1024 * 1024))
+    seen = []
+    vision = ModelConfig(name="v", model="v", supports_vision=True)
+    got = ViewImageTool().run({"path": "big.png"},
+                              _ctx(tmp_path, model=vision, attach_image=seen.append))
+    assert got.is_error and "Resize or crop" in got.content and not seen
+
+
+def test_the_image_message_is_not_a_turn_boundary(tmp_path):
+    from coded.agent import _is_tool_images
+
+    assert _is_tool_images({"role": "user", "content": [
+        {"type": "text", "text": "[view_image] a.png"}, {"type": "image_url", "image_url": {}}]})
+    assert not _is_tool_images({"role": "user", "content": "[view_image] typed by the user"})
+    assert not _is_tool_images({"role": "user", "content": [{"type": "text", "text": "look"}]})
+
+
+def test_unset_mcp_references_are_named():
+    from coded.mcp_client import unset_refs
+
+    cfg = {"command": "x", "args": ["--t=${TOKEN}", "${HOME_DIR:-/tmp}"],
+           "env": {"A": "${SET}", "B": "${MISSING}"}}
+    assert unset_refs(cfg, {"SET": "1"}) == ["MISSING", "TOKEN"]
+    assert unset_refs({"command": "x"}, {}) == []

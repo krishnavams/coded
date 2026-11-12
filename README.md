@@ -686,6 +686,13 @@ Pick a server, add a language or turn one off:
 `coded doctor` shows which servers it finds. Without a server for a file, the
 tool says so and the agent falls back to `grep`/`repo_map`.
 
+Two things to know. A language server is a program that analyses the project,
+and some run the project's own build steps while doing so (rust-analyzer runs
+build scripts and macros, gopls runs `go` commands), outside coded's sandbox
+and without a permission prompt — turn `lsp` on for code you trust. And
+results from files excluded by `.codedignore` show the location only, never
+the file's text.
+
 ### Project memory
 
 ```
@@ -904,7 +911,8 @@ When a server offers resources (files, docs, records), the agent also gets
 not sent.
 
 Values like `"${GITHUB_TOKEN}"` (or `"${VAR:-default}"`) in `command`, `args`
-and `env` are filled in from your environment when coded starts.
+and `env` are filled in from your environment when coded starts. A reference
+to a variable that is not set is reported by name at start (and used as empty).
 
 **Reuse the servers you set up for other agents.** `coded import` looks for MCP
 servers configured for Claude Code (`~/.claude.json`, the project's `.mcp.json`),
@@ -953,7 +961,8 @@ research with read-only tools only. When it has a plan it calls
 Every risky action is refused while plan mode is on, including `git`/`github`
 writes and sub-agents' actions.
 The agent can also switch itself into plan mode (`enter_plan_mode`) before a
-large or risky change, and ask you a question with a few choices when a
+large or risky change (only when someone is there to approve the plan; in
+`--print` and CI it is told to do the work directly), and ask you a question with a few choices when a
 decision is yours (`ask_user`): answer with a number or your own words, or
 press Enter to skip. Without anyone to answer (`--print`, ACP) it states its
 assumption and carries on.

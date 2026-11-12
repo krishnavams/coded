@@ -180,3 +180,28 @@ def test_doctor_lists_language_servers(tmp_path):
     line = next(c for c in run_checks(str(tmp_path), config_path=str(cfg), which=which)
                 if c.area == "code intelligence")
     assert line.detail.startswith("off")
+
+
+def test_ignored_files_show_a_location_but_not_their_text(project):
+    (project / "secret.py").write_text("API_KEY = 'hunter2'  # Box\n", encoding="utf-8")
+    (project / ".codedignore").write_text("secret.py\n")
+    from coded.tools.lsp import _format_locations
+
+    shown = _format_locations([(str(project / "secret.py"), 0, 0),
+                               (str(project / "app.py"), 0, 6)], str(project))
+    assert "hunter2" not in shown and "secret.py:1:1" in shown
+    assert "app.py:1:7  class Box:" in shown
+
+
+def test_a_second_edit_in_the_same_tick_is_resent(project):
+    import os
+
+    tool = _tool()
+    path = project / "app.py"
+    assert "7 lines" in _run(tool, project, operation="hover", path="app.py", line=1,
+                             symbol="Box").content
+    stamp = os.stat(path)
+    path.write_text(SOURCE + "\nmore = 2\n", encoding="utf-8")
+    os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))   # same mtime, new size
+    assert "9 lines" in _run(tool, project, operation="hover", path="app.py", line=1,
+                             symbol="Box").content

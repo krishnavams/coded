@@ -134,6 +134,10 @@ class EnterPlanModeTool(Tool):
             return ToolResult.error("Plan mode is not available here.")
         if get_mode() == "plan":
             return ToolResult.ok("Already in plan mode. Present the plan with exit_plan_mode.")
+        if not ctx.permissions.interactive:
+            # Nobody could approve the plan, so the run would stay read-only for good.
+            return ToolResult.ok("Plan mode needs someone to approve the plan, and this "
+                                 "session is non-interactive. Do the work directly.")
         set_mode("plan")
         return ToolResult.ok(
             "Plan mode is on: research read-only (edits and commands are refused), then "

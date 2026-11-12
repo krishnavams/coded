@@ -259,19 +259,23 @@ config.example.json     # sample configuration
   goes to the front-end's `set_question` callback (REPL: `ui.question_panel`
   + `TypeAhead.ask()`; TUI: `QuestionModal`); None (no front-end: `--print`,
   ACP) tells the model to state an assumption and go on. `ui.pick_answer`
-  maps a typed number to the choice. Main agent only, like `enter_plan_mode`.
+  maps a typed number to the choice. Main agent only, like `enter_plan_mode`,
+  which refuses when `permissions.interactive` is false: nobody could approve
+  the plan, so a `--print`/CI run would stay read-only.
 - **`view_image`** queues a path through `ctx.extra["attach_image"]`; after the
   step's tool results the agent adds one user message with the images (a
   `tool` message cannot carry one). `Config.disabled_tools_for` drops it for a
   model without `supports_vision`, so it is neither offered nor runnable.
+  That message is not a turn boundary: code that looks for "the last user
+  message" must skip it (`agent._is_tool_images`).
   MCP `list_mcp_resources`/`read_mcp_resource` are built only when a server
   reported resources at start (`MCPManager.resource_servers`).
 - **Code intelligence** (`lsp.py`, the `lsp` tool, opt-in `config.lsp`, like
   `browser`, so the default request is unchanged): plain JSON-RPC over the
   server's stdio, no dependency. `get_manager(root, settings)` is process-wide
   (sub-agents get the tool and share servers); `stop_all` runs at exit. Files
-  are re-sent when their mtime changes (`LSPClient.sync`), so answers match
-  disk. Server requests (`workspace/configuration`, …) are always answered or
+  are re-sent when their mtime or size changes (`LSPClient.sync`), so answers
+  match disk. Source lines of `.codedignore`d files are never printed. Server requests (`workspace/configuration`, …) are always answered or
   some servers wait forever. Positions are named by `line` + `symbol`; LSP
   columns are UTF-16 (`utf16_col`/`py_col`). A missing server or unknown
   extension is a `ToolResult.error` pointing at grep/repo_map. Tests run
@@ -503,7 +507,8 @@ config.example.json     # sample configuration
   overwrites a name the file has, skips URL servers (stdio only), refuses
   literal `env` values for the project file and tightens the user file to 600
   when it adds one. `mcp_client.server_params` expands `${VAR}`/`${VAR:-d}`
-  in command, args and env, the form other agents' configs use for secrets.
+  in command, args and env, the form other agents' configs use for secrets;
+  an unset one is named in `MCPManager.errors` (`unset_refs`).
   It also copies Claude Code commands (`discover_commands`: `~/.claude/commands`
   → the user commands dir, `./.claude/commands` → `./.coded/commands`, or all
   into the project with `--project`) byte for byte, except a frontmatter

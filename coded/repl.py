@@ -9,7 +9,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import WordCompleter, merge_completers
 from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.filters import Condition, has_completions
+from prompt_toolkit.filters import Condition, has_completions, vi_navigation_mode
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
@@ -236,7 +236,7 @@ class Repl:
 
         # Tab takes the grey suggestion from history (Right arrow does too);
         # with the completion menu open, Tab still completes from the menu.
-        @bindings.add("tab", filter=_suggestion_shown & ~has_completions)
+        @bindings.add("tab", filter=_suggestion_shown & ~has_completions & ~vi_navigation_mode)
         def _accept_suggestion(event) -> None:
             buf = event.current_buffer
             buf.insert_text(buf.suggestion.text)
