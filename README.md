@@ -428,7 +428,7 @@ pip install -e '.[tui]'      # adds Textual
 | `@path` | Attach a file to the message: `explain @src/app.py`, just some lines with `@app.py#L10-40`, a folder listing with `@src/`, an image with `@shot.png`; quote paths with spaces (`@"my notes.md"`). **Tab** completes paths. Works in the TUI and `coded -p` too. |
 | **Alt+Enter**, **Ctrl+J**, or `\` then Enter | New line without sending |
 | **Esc** | Stop the agent mid-turn (Ctrl-C works too); at a permission question, Esc means "no" |
-| **Shift+Tab** | Cycle mode: normal → accept edits → plan |
+| **Shift+Tab** | Cycle mode: normal → accept edits → plan. While a turn is running: accept edits on/off, from the next edit on |
 | **Ctrl+G** | Write the message in `$EDITOR` |
 | **Ctrl+V** | Attach the clipboard's image (macOS: built in, faster with `pngpaste`; Linux: needs `wl-clipboard` or `xclip`; Windows: PowerShell) |
 | **Ctrl+R** | Search earlier messages |

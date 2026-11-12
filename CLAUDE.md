@@ -329,6 +329,9 @@ config.example.json     # sample configuration
 - **Modes** (`Agent.permission_mode`/`cycle_mode`, Shift+Tab): default →
   accept-edits (`PermissionManager.accept_edits`: `EDIT_KEYS` run unasked; deny
   rules, plan mode and the strict injection guard still apply) → plan.
+  Mid-turn Shift+Tab (`typeahead.SHIFT_TAB`, `ESC [Z`; TUI while busy) calls
+  `Agent.toggle_accept_edits`: accept-edits on/off only, never plan (that swaps
+  the model, so it changes between turns). `ui.TurnDock(get_mode=…)` shows it.
   `Config.max_cost` is checked by `Agent.over_budget()` at the top of every
   loop step (main agent only), so a turn stops cleanly with a note.
 - **Per-call permission** (git/github): a tool that is safe for some inputs and

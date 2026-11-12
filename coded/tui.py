@@ -566,8 +566,13 @@ class CodedTUI(App):
 
     def action_toggle_plan(self) -> None:
         if self.busy:
-            return  # not while a turn is running
-        self.agent.cycle_mode()  # normal → accept edits → plan
+            # Mid-turn: only accept edits on/off (plan changes between turns).
+            on = self.agent.toggle_accept_edits()
+            if on is not None:
+                self._mount(StatusNote("⏵⏵ accept edits on — file edits now run without "
+                                       "asking" if on else "accept edits off"))
+        else:
+            self.agent.cycle_mode()  # normal → accept edits → plan
         self._refresh_sidebar()
 
     def action_undo(self) -> None:

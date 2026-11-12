@@ -93,7 +93,8 @@ class TurnDock:
     """
 
     def __init__(self, get_input, get_tasks=None, get_queued=None, get_running=None,
-                 can_detach=None, get_queue=None) -> None:
+                 can_detach=None, get_queue=None, get_mode=None) -> None:
+        self._get_mode = get_mode or (lambda: "")
         self._get_queue = get_queue or (lambda: [])
         self._get_input = get_input
         self._get_tasks = get_tasks or (lambda: [])
@@ -175,7 +176,8 @@ class TurnDock:
             parts.append(queued_list(waiting))
         foreground = any(not t.background for t in running) and self._can_detach()
         parts.append(input_box(self._get_input() or "", self._get_queued() or 0,
-                               self._question, foreground_task=foreground))
+                               self._question, foreground_task=foreground,
+                               mode=self._get_mode()))
         return Group(*parts)
 
 
@@ -204,7 +206,7 @@ def queued_list(items: list) -> Text:
 
 
 def input_box(text: str, queued: int = 0, answering: bool = False,
-              foreground_task: bool = False) -> Group:
+              foreground_task: bool = False, mode: str = "") -> Group:
     """The input box drawn during a turn (the REPL's own box is not up then)."""
     line = Text()
     line.append("> ", style=f"bold {ACCENT}")
@@ -219,9 +221,16 @@ def input_box(text: str, queued: int = 0, answering: bool = False,
         hint += f"  ·  ctrl+o {'collapse' if _expanded else 'expand'}  ·  ctrl+t tasks"
         if queued:
             hint += "  ·  ↑ edit queued"
+    foot = Text(hint, style=MUTED)
+    if mode == "accept-edits":
+        foot.append("\n  ⏵⏵ accept edits on", style=f"bold {ACCENT2}")
+        foot.append("  ·  shift+tab to turn off", style=MUTED)
+    elif mode == "plan":
+        foot.append("\n  ⏸ plan mode (read-only)", style=f"bold {WARN}")
+    elif mode == "default":
+        foot.append("\n  shift+tab to accept edits without asking", style=MUTED)
     return Group(Panel(line, box=ROUNDED, border_style=ACCENT_DEEP, padding=(0, 1),
-                       expand=True),
-                 Text(hint, style=MUTED))
+                       expand=True), foot)
 
 
 def thinking(text: str = "Thinking", tasks: Optional[list] = None):

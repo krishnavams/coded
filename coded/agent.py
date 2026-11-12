@@ -315,6 +315,15 @@ class Agent:
             self.set_mode("default", announce=False)
         return self.permission_mode
 
+    def toggle_accept_edits(self) -> Optional[bool]:
+        """Shift+Tab while a turn runs: accept edits on/off (the new state). It
+        applies from the next edit on. None in plan mode, which only changes
+        between turns (it swaps the model and the reminder)."""
+        if self.mode == "plan":
+            return None
+        self.permissions.accept_edits = not self.permissions.accept_edits
+        return self.permissions.accept_edits
+
     def over_budget(self) -> Optional[str]:
         """A message when the session's cost has passed `max_cost`, else None."""
         limit = self.config.max_cost

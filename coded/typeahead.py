@@ -34,7 +34,9 @@ ESCAPE = "\x1b"
 CTRL_B, CTRL_O, CTRL_T = "\x02", "\x0f", "\x14"
 # Up arrow: pull the newest queued message back into the input to edit it.
 UP = "\x00up"
-CONTROL_KEYS = (CTRL_B, CTRL_O, CTRL_T, UP)
+# Shift+Tab: turn accept-edits on or off while the turn runs.
+SHIFT_TAB = "\x00stab"
+CONTROL_KEYS = (CTRL_B, CTRL_O, CTRL_T, UP, SHIFT_TAB)
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +135,9 @@ class _PosixKeys:
                 if rest[:j] in ("[A", "OA"):
                     self._pending = rest[j:]
                     return UP
+                if rest[:j] == "[Z":
+                    self._pending = rest[j:]
+                    return SHIFT_TAB
                 chunk, i = rest[j:], 0
                 continue
             if ch in ("\r", "\n"):
@@ -211,8 +216,11 @@ class _WindowsPoll:
                     self.buf = []
                     return None
                 if ch in ("\x00", "\xe0"):  # a function/arrow key: drop the pair
-                    if msvcrt.getwch() == "H":  # ...except Up: edit a queued message
+                    second = msvcrt.getwch()
+                    if second == "H":  # ...except Up: edit a queued message
                         return UP
+                    if ch == "\x00" and second == "\x0f":  # ...and Shift+Tab
+                        return SHIFT_TAB
                     continue
                 self.buf.append(ch)
                 self._out(ch)

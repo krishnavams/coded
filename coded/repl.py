@@ -19,7 +19,7 @@ from rich.table import Table
 from coded import ui
 from coded.agent import Agent
 from coded.config import Config, ConfigError, load_config
-from coded.typeahead import CTRL_B, CTRL_O, CTRL_T, TypeAhead, default_poll
+from coded.typeahead import CTRL_B, CTRL_O, CTRL_T, SHIFT_TAB, TypeAhead, default_poll
 from coded.llm import explain_failure
 
 # prompt_toolkit color theme (matches ui.py accents).
@@ -453,7 +453,8 @@ class Repl:
         return ui.TurnDock(lambda: ta.typing, tasks, lambda: ta.pending,
                            get_queue=lambda: ta.queued_items,
                            get_running=self.agent.tasks.running,
-                           can_detach=lambda: self.agent.tasks.can_detach).start()
+                           can_detach=lambda: self.agent.tasks.can_detach,
+                           get_mode=lambda: self.agent.permission_mode).start()
 
     # -- tasks (sub-agents) ---------------------------------------------------
     def _task_finished(self, entry) -> None:
@@ -534,6 +535,19 @@ class Repl:
         entry.detach.set()
         ui.console.print(f"[{ui.ACCENT_SOFT}]  ↧ {entry.id} \"{entry.label}\" moved to the "
                          f"background — keep typing; its report arrives when it finishes[/]")
+
+    def _toggle_edits(self) -> None:
+        """Shift+Tab mid-turn: accept edits on/off, from the next edit on."""
+        on = self.agent.toggle_accept_edits()
+        if on is None:
+            ui.console.print(f"[{ui.MUTED}]  (plan mode is read-only; leave it after "
+                             f"this turn with shift+tab)[/]")
+        elif on:
+            ui.console.print(f"[bold {ui.ACCENT2}]  ⏵⏵ accept edits on[/]"
+                             f"[{ui.MUTED}] — file edits now run without asking; "
+                             f"commands still ask[/]")
+        else:
+            ui.console.print(f"[{ui.MUTED}]  accept edits off — edits ask again[/]")
 
     def _toggle_expand(self) -> None:
         """Ctrl+O: show tool output in full (and the last cut-off result), or not."""
@@ -620,7 +634,8 @@ class Repl:
                 with TypeAhead(default_poll(), on_queue=self._queued_note,
                                on_escape=self._escape,
                                keys={CTRL_B: self._detach_task, CTRL_O: self._toggle_expand,
-                                     CTRL_T: self._cmd_tasks},
+                                     CTRL_T: self._cmd_tasks,
+                                     SHIFT_TAB: self._toggle_edits},
                                intercept=self._intercept_midturn) as ta:
                     self._typeahead = ta
                     # Messages still waiting from earlier turns go back in the

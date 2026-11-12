@@ -302,3 +302,48 @@ def test_a_stopped_task_does_not_prompt_from_its_thread(tmp_path):
     assert entry.done.wait(10)
     assert got["decision"] is Decision.DENY and asked == []
     assert entry.status == "stopped"
+
+
+def test_shift_tab_turns_accept_edits_on_mid_turn(tmp_path):
+    import io
+    import os
+
+    import pytest
+
+    from coded.typeahead import SHIFT_TAB, TypeAhead, _PosixKeys
+    from tests.test_progress_and_typeahead import _repl_agent
+
+    agent = _repl_agent(tmp_path)
+    assert agent.toggle_accept_edits() is True and agent.permission_mode == "accept-edits"
+    assert agent.toggle_accept_edits() is False and agent.permission_mode == "default"
+    agent.set_mode("plan", announce=False)
+    assert agent.toggle_accept_edits() is None and agent.permission_mode == "plan"
+    agent.set_mode("default", announce=False)
+
+    keys = iter([SHIFT_TAB, None])
+    ta = TypeAhead(poll=lambda _t: next(keys, None),
+                   keys={SHIFT_TAB: agent.toggle_accept_edits})
+    with ta:
+        time.sleep(0.2)
+    assert agent.permissions.accept_edits and ta.pending == 0
+
+    dock = ui.TurnDock(lambda: "", get_mode=lambda: agent.permission_mode)
+    assert "accept edits on" in _plain(dock.render())
+    agent.toggle_accept_edits()
+    assert "shift+tab to accept edits" in _plain(dock.render())
+
+    if os.name == "nt":
+        pytest.skip("POSIX terminal reader")
+    import pty
+
+    master, slave = pty.openpty()
+    reader = _PosixKeys(fd=slave, out=io.StringIO())
+    try:
+        os.write(master, b"ab\x1b[Zc")
+        assert reader(0.5) == SHIFT_TAB
+        reader(0.2)
+        assert reader.buf == list("abc")
+    finally:
+        reader.close()
+        os.close(master)
+        os.close(slave)
