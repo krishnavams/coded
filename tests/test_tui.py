@@ -107,10 +107,14 @@ async def test_tui_clear_action(tmp_path, fake_server):
 
 
 @pytest.mark.asyncio
-async def test_tui_shift_tab_toggles_plan_mode(tmp_path, fake_server):
+async def test_tui_shift_tab_cycles_accept_edits_then_plan_mode(tmp_path, fake_server):
     with fake_server(lambda body: ({"role": "assistant", "content": "ok"}, {})) as server:
         app = CodedTUI(_agent(tmp_path, server.base_url))
         async with app.run_test() as pilot:
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert app.agent.permission_mode == "accept-edits"
+            assert "accept edits" in app._status_text().plain
             await pilot.press("shift+tab")
             await pilot.pause()
             assert app.agent.mode == "plan" and app.agent.permissions.plan_mode

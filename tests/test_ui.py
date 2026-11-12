@@ -145,6 +145,9 @@ def test_repl_shift_tab_is_bound_to_plan_mode(headless):
         app = type("A", (), {"invalidate": lambda self: None})()
 
     binding[0].handler(_Event())
+    assert agent.permission_mode == "accept-edits"
+    assert "accept edits" in "".join(t[1] for t in to_formatted_text(repl._bottom_toolbar()))
+    binding[0].handler(_Event())
     assert agent.mode == "plan"
     assert "plan mode" in "".join(t[1] for t in to_formatted_text(repl._bottom_toolbar()))
     binding[0].handler(_Event())

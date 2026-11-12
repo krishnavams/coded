@@ -36,7 +36,8 @@ coded/
 ├── llm.py              # LLMClient: OpenAI-compatible streaming + tool calls
 ├── agent.py            # Agent: the agentic loop; sub-agent spawning
 ├── session.py          # Session: message history + usage/cost tracking
-├── permissions.py      # PermissionManager: approve/deny/always gate
+├── permissions.py      # PermissionManager: approve/deny/always gate, accept-edits mode
+├── notify.py           # Notifier: bell/desktop notification when a long turn ends or asks
 ├── prompts.py          # assembles main/sub-agent prompts + AGENTS.md/CODED.md/CLAUDE.md hierarchy
 ├── prompt_files.py     # prompt-file loading/overrides/profiles + `coded prompts` CLI
 ├── limits.py           # per-model limits scaled by context_window; result/step caps
@@ -275,6 +276,11 @@ config.example.json     # sample configuration
 - **Tools must never raise into the loop**: return `ToolResult.error(...)` for
   expected failures. `Agent._run_tool` also catches unexpected exceptions and
   feeds them back to the model as text, so the agent can recover.
+- **Modes** (`Agent.permission_mode`/`cycle_mode`, Shift+Tab): default →
+  accept-edits (`PermissionManager.accept_edits`: `EDIT_KEYS` run unasked; deny
+  rules, plan mode and the strict injection guard still apply) → plan.
+  `Config.max_cost` is checked by `Agent.over_budget()` at the top of every
+  loop step (main agent only), so a turn stops cleanly with a note.
 - **Per-call permission** (git/github): a tool that is safe for some inputs and
   risky for others sets `requires_permission = False` and calls
   `ctx.permissions.request(...)` itself for the risky branch. Static-risk tools

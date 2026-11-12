@@ -235,6 +235,37 @@ class Agent:
         if self.session.messages and self.session.messages[0].get("role") == "system":
             self.session.messages[0]["content"] = prompt
 
+    @property
+    def permission_mode(self) -> str:
+        """"plan", "accept-edits" or "default", for the status bar."""
+        if self.mode == "plan":
+            return "plan"
+        return "accept-edits" if self.permissions.accept_edits else "default"
+
+    def cycle_mode(self) -> str:
+        """Shift+Tab: default → accept edits → plan → default."""
+        current = self.permission_mode
+        if current == "default":
+            self.permissions.accept_edits = True
+        elif current == "accept-edits":
+            self.permissions.accept_edits = False
+            self.set_mode("plan", announce=False)
+        else:
+            self.set_mode("default", announce=False)
+        return self.permission_mode
+
+    def over_budget(self) -> Optional[str]:
+        """A message when the session's cost has passed `max_cost`, else None."""
+        limit = self.config.max_cost
+        if limit is None or self.is_subagent:
+            return None
+        spent = self.session.estimated_cost(self.model)
+        if spent < float(limit):
+            return None
+        return (f"Stopped: this session has cost about ${spent:.4f}, which reaches the "
+                f"max_cost limit of ${float(limit):.2f}. Raise it with /budget <dollars> "
+                f"(or --max-cost) to continue.")
+
     def set_mode(self, mode: str, announce: bool = True) -> None:
         """"default" or "plan" (read-only research until a plan is approved).
         Plan mode runs on the `plan` role model when one is configured; leaving it
@@ -264,6 +295,11 @@ class Agent:
         for _ in range(self.max_turns):
             if self._interrupted:
                 self._status_note("Interrupted.")
+                break
+            stop = self.over_budget()
+            if stop:
+                self._status_note(stop)
+                final_text = final_text or stop
                 break
             self.session.turns += 1
             self._sync_sizing()
@@ -969,6 +1005,8 @@ def create_agent(
         checkpoints = CheckpointManager(cwd)
     if permissions.injection_guard != config.injection_guard:
         permissions.injection_guard = config.injection_guard
+    if config.accept_edits:
+        permissions.accept_edits = True
 
     agent = Agent(
         model=model,

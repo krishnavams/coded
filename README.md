@@ -403,6 +403,8 @@ pip install -e '.[tui]'      # adds Textual
 | `/plugins` | List installed plugins |
 | `/prompts` | Show which prompt files are in use |
 | `/<custom> [args]` | Run a custom command from `.coded/commands/` |
+| `/permissions [...]` | Show or change the mode and allow/deny rules; `save` keeps them |
+| `/budget [dollars\|off]` | Show or set the spending limit |
 | `/exit`, `/quit` | Quit |
 
 ### Typing in the REPL
@@ -412,7 +414,7 @@ pip install -e '.[tui]'      # adds Textual
 | `@path` | Attach a file to the message: `explain @src/app.py`, just some lines with `@app.py#L10-40`, a folder listing with `@src/`, an image with `@shot.png`; quote paths with spaces (`@"my notes.md"`). **Tab** completes paths. Works in the TUI and `coded -p` too. |
 | **Alt+Enter**, **Ctrl+J**, or `\` then Enter | New line without sending |
 | **Esc** | Stop the agent mid-turn (Ctrl-C works too); at a permission question, Esc means "no" |
-| **Shift+Tab** | Plan mode on/off |
+| **Shift+Tab** | Cycle mode: normal → accept edits → plan |
 | **Ctrl+G** | Write the message in `$EDITOR` |
 | **Ctrl+V** | Attach the clipboard's image (macOS: built in, faster with `pngpaste`; Linux: needs `wl-clipboard` or `xclip`; Windows: PowerShell) |
 | **Ctrl+R** | Search earlier messages |
@@ -440,6 +442,37 @@ by pattern. Patterns are `tool` or `tool(glob)` matched against the command/path
   }
 }
 ```
+
+**Modes.** **Shift+Tab** (REPL and TUI) cycles three modes, shown in the status
+bar: *normal* (ask before changes), **⏵⏵ accept edits** (file edits — `write`,
+`edit`, `multi_edit`, `apply_patch`, `move` — run without asking; deleting
+files and running commands still ask) and **⏸ plan** (read-only). Start in
+accept-edits mode with `--accept-edits` or `"accept_edits": true`.
+
+**`/permissions`** shows the mode and every rule, and changes them for the
+session: `/permissions allow bash(npm test*)`, `/permissions deny bash(curl*)`,
+`/permissions remove <rule>`, `/permissions mode accept-edits`. `/permissions save`
+writes the current rules to the project's `.coded/config.json`.
+
+### Spending limit
+
+Stop a session before it costs more than you meant to spend:
+
+```bash
+coded --max-cost 2.00            # dollars, from the models' input_cost/output_cost
+```
+
+or `"max_cost": 2.0` in config. The turn stops with a note once the session's
+estimated cost reaches the limit; `/budget 5` raises it, `/budget off` removes
+it, and `/budget` shows what has been spent.
+
+### Notifications
+
+On a turn that runs longer than `notify_after` seconds (default 30), coded
+rings the terminal bell when it finishes or stops to ask you something, so
+you can work in another window. `"notify": "desktop"` shows a desktop
+notification instead (osascript on macOS, `notify-send` on Linux; the bell
+elsewhere); `"notify": "off"` turns it off.
 
 ### Context & sessions
 

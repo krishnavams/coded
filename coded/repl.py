@@ -120,6 +120,9 @@ SLASH_COMMANDS = {
     "/skill": "Invoke a skill now: /skill <name> [task].",
     "/review": "Run reviewer→qa→security sub-agents on the changes: /review [target].",
     "/plan": "Toggle plan mode (read-only research, then approve a plan). Also Shift+Tab.",
+    "/permissions": "Show or change what may run without asking: "
+                    "/permissions [allow|deny|remove <rule>] [mode <name>] [save].",
+    "/budget": "Show or set the session's spending limit: /budget [dollars|off].",
     "/todos": "Show the agent's current task list.",
     "/shells": "List background shells; /shells kill <id>.",
     "/agents": "List outside agents available to delegate to (external_agent tool).",
@@ -148,7 +151,7 @@ KEYS = {
     "@path": "Attach a file (@app.py, @app.py#L10-40), a folder listing or an image. Tab completes.",
     "Alt+Enter / Ctrl+J": "New line without sending (or end the line with \\ and press Enter).",
     "Esc": "Stop the agent mid-turn (Ctrl-C works too).",
-    "Shift+Tab": "Plan mode on/off.",
+    "Shift+Tab": "Cycle mode: normal → accept edits (file edits run without asking) → plan.",
     "Ctrl+G": "Write the message in $EDITOR.",
     "Ctrl+V": "Attach the image on the clipboard.",
     "Ctrl+R": "Search earlier messages.",
@@ -180,6 +183,9 @@ class Repl:
         self._tasks_shown: list = []  # the task list as last shown above the prompt
         self._on_turn = on_turn  # called after each completed turn (autosave)
         self._pending_images: Optional[list] = None
+        from coded.notify import Notifier
+
+        self.notifier = Notifier.from_config(config)
         from coded.commands import discover_commands
 
         self.commands = discover_commands(agent.cwd)
@@ -199,9 +205,8 @@ class Repl:
         bindings = KeyBindings()
 
         @bindings.add("s-tab", filter=~has_completions)
-        def _toggle_plan(event) -> None:  # Shift+Tab: plan mode on/off
-            self.agent.set_mode("default" if self.agent.mode == "plan" else "plan",
-                                announce=False)
+        def _cycle_mode(event) -> None:  # Shift+Tab: normal → accept edits → plan
+            self.agent.cycle_mode()
             event.app.invalidate()  # redraw the status bar
 
         # A new line without sending: Alt+Enter, Ctrl+J, or `\` then Enter.
@@ -257,8 +262,10 @@ class Repl:
         tok = u.prompt_tokens + u.completion_tokens
         tok_str = f"{tok/1000:.1f}k" if tok >= 1000 else str(tok)
         compact = "  ⟳ compacted" if getattr(s, "compactions", 0) else ""
-        mode = ("  ·  <style fg='%s'><b>⏸ plan mode</b></style>" % ui.WARN
-                if self.agent.mode == "plan" else "")
+        mode = {
+            "plan": f"  ·  <style fg='{ui.WARN}'><b>⏸ plan mode</b></style>",
+            "accept-edits": f"  ·  <style fg='{ui.ACCENT2}'><b>⏵⏵ accept edits</b></style>",
+        }.get(self.agent.permission_mode, "")
         done, total, _ = ui.todo_progress(self.agent.todos.items)
         if not total:
             tasks = ""
@@ -272,10 +279,11 @@ class Repl:
             f"  ·  {s.turns} turns"
             f"  ·  {tok_str} tokens"
             f"  ·  ~${cost:.4f}{compact}{tasks}"
-            f"  ·  @ files  ·  shift+tab plan  ·  /help"
+            f"  ·  @ files  ·  shift+tab mode  ·  /help"
         )
 
     def _permission_prompt(self, title: str, detail: str) -> str:
+        self.notifier.waiting(title)
         ui.console.print()
         ui.permission_panel(title, detail)
         if self._typeahead is not None and self._typeahead.available:
@@ -398,8 +406,10 @@ class Repl:
                 with TypeAhead(default_poll(), on_queue=self._queued_note,
                                on_escape=self._escape) as ta:
                     self._typeahead = ta
+                    self.notifier.start()
                     try:
-                        self.agent.run(text, images=self._pending_images)
+                        answer = self.agent.run(text, images=self._pending_images)
+                        self.notifier.finished(answer)
                     finally:
                         self._typeahead = None
                         queued += ta.drain()
@@ -470,6 +480,10 @@ class Repl:
             self.agent.run(_INIT_PROMPT, route_hint="/init")
         elif cmd == "/cost":
             self._cmd_cost()
+        elif cmd == "/permissions":
+            self._cmd_permissions(args)
+        elif cmd == "/budget":
+            self._cmd_budget(args)
         elif cmd in ("/clear", "/reset"):
             self.agent.session.reset()
             ui.success("Conversation cleared.")
@@ -585,6 +599,68 @@ class Repl:
         for n, c in self.commands.items():
             table.add_row(f"/{n}", c.argument_hint, c.description)
         ui.console.print(table)
+
+    def _cmd_permissions(self, args: List[str]) -> None:
+        """/permissions [allow|deny|remove <rule>] [mode default|accept-edits|plan] [save]"""
+        perms = self.agent.permissions
+        if args and args[0] in ("allow", "deny") and len(args) > 1:
+            rule = " ".join(args[1:])
+            added = perms.add_rule(args[0], rule)
+            ui.info(f"{args[0].title()} rule {'added' if added else 'already there'}: {rule} "
+                    f"(this session; /permissions save keeps it)")
+            return
+        if args and args[0] == "remove" and len(args) > 1:
+            rule = " ".join(args[1:])
+            ui.info(f"Removed: {rule}" if perms.remove_rule(rule) else f"No such rule: {rule}")
+            return
+        if args and args[0] == "mode" and len(args) > 1:
+            wanted = args[1]
+            if wanted not in ("default", "accept-edits", "plan"):
+                ui.warn("Modes: default, accept-edits, plan.")
+                return
+            while self.agent.permission_mode != wanted:
+                self.agent.cycle_mode()
+            ui.info(f"Mode: {wanted}.")
+            return
+        if args and args[0] == "save":
+            from coded.config import project_config_path
+            from coded.config_wizard import read_file, write_file
+
+            path = project_config_path(self.agent.cwd)
+            data = read_file(path)
+            data["permissions"] = {"allow": list(perms.allow_rules), "deny": list(perms.deny_rules)}
+            write_file(path, data)
+            ui.success(f"Saved {len(perms.allow_rules)} allow and {len(perms.deny_rules)} deny "
+                       f"rule(s) to {path}.")
+            return
+        if args:
+            ui.warn("Usage: /permissions [allow|deny|remove <rule>] [mode <name>] [save]")
+            return
+        mode = self.agent.permission_mode
+        table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
+        table.add_row("[cyan]mode[/cyan]", mode + ("  (yolo: everything runs)"
+                                                   if perms.auto_approve else ""))
+        table.add_row("[cyan]allow[/cyan]", ", ".join(perms.allow_rules) or "[dim]none[/dim]")
+        table.add_row("[cyan]deny[/cyan]", ", ".join(perms.deny_rules) or "[dim]none[/dim]")
+        table.add_row("[cyan]always (session)[/cyan]",
+                      ", ".join(perms.always_allowed) or "[dim]none[/dim]")
+        ui.console.print(table)
+        ui.console.print(f"[{ui.MUTED}]Rules look like bash, bash(git *), edit(src/*). "
+                         f"Deny always wins. Shift+Tab cycles the mode.[/]")
+
+    def _cmd_budget(self, args: List[str]) -> None:
+        spent = self.agent.session.estimated_cost(self.agent.model)
+        if args:
+            if args[0] in ("off", "none"):
+                self.config.max_cost = None
+            else:
+                try:
+                    self.config.max_cost = float(args[0].lstrip("$"))
+                except ValueError:
+                    ui.warn("Usage: /budget [dollars|off]")
+                    return
+        limit = self.config.max_cost
+        ui.info(f"Spent ~${spent:.4f}; limit: " + (f"${limit:.2f}" if limit is not None else "none"))
 
     def _cmd_help(self) -> None:
         table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))

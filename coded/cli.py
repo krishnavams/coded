@@ -48,6 +48,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Non-interactive: run the prompt once, print the result, and exit.")
     p.add_argument("--yolo", "--auto-approve", action="store_true", dest="auto_approve",
                    help="Auto-approve all tool actions (no permission prompts). Use with care.")
+    p.add_argument("--accept-edits", action="store_true",
+                   help="File edits run without asking (shell commands and deletes still ask).")
+    p.add_argument("--max-cost", type=float, metavar="DOLLARS",
+                   help="Stop once the session's estimated cost reaches this many dollars.")
     p.add_argument("--no-stream", action="store_true", help="Disable streaming output.")
     p.add_argument("--no-compact", action="store_true", help="Disable automatic context compaction.")
     p.add_argument("--cwd", help="Working directory for the agent (default: current dir).")
@@ -112,6 +116,10 @@ def _apply_overrides(cfg: Config, args: argparse.Namespace) -> None:
         cfg.shell = args.shell
     if args.auto_approve:
         cfg.auto_approve = True
+    if getattr(args, "accept_edits", False):
+        cfg.accept_edits = True
+    if getattr(args, "max_cost", None) is not None:
+        cfg.max_cost = args.max_cost
     if args.no_stream:
         cfg.stream = False
     if args.no_compact:
