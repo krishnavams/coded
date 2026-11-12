@@ -480,6 +480,13 @@ config.example.json     # sample configuration
   compaction follow it via `_sized_model`, shrinking history when it is
   smaller. Use `_sized_model`, not `self.model`, for anything window-dependent
   in the loop. `Config.model_warnings()` reports unknown aliases.
+- **Bounded memory**: never hold a command's output or a whole file of unknown
+  size. `shells.run` spools output to temp files and keeps the head and tail
+  past `max_bytes` (`MAX_CAPTURE_BYTES`); `grep` skips files over
+  `GREP_MAX_FILE_BYTES`; `read` streams text over `READ_STREAM_BYTES`;
+  background reads return at most `BG_READ_MAX_BYTES` of the newest output
+  (`tests/test_memory_bounds.py`). Unbounded reads let a sub-agent grow coded
+  until the OS SIGKILLed it.
 - **Cross-platform**: anything that runs a command goes through `shells.run` /
   `command_argv` (POSIX keeps the historical `shell=True` string path; Windows
   gets an argv list for the resolved shell) and `popen_kwargs`/`kill_tree` for

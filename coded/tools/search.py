@@ -77,6 +77,11 @@ matching paths. Fast; use this to locate files by name."""
         return ToolResult.ok("\n".join(matches) + capped)
 
 
+# A file this big is data or a log, not source; reading it whole (grep holds
+# the bytes, the decoded text and the split lines at once) could exhaust memory.
+GREP_MAX_FILE_BYTES = 20 * 1024 * 1024
+
+
 class GrepTool(Tool):
     name = "grep"
     parallel_safe = True
@@ -104,6 +109,7 @@ shell grep."""
             return ToolResult.error(f"Invalid regex: {exc}")
         file_glob = args.get("glob")
         results: List[str] = []
+        skipped_big: List[Path] = []
         files_with_matches = 0
         try:
             for f in _walk(root, ctx.cwd):
@@ -113,6 +119,9 @@ shell grep."""
                 ):
                     continue
                 try:
+                    if f.stat().st_size > GREP_MAX_FILE_BYTES:
+                        skipped_big.append(f)
+                        continue
                     data = f.read_bytes()
                 except OSError:
                     continue
@@ -132,8 +141,15 @@ shell grep."""
                     break
         except OSError as exc:
             return ToolResult.error(f"Search failed: {exc}")
+        skipped = ""
+        if skipped_big:
+            names = ", ".join(str(p) for p in skipped_big[:5])
+            more = f" and {len(skipped_big) - 5} more" if len(skipped_big) > 5 else ""
+            skipped = (f"\n(skipped {len(skipped_big)} file(s) over "
+                       f"{GREP_MAX_FILE_BYTES // (1024 * 1024)} MB: {names}{more}; "
+                       f"read them with `read` and offset/limit if needed)")
         if not results:
-            return ToolResult.ok(f"No matches for /{args['pattern']}/ under {root}.")
+            return ToolResult.ok(f"No matches for /{args['pattern']}/ under {root}.{skipped}")
         capped = "" if len(results) < max_matches else f"\n… (capped at {max_matches} matches)"
         header = f"{len(results)} match(es) in {files_with_matches} file(s):\n"
-        return ToolResult.ok(header + "\n".join(results) + capped)
+        return ToolResult.ok(header + "\n".join(results) + capped + skipped)

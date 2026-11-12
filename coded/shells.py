@@ -291,16 +291,43 @@ def kill_tree(proc: subprocess.Popen, timeout: float = 5.0) -> None:
         proc.kill()
 
 
+# Output kept per stream by `run`. The bash tool shows the model far less
+# (limits.shell_output_chars); this only stops a command that prints gigabytes
+# (a recursive grep over data, a runaway loop) from being held in memory, where
+# macOS or the OOM killer would SIGKILL coded itself.
+MAX_CAPTURE_BYTES = 8 * 1024 * 1024
+
+
+def _read_capped(fh, limit: int) -> str:
+    """Text of a spooled output file: all of it, or its head and tail."""
+    size = fh.seek(0, os.SEEK_END)
+    fh.seek(0)
+    if size <= limit:
+        data = fh.read()
+    else:
+        half = limit // 2
+        head = fh.read(half)
+        fh.seek(size - half)
+        tail = fh.read(half)
+        note = f"\n… [{size - 2 * half} bytes of output omitted] …\n".encode()
+        data = head + note + tail
+    text = data.decode("utf-8", errors="replace")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def run(command: Union[str, Sequence[str]], *, cwd: Optional[str] = None,
         timeout: Optional[float] = None, env: Optional[Dict[str, str]] = None,
-        input: Optional[str] = None, shell: Optional[Shell] = None) -> subprocess.CompletedProcess:
+        input: Optional[str] = None, shell: Optional[Shell] = None,
+        max_bytes: int = MAX_CAPTURE_BYTES) -> subprocess.CompletedProcess:
     """Run a shell command and capture its output as UTF-8 text.
 
     `command` is a command string (run through the platform's shell) or an argv
-    list (run directly). A timed-out command takes its children with it; on
-    Windows that needs an explicit tree kill, since terminating the shell alone
-    leaves grandchildren holding the pipes open.
+    list (run directly). A timed-out command takes its children with it (it
+    runs in its own process group). Output goes to temporary files, not pipes,
+    so memory stays bounded: past `max_bytes` a stream keeps its head and tail.
     """
+    import tempfile
+
     if isinstance(command, str):
         argv: Union[str, List[str]] = command_argv(command, shell)
     else:
@@ -309,27 +336,25 @@ def run(command: Union[str, Sequence[str]], *, cwd: Optional[str] = None,
     # A child never reads the user's terminal: it would fight the REPL for input
     # and an interactive command would hang until the timeout.
     stdin = subprocess.PIPE if input is not None else subprocess.DEVNULL
-    if not IS_WINDOWS:
-        if input is not None:
-            return subprocess.run(argv, shell=use_shell, cwd=cwd, env=env, input=input,
-                                  capture_output=True, timeout=timeout, **text_kwargs())
-        return subprocess.run(argv, shell=use_shell, cwd=cwd, env=env, stdin=stdin,
-                              capture_output=True, timeout=timeout, **text_kwargs())
-    proc = subprocess.Popen(
-        argv, shell=use_shell, cwd=cwd, env=child_env(env), stdin=stdin,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        **text_kwargs(), **popen_kwargs(new_group=True))
-    try:
-        out, err = proc.communicate(input=input, timeout=timeout)
-    except BaseException as exc:  # timeout, Ctrl-C, anything: never leave a tree behind
-        kill_tree(proc)
+    data = input.encode("utf-8") if input is not None else None
+    with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
+        proc = subprocess.Popen(
+            argv, shell=use_shell, cwd=cwd, env=child_env(env), stdin=stdin,
+            stdout=out_f, stderr=err_f, **popen_kwargs(new_group=True))
         try:
-            out, err = proc.communicate(timeout=_TREE_KILL_TIMEOUT)
-        except (subprocess.TimeoutExpired, ValueError, OSError):
-            out = err = ""
-        if isinstance(exc, subprocess.TimeoutExpired):
-            raise subprocess.TimeoutExpired(argv, timeout or 0, output=out, stderr=err) from None
-        raise
+            proc.communicate(input=data, timeout=timeout)
+        except BaseException as exc:  # timeout, Ctrl-C, anything: never leave a tree behind
+            kill_tree(proc)
+            try:
+                proc.wait(timeout=_TREE_KILL_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                pass
+            if isinstance(exc, subprocess.TimeoutExpired):
+                raise subprocess.TimeoutExpired(
+                    argv, timeout or 0, output=_read_capped(out_f, max_bytes),
+                    stderr=_read_capped(err_f, max_bytes)) from None
+            raise
+        out, err = _read_capped(out_f, max_bytes), _read_capped(err_f, max_bytes)
     if (shell or active_shell()).name in ("pwsh", "powershell"):
         out, err = clean_clixml(out or ""), clean_clixml(err or "")
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)

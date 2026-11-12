@@ -29,6 +29,10 @@ class _Shell:
     offset: int = 0
 
 
+# New output returned per read: the newest part of a log that may be huge.
+BG_READ_MAX_BYTES = 4 * 1024 * 1024
+
+
 class BackgroundShells:
     def __init__(self) -> None:
         self._shells: Dict[str, _Shell] = {}
@@ -60,9 +64,13 @@ class BackgroundShells:
             return None
         try:
             with open(sh.log_path, "rb") as fh:
-                fh.seek(sh.offset)
-                data = fh.read()
+                size = fh.seek(0, os.SEEK_END)
+                skipped = max(0, size - sh.offset - BG_READ_MAX_BYTES)
+                fh.seek(sh.offset + skipped)
+                data = fh.read(BG_READ_MAX_BYTES)
                 sh.offset = fh.tell()
+                if skipped:
+                    data = f"… [{skipped} earlier bytes not shown]\n".encode() + data
         except OSError:
             data = b""
         code = sh.proc.poll()

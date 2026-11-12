@@ -5,7 +5,7 @@ from __future__ import annotations
 import difflib
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from coded.limits import get_limits
 from coded.textio import NOT_UTF8, newline_of, read_text, write_text
@@ -67,11 +67,17 @@ slides or sheets — "3", "2-5", "1,4" or a sheet name — before `offset`/`limi
             return ToolResult.error(f"File not found: {p}")
         if p.is_dir():
             return ToolResult.error(f"{p} is a directory; use ls or glob.")
+        from coded import documents
+
         try:
+            if p.stat().st_size > READ_STREAM_BYTES:
+                with open(p, "rb") as fh:
+                    head = fh.read(4096)
+                if documents.kind_of(p, head[:8]) is None:
+                    return self._read_big_text(p, head, args, ctx)
             data = p.read_bytes()
         except OSError as exc:
             return ToolResult.error(f"Could not read {p}: {exc}")
-        from coded import documents
 
         header = ""
         kind = documents.kind_of(p, data[:8])
@@ -103,9 +109,48 @@ slides or sheets — "3", "2-5", "1,4" or a sheet name — before `offset`/`limi
         cap = get_limits(ctx).read_lines
         limit = max(1, min(int(args.get("limit", cap)), cap))
         chunk = lines[offset - 1 : offset - 1 + limit]
+        return self._numbered(chunk, offset, len(lines), header, ctx)
+
+    def _read_big_text(self, p: Path, head: bytes, args: Dict[str, Any],
+                       ctx: ToolContext) -> ToolResult:
+        """A text file too big to hold in memory: stream to the requested lines
+        and count the rest, keeping only the lines that will be shown."""
+        import io
+
+        from coded import documents
+
+        reason = documents.unsupported_reason(p)
+        if reason:
+            return ToolResult.error(f"{p.name} is {reason}.")
+        if b"\x00" in head:
+            return ToolResult.error(f"{p} appears to be a binary file.")
+        sample = head.decode("utf-8", errors="replace")
+        if sample.count("\ufffd") > max(8, len(sample) // 50):
+            return ToolResult.error(f"{p} does not decode as text — it is a binary format "
+                                    "this tool cannot read.")
+        if args.get("pages"):
+            return ToolResult.error("`pages` applies to PDF, Word, Excel and "
+                                    "PowerPoint files; use offset/limit for text.")
+        offset = max(1, int(args.get("offset", 1)))
+        cap = get_limits(ctx).read_lines
+        limit = max(1, min(int(args.get("limit", cap)), cap))
+        chunk: List[str] = []
+        total = 0
+        with open(p, "rb") as raw:
+            text = io.TextIOWrapper(raw, encoding="utf-8", errors="replace", newline=None)
+            for total, line in enumerate(text, 1):
+                if offset <= total < offset + limit:
+                    chunk.append(line.rstrip("\n"))
+        mb = p.stat().st_size / (1024 * 1024)
+        return self._numbered(chunk, offset, total, f"({p.name}: {mb:.0f} MB, {total} lines)",
+                              ctx)
+
+    @staticmethod
+    def _numbered(chunk: List[str], offset: int, total: int, header: str,
+                  ctx: ToolContext) -> ToolResult:
         if not chunk:
             return ToolResult.ok((header + "\n" if header else "")
-                                 + f"(file has {len(lines)} lines; offset {offset} is past the end)")
+                                 + f"(file has {total} lines; offset {offset} is past the end)")
         out = []
         budget = get_limits(ctx).tool_result_chars - 200
         used = 0
@@ -120,9 +165,13 @@ slides or sheets — "3", "2-5", "1,4" or a sheet name — before `offset`/`limi
             used += len(row) + 1
             last = i
         footer = ""
-        if last < len(lines):
-            footer = f"\n… ({len(lines) - last} more lines; continue with offset={last + 1})"
+        if last < total:
+            footer = f"\n… ({total - last} more lines; continue with offset={last + 1})"
         return ToolResult.ok((header + "\n" if header else "") + "\n".join(out) + footer)
+
+
+# Above this, `read` streams a text file instead of loading it whole.
+READ_STREAM_BYTES = 32 * 1024 * 1024
 
 
 class WriteTool(Tool):
