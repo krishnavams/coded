@@ -208,6 +208,8 @@ def test_commands_are_copied_with_their_scope(setup, commands):
     # A second run changes nothing.
     code, out = _run(setup, ["commands", "-y"])
     assert "already imported" in out and "Nothing to import" in out
+    # CRLF files included: every one of them is recognised, none reported as a clash.
+    assert "a coded command with this name exists" not in out
 
 
 def test_project_flag_and_conflicts(setup, commands):

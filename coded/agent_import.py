@@ -336,9 +336,9 @@ def discover_commands(cwd: str, *, home: Optional[Path] = None, project: bool = 
             elif item.dest in taken:
                 item.skip = f"the name is taken by {taken[item.dest].source}"
             elif item.dest.exists():
-                try:
-                    same = item.dest.read_text(encoding="utf-8") == text
-                except (OSError, UnicodeDecodeError):
+                try:  # bytes: text mode would turn \r\n into \n and never match
+                    same = item.dest.read_bytes() == text.encode("utf-8")
+                except OSError:
                     same = False
                 item.skip = ("already imported" if same
                              else "a coded command with this name exists (left unchanged)")
