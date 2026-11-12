@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -22,7 +21,7 @@ from coded.llm import Completion, LLMClient, is_context_overflow
 from coded.permissions import Decision, PermissionManager
 from coded.prompt_files import load_prompt
 from coded.prompts import _dir_instruction_files, build_subagent_prompt, build_system_prompt, read_instructions
-from coded.session import Session
+from coded.session import USAGE_LOCK, Session
 from coded.tasks import TaskEntry, TaskManager, report_message
 from coded.telemetry import Tracer, run_in_context
 from coded.tools import ToolContext, ToolRegistry, build_registry
@@ -1176,11 +1175,12 @@ class Agent:
             except BaseException:
                 if task is None:
                     self.tasks.finish(entry, "", "failed")
+                self._emit("task_end", id=entry.id, status="failed", summary=entry.summary())
                 raise
             finally:
                 # Roll the sub-agent's token usage up into the parent session
                 # (background tasks finish on their own threads).
-                with _USAGE_LOCK:
+                with USAGE_LOCK:
                     self.session.record_usage(sub_session.total_usage)
                     self.session.cost += sub_session.cost
                     self.session._priced = self.session._priced or sub_session._priced
@@ -1193,9 +1193,6 @@ class Agent:
             return result
 
         return runner
-
-
-_USAGE_LOCK = threading.Lock()
 
 
 def create_agent(

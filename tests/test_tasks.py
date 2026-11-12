@@ -274,3 +274,31 @@ def test_repl_wakes_the_agent_with_a_finished_background_report(tmp_path, monkey
     monkeypatch.setattr(repl.prompt, "prompt", lambda *a, **k: (_ for _ in ()).throw(EOFError))
     repl.run()
     assert len(ran) == 1 and "REPORT BODY" in ran[0] and "[background task t1" in ran[0]
+
+
+def test_a_stopped_task_does_not_prompt_from_its_thread(tmp_path):
+    """Esc stops a foreground task, but its thread may still finish a step:
+    that step must be refused, not shown to a user who has moved on."""
+    from coded.tools.base import ToolContext
+    from coded.tools.task import _start_thread
+
+    asked = []
+    pm = PermissionManager(prompt=lambda t, d: asked.append(t) or "y")
+    tm = TaskManager()
+    entry = tm.start("slow")
+    go = threading.Event()
+    got = {}
+
+    def spawn(prompt, **kw):
+        go.wait(10)
+        got["decision"] = pm.request(key="bash", title="Run", detail="rm -rf x")
+        return "report"
+
+    ctx = ToolContext(cwd=str(tmp_path), permissions=pm, config=None,
+                      extra={"tasks": tm}, spawn_subagent=spawn)
+    _start_thread({"prompt": "p"}, ctx, tm, entry)
+    tm.stop(entry.id)
+    go.set()
+    assert entry.done.wait(10)
+    assert got["decision"] is Decision.DENY and asked == []
+    assert entry.status == "stopped"

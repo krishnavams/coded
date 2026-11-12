@@ -129,7 +129,8 @@ def _work(args: Dict[str, Any], ctx: ToolContext, entry) -> "tuple[str, bool]":
 def _start_thread(args: Dict[str, Any], ctx: ToolContext, tasks, entry) -> None:
     def target() -> None:
         # Never prompt once in the background: nobody is watching this task.
-        ctx.permissions.set_background(lambda: entry.background)
+        # Nor once stopped (Esc): its thread may still be finishing a step.
+        ctx.permissions.set_background(lambda: entry.background or not entry.running)
         try:
             text, is_error = _work(args, ctx, entry)
         except BaseException as exc:  # noqa: BLE001 - the task ends either way

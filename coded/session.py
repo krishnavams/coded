@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 from coded.config import ModelConfig
 from coded.llm import Usage
+
+# Usage is added from several threads (background sub-agents, /btw).
+USAGE_LOCK = threading.RLock()
 
 
 def usage_cost(usage: Usage, model: ModelConfig) -> float:
@@ -72,10 +76,11 @@ class Session:
         )
 
     def record_usage(self, usage: Usage, model: ModelConfig | None = None) -> None:
-        self.total_usage = self.total_usage + usage
-        if model is not None:
-            self.cost += usage_cost(usage, model)
-            self._priced = True
+        with USAGE_LOCK:
+            self.total_usage = self.total_usage + usage
+            if model is not None:
+                self.cost += usage_cost(usage, model)
+                self._priced = True
 
     def reset(self) -> None:
         self.messages = [{"role": "system", "content": self.system_prompt}]

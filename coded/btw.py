@@ -8,7 +8,6 @@ stay exactly as they were. The usage is still counted.
 
 from __future__ import annotations
 
-import threading
 from typing import Any, List
 
 from coded.sessions_store import close_tool_calls
@@ -19,9 +18,6 @@ BTW_INSTRUCTION = (
     "the current task, and do not mention this note. If the answer needs work you "
     "have not done, say so in one line.]"
 )
-
-_USAGE_LOCK = threading.Lock()
-
 
 def side_messages(messages: List[dict], question: str) -> List[dict]:
     """The conversation as it stands, made valid, with the side question last."""
@@ -40,12 +36,15 @@ def ask(agent: Any, question: str) -> str:
     if not question:
         return "Usage: /btw <question> — a quick side question; the current work goes on."
     llm = agent._make_llm(agent.model)  # its own client: the turn may be using agent.llm
-    completion = llm.complete(side_messages(agent.session.messages, question),
-                              agent._tool_schema(), stream=False)
-    with _USAGE_LOCK:
+    messages = side_messages(agent.session.messages, question)
+    # The usual tool list keeps the request shaped like the turn's (same cached
+    # prefix). A model that answers with a tool call anyway is asked once more
+    # with no tools on offer, so it has to answer in words.
+    for tools in (agent._tool_schema(), None):
+        completion = llm.complete(messages, tools, stream=False)
         agent.session.record_usage(completion.usage, agent.model)
-    answer = (completion.content or "").strip()
-    if not answer:
-        return "(no answer: the model replied with a tool call instead; ask again " \
-               "after the turn, or rephrase)"
-    return answer
+        answer = (completion.content or "").strip()
+        if answer:
+            return answer
+    return "(no answer: the model did not reply in words; ask again after the turn, " \
+           "or rephrase)"

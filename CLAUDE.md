@@ -570,7 +570,9 @@ config.example.json     # sample configuration
   the REPL for the turn when the type-ahead reader runs) a foreground task also
   runs on a worker so **Ctrl+B** (`entry.detach`) can return early, and Esc/
   Ctrl-C stops it. A background thread calls `permissions.set_background`, so
-  `request` denies instead of prompting and `ask`/`question` return None.
+  `request` denies instead of prompting and `ask`/`question` return None
+  (the same once a task is stopped: its thread may still be finishing a step).
+  Usage is added under `session.USAGE_LOCK` (inside `Session.record_usage`).
   Finished reports reach the agent as one user message (`report_message`): at
   the top of each step (`_deliver_background`), before a final answer
   (`_background_pending`, which also waits when `wait_for_background` — true
@@ -594,7 +596,7 @@ config.example.json     # sample configuration
   (`agent._make_llm`) over `side_messages` — a copy of the session with an
   in-flight tool step dropped and orphans closed, plus `BTW_INSTRUCTION` and the
   question — with the agent's normal tool schema (valid history, same cached
-  prefix) and any tool call ignored. Never appended to the session; usage is
+  prefix); a reply that is only a tool call is asked again once with no tools. Never appended to the session; usage is
   recorded. Mid-turn it is taken out of the queue by `TypeAhead(intercept=…)`
   (REPL) or before the busy check (TUI) and answered on its own thread.
 - **`@path` mentions** (`mentions.py`) are expanded in `Agent.run` (main agent

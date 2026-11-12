@@ -126,3 +126,23 @@ async def test_tui_btw_mid_turn(tmp_path, fake_server):
             assert "tui side answer" in text and "what is x?" in text
             assert app._queued == []
             app.busy = False
+
+
+def test_btw_asks_again_without_tools_when_the_model_calls_one(tmp_path, fake_server):
+    seen = []
+
+    def script(body):
+        seen.append(body)
+        if body.get("tools"):
+            return {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "x", "type": "function",
+                 "function": {"name": "ls", "arguments": "{}"}}]}, USAGE
+        return {"role": "assistant", "content": "in words"}, USAGE
+
+    with fake_server(script) as server:
+        agent = _make_agent(tmp_path, server.base_url)
+        before = [dict(m) for m in agent.session.messages]
+        assert btw.ask(agent, "which file?") == "in words"
+    assert len(seen) == 2 and not seen[1].get("tools")
+    assert agent.session.messages == before
+    assert agent.session.total_usage.prompt_tokens == 14  # both calls are counted
