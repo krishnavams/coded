@@ -254,6 +254,10 @@ def tool_result_text(content: str, is_error: bool = False, name: str = "",
     lines = content.splitlines()
     if name == "read" and not is_error and len(lines) > 1:
         lines = [f"Read {len(lines)} lines"]
+    elif name == "todo_write" and not is_error and lines:
+        # The list itself is already on screen (panel / dock); keep the
+        # headline and any nudge the tool gave the model.
+        lines = [lines[0].rstrip(":")] + [ln for ln in lines[1:] if ln.startswith("Note:")]
     shown = lines[:max_lines]
     text = "\n".join(shown)
     if len(text) > _MAX_RESULT_CHARS:

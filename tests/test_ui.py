@@ -183,3 +183,12 @@ def test_repl_shift_tab_is_bound_to_plan_mode(headless):
     assert "plan mode" in "".join(t[1] for t in to_formatted_text(repl._bottom_toolbar()))
     binding[0].handler(_Event())
     assert agent.mode == "default"
+
+
+def test_todo_write_result_does_not_repeat_the_list():
+    content = "Task list updated:\n◐ one\n☐ two\nNote: keep only one task in_progress at a time."
+    shown = ui.tool_result_text(content, name="todo_write").plain
+    assert "Task list updated" in shown and "Note: keep only one" in shown
+    assert "one\n" not in shown.replace("Note: keep only one", "") and "two" not in shown
+    # Errors are shown in full.
+    assert "two" in ui.tool_result_text(content, is_error=True, name="todo_write").plain
