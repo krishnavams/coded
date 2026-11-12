@@ -58,7 +58,8 @@ coded/
 ├── builtin_skills/     # bundled roles: planner, reviewer, debugger (bodies from prompt files), qa, security
 ├── compaction.py       # context auto-compaction (summarize old messages)
 ├── sessions_store.py   # persist/restore sessions (--continue/--resume)
-├── checkpoints.py      # CheckpointManager: per-turn file snapshots for /undo
+├── checkpoints.py      # CheckpointManager: per-turn file snapshots for /undo and /rewind
+├── transcript.py       # /context breakdown and /export Markdown
 ├── embeddings.py       # EmbeddingClient + embedding-model resolution
 ├── index.py            # CodeIndex: chunk/embed/store + cosine search
 ├── websearch.py        # web-search backends + HTML→text fetch
@@ -286,7 +287,14 @@ config.example.json     # sample configuration
   `ctx.permissions.request(...)` itself for the risky branch. Static-risk tools
   use the class flag instead.
 - **Checkpoints**: mutating file tools call `ctx.checkpoints.record(path)` before
-  writing so `/undo` works. `bash` changes are intentionally not tracked. New
+  writing so `/undo` works. `/rewind` uses `Agent._turn_marks` (one per
+  `Agent.run` of the main agent: the user message **by identity**, the typed
+  text and the checkpoint group id); `turn_history()` drops marks whose message
+  compaction or `/clear` removed, and `CheckpointManager.undo_since(id)` undoes
+  that group and every later one, newest first.
+- **Usage** carries `cached_tokens` (`llm.usage_from` reads OpenAI's
+  `prompt_tokens_details.cached_tokens` and DeepSeek's `prompt_cache_hit_tokens`);
+  `session.usage_cost` prices them at `cached_input_cost` when a model sets it. `bash` changes are intentionally not tracked. New
   mutating file tools must record.
 - **Network/optional-key tools** (github/web/semantic_search) must degrade to a
   clear `ToolResult.error` when the key/backend/index is missing — never crash.

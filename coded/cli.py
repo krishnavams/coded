@@ -67,8 +67,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--continue", dest="continue_session", action="store_true",
                    help="Resume the most recent saved session for this directory.")
     p.add_argument("--resume", metavar="ID", help="Resume a specific saved session by id.")
-    p.add_argument("--output-format", choices=["text", "json"], default="text",
-                   help="Output format for --print mode (json emits content + usage + cost).")
+    p.add_argument("--output-format", choices=["text", "json", "stream-json"], default="text",
+                   help="Output format for --print mode: json emits content + usage + cost at "
+                        "the end; stream-json emits one JSON event per line as the agent works.")
     p.add_argument("--plan", action="store_true",
                    help="Start in plan mode (read-only research until you approve a plan).")
     p.add_argument("--shell", metavar="NAME",
@@ -705,7 +706,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     prewarm()
 
     # In JSON print mode, keep stdout clean — send all log output to stderr.
-    if args.print_mode and args.output_format == "json":
+    if args.print_mode and args.output_format in ("json", "stream-json"):
         ui.set_quiet(True)
 
     if args.shell:  # before load_config: plugin hooks and prompts need the shell
@@ -841,10 +842,21 @@ def _run_print_mode(agent, prompt: Optional[str], images=None, *,
     if not prompt:
         ui.error("No prompt provided for --print mode.")
         return 1
+    import json as _json
+
+    def emit(event: dict) -> None:
+        print(_json.dumps(event, default=str, ensure_ascii=False), flush=True)
+
     if output_format == "json":
         # Keep stdout clean for machine parsing: no streaming/tool chatter.
         agent.stream = False
         agent.verbose = False
+    elif output_format == "stream-json":
+        # One JSON object per line: the agent's own events (assistant_delta,
+        # tool_call, tool_result, diff, todos, status…), then a "result".
+        agent.verbose = False
+        agent.on_event = emit
+        emit({"type": "start", "model": agent.model.name, "cwd": agent.cwd})
     # In print mode we auto-approve nothing by default; keep it non-interactive.
     try:
         result = agent.run(prompt, images=images)
@@ -852,17 +864,24 @@ def _run_print_mode(agent, prompt: Optional[str], images=None, *,
         from coded.llm import explain_failure
 
         ui.error(explain_failure(exc))
+        if output_format == "stream-json":
+            emit({"type": "error", "message": explain_failure(exc)})
         return 1
     if on_done:
         on_done()
-    if output_format == "json":
-        import json as _json
-
+    if output_format == "stream-json":
+        u = agent.session.total_usage
+        emit({"type": "result", "content": result, "model": agent.model.name,
+              "usage": {"input_tokens": u.prompt_tokens, "output_tokens": u.completion_tokens,
+                        "cached_input_tokens": u.cached_tokens},
+              "cost": round(agent.session.estimated_cost(agent.model), 6)})
+    elif output_format == "json":
         u = agent.session.total_usage
         print(_json.dumps({
             "content": result,
             "model": agent.model.name,
-            "usage": {"input_tokens": u.prompt_tokens, "output_tokens": u.completion_tokens},
+            "usage": {"input_tokens": u.prompt_tokens, "output_tokens": u.completion_tokens,
+                      "cached_input_tokens": u.cached_tokens},
             "cost": round(agent.session.estimated_cost(agent.model), 6),
         }, indent=2))
     elif result and not agent.stream and not agent.verbose:

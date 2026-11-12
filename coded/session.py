@@ -9,6 +9,17 @@ from coded.config import ModelConfig
 from coded.llm import Usage
 
 
+def usage_cost(usage: Usage, model: ModelConfig) -> float:
+    """Dollars for this usage at the model's prices; cached input tokens at
+    `cached_input_cost` when the model sets one."""
+    cached = min(getattr(usage, "cached_tokens", 0) or 0, usage.prompt_tokens)
+    cached_price = (model.cached_input_cost if model.cached_input_cost is not None
+                    else model.input_cost)
+    return ((usage.prompt_tokens - cached) / 1_000_000 * model.input_cost
+            + cached / 1_000_000 * cached_price
+            + usage.completion_tokens / 1_000_000 * model.output_cost)
+
+
 @dataclass
 class Session:
     system_prompt: str
@@ -60,8 +71,7 @@ class Session:
     def record_usage(self, usage: Usage, model: ModelConfig | None = None) -> None:
         self.total_usage = self.total_usage + usage
         if model is not None:
-            self.cost += (usage.prompt_tokens / 1_000_000 * model.input_cost
-                          + usage.completion_tokens / 1_000_000 * model.output_cost)
+            self.cost += usage_cost(usage, model)
             self._priced = True
 
     def reset(self) -> None:
@@ -76,7 +86,4 @@ class Session:
         recorded with one; `model` only prices usage restored from disk."""
         if self._priced:
             return self.cost
-        return (
-            self.total_usage.prompt_tokens / 1_000_000 * model.input_cost
-            + self.total_usage.completion_tokens / 1_000_000 * model.output_cost
-        )
+        return usage_cost(self.total_usage, model)

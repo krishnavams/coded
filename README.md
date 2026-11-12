@@ -287,6 +287,7 @@ Each entry under `models` accepts:
 | `context_window` | no | Total context size (informational; default 128000). |
 | `input_cost` | no | USD per **million** input tokens (used by `/cost`). |
 | `output_cost` | no | USD per **million** output tokens. |
+| `cached_input_cost` | no | USD per million input tokens served from the provider's prompt cache (most providers bill these cheaper). Unset: priced like `input_cost`. `/cost` shows how many input tokens were cached. |
 | `supports_tools` | no | Set `false` for models without function-calling (e.g. search-only models); the agent then runs without tools. |
 | `extra_headers` | no | Extra HTTP headers (e.g. OpenRouter's `HTTP-Referer`/`X-Title`). |
 
@@ -343,6 +344,7 @@ coded --no-mcp                 # disable MCP servers for this run
 coded --continue               # resume the most recent session here
 coded --resume <id>            # resume a specific session
 coded -p --output-format json "..."   # machine-readable result
+coded -p --output-format stream-json "..."  # one JSON event per line as it works
 coded models                   # list configured models
 coded index                    # build the semantic search index
 coded review [target]          # non-interactive review pipeline (CI); exit 1 on NEEDS_CHANGES
@@ -389,6 +391,9 @@ pip install -e '.[tui]'      # adds Textual
 | `/paste` | Attach the image on the clipboard (also **Ctrl+V**) |
 | `/vim` | Toggle vi key bindings in the input |
 | `/undo` | Revert the last turn's file changes |
+| `/rewind [n] [--keep-files]` | Go back to before request *n*: conversation and its file changes |
+| `/context` | What fills the context window |
+| `/export [path]` | Save the conversation as Markdown |
 | `/checkpoints` | List saved checkpoints |
 | `/compact` | Summarize the conversation to free context |
 | `/init` | Analyze the repo and write a `CODED.md` guide |
@@ -626,6 +631,25 @@ Every turn, changes made by `write`/`edit`/`move`/`delete` are snapshotted under
 `.coded/checkpoints/`. `/undo` restores the most recent turn (reverting edits and
 removing newly-created files); repeat `/undo` to step further back. `/checkpoints`
 lists them. Note: changes made by `bash` are **not** tracked.
+
+**`/rewind`** goes back further than files: `/rewind` lists your requests,
+and `/rewind 3` removes request 3 and everything after it from the conversation
+*and* undoes the file changes those turns made, then puts request 3 back in the
+input so you can change it and send it again. `--keep-files` rewinds only the
+conversation.
+
+### Context and exporting
+
+`/context` shows what fills the model's context window — system prompt, tool
+definitions, your messages, the model's replies and tool results — as estimated
+tokens and a share of the window, next to the count the endpoint reported for
+the last request. `/export [path]` saves the conversation as Markdown (default
+`coded-session-<time>.md` in the project), with tool calls and their results.
+
+With `--print`, `--output-format stream-json` prints one JSON object per line
+while the agent works — `start`, then the agent's events (`assistant_delta`,
+`tool_call`, `tool_result`, `diff`, `todos`, `status`, …) and finally `result`
+with the answer, usage and cost — so a script or CI job can follow progress.
 
 ### Git & GitHub
 

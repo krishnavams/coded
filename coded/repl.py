@@ -134,6 +134,9 @@ SLASH_COMMANDS = {
     "/paste": "Attach the image on the clipboard to your next message (also Ctrl+V).",
     "/vim": "Toggle vi key bindings in the input (config: \"editing_mode\": \"vi\").",
     "/undo": "Undo the last file changes (checkpoint).",
+    "/rewind": "Go back to an earlier request (conversation and files): /rewind [n] [--keep-files].",
+    "/context": "Show what fills the context window.",
+    "/export": "Save the conversation as Markdown: /export [path].",
     "/checkpoints": "List saved checkpoints.",
     "/compact": "Summarize the conversation now to free up context.",
     "/cost": "Show token usage and estimated cost this session.",
@@ -480,6 +483,18 @@ class Repl:
             self.agent.run(_INIT_PROMPT, route_hint="/init")
         elif cmd == "/cost":
             self._cmd_cost()
+        elif cmd == "/rewind":
+            self._cmd_rewind(args)
+        elif cmd == "/context":
+            from coded.transcript import context_breakdown, render_context
+
+            ui.console.print(render_context(context_breakdown(self.agent)), markup=False,
+                             highlight=False)
+        elif cmd == "/export":
+            from coded.transcript import write_export
+
+            path = write_export(self.agent, " ".join(args) or None)
+            ui.success(f"Saved the conversation to {path}")
         elif cmd == "/permissions":
             self._cmd_permissions(args)
         elif cmd == "/budget":
@@ -647,6 +662,32 @@ class Repl:
         ui.console.print(table)
         ui.console.print(f"[{ui.MUTED}]Rules look like bash, bash(git *), edit(src/*). "
                          f"Deny always wins. Shift+Tab cycles the mode.[/]")
+
+    def _cmd_rewind(self, args: List[str]) -> None:
+        """/rewind lists requests; /rewind N goes back to just before request N
+        (its text is put back in the input to edit and resend)."""
+        keep = "--keep-files" in args
+        args = [a for a in args if a != "--keep-files"]
+        turns = self.agent.turn_history()
+        if not turns:
+            ui.info("Nothing to rewind in this conversation.")
+            return
+        if not args:
+            table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
+            for n, turn in enumerate(turns, 1):
+                text = " ".join(turn["text"].split())
+                table.add_row(f"[cyan]{n}[/cyan]", text[:90] + ("…" if len(text) > 90 else ""))
+            ui.console.print(table)
+            ui.console.print(f"[{ui.MUTED}]/rewind N goes back to just before request N and "
+                             f"undoes its file changes (--keep-files leaves files alone).[/]")
+            return
+        try:
+            summary, text = self.agent.rewind(int(args[0]), restore_files=not keep)
+        except ValueError as exc:
+            ui.warn(str(exc) if "between" in str(exc) else "Usage: /rewind [n] [--keep-files]")
+            return
+        ui.success(summary)
+        self._prefill = text  # edit it and send again, or clear it
 
     def _cmd_budget(self, args: List[str]) -> None:
         spent = self.agent.session.estimated_cost(self.agent.model)
@@ -942,9 +983,10 @@ class Repl:
     def _cmd_cost(self) -> None:
         u = self.agent.session.total_usage
         cost = self.agent.session.estimated_cost(self.agent.model)
+        cached = f" [dim](cached {u.cached_tokens:,})[/dim]" if u.cached_tokens else ""
         ui.console.print(
             f"[dim]Turns:[/dim] {self.agent.session.turns}   "
-            f"[dim]Input tokens:[/dim] {u.prompt_tokens:,}   "
+            f"[dim]Input tokens:[/dim] {u.prompt_tokens:,}{cached}   "
             f"[dim]Output tokens:[/dim] {u.completion_tokens:,}   "
             f"[dim]Est. cost:[/dim] ${cost:.4f}"
         )

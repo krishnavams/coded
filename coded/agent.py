@@ -83,6 +83,9 @@ class Agent:
         # (assistant/reasoning deltas, tool calls/results, diffs, todos, status)
         # instead of printing via `ui` — used by the TUI and ACP server. See _emit().
         self.on_event: Optional[Callable[[dict], None]] = None
+        # One entry per request the user sent: its user message (by identity),
+        # what was typed and the checkpoint group it opened (for /rewind).
+        self._turn_marks: List[Dict[str, Any]] = []
         # Verification state (see _verify_turn): whether this turn touched
         # anything, whether it did so through the shell, and how many times it
         # has been sent back.
@@ -172,6 +175,13 @@ class Agent:
             self.session.add_user_multimodal(text, images)
         else:
             self.session.add_user(text)
+        if not self.is_subagent:
+            current = getattr(self.checkpoints, "current", None)
+            self._turn_marks.append({
+                "message": self.session.messages[-1],
+                "text": route_hint if route_hint is not None else str(user_message),
+                "checkpoint": current.id if current is not None else None,
+            })
         with self.tracer.span("turn", model=self.model.name, subagent=self.is_subagent,
                               cwd=self.cwd) as attrs:
             result = self._loop()
@@ -265,6 +275,33 @@ class Agent:
         return (f"Stopped: this session has cost about ${spent:.4f}, which reaches the "
                 f"max_cost limit of ${float(limit):.2f}. Raise it with /budget <dollars> "
                 f"(or --max-cost) to continue.")
+
+    def turn_history(self) -> List[Dict[str, Any]]:
+        """Requests still in the conversation, oldest first (compaction and
+        /clear drop the ones whose message is gone)."""
+        present = {id(m) for m in self.session.messages}
+        self._turn_marks = [t for t in self._turn_marks if id(t["message"]) in present]
+        return list(self._turn_marks)
+
+    def rewind(self, number: int, restore_files: bool = True) -> tuple:
+        """Go back to just before request `number` (1 = the oldest still in the
+        conversation): drop it and everything after it from the conversation
+        and, unless told not to, undo the file changes those turns made.
+        Returns (summary, the request's text) so a front-end can offer it again."""
+        turns = self.turn_history()
+        if not 1 <= number <= len(turns):
+            raise ValueError(f"Choose a request between 1 and {len(turns)}.")
+        mark = turns[number - 1]
+        index = next(i for i, m in enumerate(self.session.messages) if m is mark["message"])
+        dropped = len(turns) - number + 1
+        del self.session.messages[index:]
+        self._turn_marks = turns[:number - 1]
+        notes = [f"Rewound {dropped} request(s)."]
+        if restore_files and self.checkpoints is not None:
+            notes.append(self.checkpoints.undo_since(mark["checkpoint"]))
+        elif not restore_files:
+            notes.append("Files were left as they are.")
+        return " ".join(notes), mark["text"]
 
     def set_mode(self, mode: str, announce: bool = True) -> None:
         """"default" or "plan" (read-only research until a plan is approved).

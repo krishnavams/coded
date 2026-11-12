@@ -76,6 +76,9 @@ class ModelConfig:
     # Optional cost tracking, USD per million tokens.
     input_cost: float = 0.0
     output_cost: float = 0.0
+    # Price of input tokens served from the provider's prompt cache (None:
+    # the same as input_cost, i.e. cached tokens are not discounted).
+    cached_input_cost: Optional[float] = None
     extra_headers: Dict[str, str] = field(default_factory=dict)
     # Some smaller/older models do not support the ``tools`` parameter.
     supports_tools: bool = True
