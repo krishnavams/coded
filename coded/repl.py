@@ -502,6 +502,8 @@ class Repl:
             except KeyboardInterrupt:
                 ui.warn("Interrupted.")
                 queued.clear()
+                if self._on_turn:
+                    self._on_turn()  # keep what the interrupted turn did
             except ConfigError as exc:
                 ui.error(str(exc))
             except Exception as exc:  # noqa: BLE001

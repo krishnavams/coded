@@ -824,6 +824,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         except OSError:
             pass
 
+    agent.on_step = autosave
     try:
         if args.print_mode:
             return _run_print_mode(agent, initial_prompt, images,

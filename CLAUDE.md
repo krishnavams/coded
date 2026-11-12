@@ -487,6 +487,13 @@ config.example.json     # sample configuration
   background reads return at most `BG_READ_MAX_BYTES` of the newest output
   (`tests/test_memory_bounds.py`). Unbounded reads let a sub-agent grow coded
   until the OS SIGKILLed it.
+- **Sessions survive a crash**: `Agent.on_step` (main agent only; the CLI sets
+  it to autosave) runs after the user message, each tool step and the final
+  answer, so a kill loses at most one step; the REPL also saves after Ctrl-C.
+  `SessionStore.save` writes atomically (temp + `os.replace`).
+  `sessions_store.close_tool_calls` gives unanswered tool calls an
+  `INTERRUPTED_RESULT`: applied on load and at the start of every
+  `Agent.run`, since endpoints reject a history with an orphan tool call.
 - **Cross-platform**: anything that runs a command goes through `shells.run` /
   `command_argv` (POSIX keeps the historical `shell=True` string path; Windows
   gets an argv list for the resolved shell) and `popen_kwargs`/`kill_tree` for

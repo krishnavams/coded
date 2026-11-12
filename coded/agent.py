@@ -112,6 +112,9 @@ class Agent:
         # (assistant/reasoning deltas, tool calls/results, diffs, todos, status)
         # instead of printing via `ui` — used by the TUI and ACP server. See _emit().
         self.on_event: Optional[Callable[[dict], None]] = None
+        # Called after each step of a main-agent turn (the CLI autosaves the
+        # session), so a crash or kill mid-turn loses at most one step.
+        self.on_step: Optional[Callable[[], None]] = None
         # One entry per request the user sent: its user message (by identity),
         # what was typed and the checkpoint group it opened (for /rewind).
         self._turn_marks: List[Dict[str, Any]] = []
@@ -200,6 +203,11 @@ class Agent:
         self._last_request = str(user_message)
         if self.checkpoints is not None:
             self.checkpoints.begin(str(user_message)[:60])
+        # A turn interrupted mid-tool left calls without results; endpoints
+        # reject that history, so close them before adding the next message.
+        from coded.sessions_store import close_tool_calls
+
+        self.session.messages[:] = close_tool_calls(self.session.messages)
         if images:
             self.session.add_user_multimodal(text, images)
         else:
@@ -211,6 +219,7 @@ class Agent:
                 "text": route_hint if route_hint is not None else str(user_message),
                 "checkpoint": current.id if current is not None else None,
             })
+            self._step_done()
         with self.tracer.span("turn", model=self.model.name, subagent=self.is_subagent,
                               cwd=self.cwd) as attrs:
             result = self._loop()
@@ -358,6 +367,13 @@ class Agent:
             self._status_note(note)
 
     # -- core loop ----------------------------------------------------------
+    def _step_done(self) -> None:
+        if self.on_step is not None and not self.is_subagent:
+            try:
+                self.on_step()
+            except Exception:  # noqa: BLE001 - saving must never break a turn
+                pass
+
     def _loop(self) -> str:
         final_text = ""
         stop_continuations = 0
@@ -404,6 +420,7 @@ class Agent:
             self.session.add_assistant(completion.content, completion.tool_calls)
 
             if not completion.tool_calls:
+                self._step_done()
                 final_text = completion.content
                 feedback = self._verify_turn(final_text)
                 if feedback:
@@ -433,6 +450,7 @@ class Agent:
                 paths, self._tool_images[:] = list(self._tool_images), []
                 self.session.add_user_multimodal(
                     _TOOL_IMAGES + ", ".join(ui._rel(p, self.cwd) for p in paths), paths)
+            self._step_done()
         else:
             if not self._emit("status", text=f"Reached max turns ({self.max_turns})."):
                 if self.verbose:
