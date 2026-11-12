@@ -690,6 +690,13 @@ one (e.g. `ruff`, `black`), record the commands here.
 - Never commit real API keys. Project-level config lives in `./.coded/`, which
   is gitignored.
 
+## Releasing
+
+Bump the version in `pyproject.toml` and `coded/__init__.py` (a test keeps them
+equal), add a `## <version>` section to `CHANGELOG.md`, merge to main, then push
+a tag `v<version>` on main. `.github/workflows/release.yml` checks the tag
+against the package version and creates the GitHub Release from that section.
+
 ## Keeping this file accurate
 
 Update this file whenever the structure, tooling, tool suite, config schema, or
