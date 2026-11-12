@@ -332,7 +332,11 @@ class Repl:
             while True:
                 ui.console.print("  [bold]Allow?[/bold] [green]y[/green]es  "
                                  "[red]n[/red]o  [cyan]a[/cyan]lways")
-                answer = self._typeahead.ask()
+                self._asking(True)
+                try:
+                    answer = self._typeahead.ask()
+                finally:
+                    self._asking(False)
                 if answer is None:
                     return "no"
                 answer = answer.strip()
@@ -358,7 +362,11 @@ class Repl:
         ui.console.print()
         ui.question_panel(question, options)
         if self._typeahead is not None and self._typeahead.available:
-            return ui.pick_answer(self._typeahead.ask() or "", options)
+            self._asking(True)
+            try:
+                return ui.pick_answer(self._typeahead.ask() or "", options)
+            finally:
+                self._asking(False)
         try:
             answer = self.prompt.prompt(HTML("  <b>Answer:</b> "), bottom_toolbar=None)
         except (EOFError, KeyboardInterrupt):
@@ -404,6 +412,20 @@ class Repl:
             os.kill(os.getpid(), signal.SIGINT)
 
     # -- main loop ----------------------------------------------------------
+    def _turn_dock(self, ta: TypeAhead) -> Optional[ui.TurnDock]:
+        """Keep an input box (with the spinner and tasks) at the bottom during
+        the turn, showing what is typed; the reader stops echoing raw keys."""
+        if not ta.can_draw:
+            return None
+        ta.set_echo(False)
+        tasks = (lambda: self.agent.todos.items) if self.agent.verbose else None
+        return ui.TurnDock(lambda: ta.typing, tasks, lambda: ta.pending).start()
+
+    def _asking(self, on: bool) -> None:
+        dock = ui.active_dock()
+        if dock is not None:
+            dock.asking(on)
+
     def _queued_note(self, text: str, waiting: int) -> None:
         short = text if len(text) <= 60 else text[:57] + "…"
         ui.console.print(f"[{ui.ACCENT_SOFT}]  ⏎ queued ({waiting}): {short}[/]")
@@ -463,10 +485,14 @@ class Repl:
                                on_escape=self._escape) as ta:
                     self._typeahead = ta
                     self.notifier.start()
+                    dock = self._turn_dock(ta)
                     try:
                         answer = self.agent.run(text, images=self._pending_images)
                         self.notifier.finished(answer)
                     finally:
+                        if dock is not None:
+                            dock.stop()
+                            ta.set_echo(True)
                         self._typeahead = None
                         queued += ta.drain()
                         self._prefill = ta.partial  # a half-typed line (Windows)

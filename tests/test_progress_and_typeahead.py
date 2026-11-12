@@ -390,3 +390,66 @@ def test_type_ahead_reads_a_real_terminal():
     finally:
         sys.stdin = saved
         os.close(primary)
+
+
+# -- the input box during a turn --------------------------------------------
+
+def _plain(renderable, width: int = 80) -> str:
+    from rich.console import Console
+
+    con = Console(width=width, record=True, color_system=None, force_terminal=False)
+    con.print(renderable)
+    return con.export_text()
+
+
+class _Keys:
+    """A key-by-key reader stand-in: has `buf` and `echo` like the real ones."""
+
+    def __init__(self):
+        self.buf, self.echo = [], True
+
+    def __call__(self, _t):
+        return None
+
+
+def test_the_turn_dock_shows_an_input_box_with_what_is_being_typed():
+    keys = _Keys()
+    ta = TypeAhead(poll=keys)
+    keys.buf[:] = list("also check tests")
+    dock = ui.TurnDock(lambda: ta.typing, lambda: ITEMS, lambda: 2)
+    text = _plain(dock.render())
+    assert "> also check tests" in text
+    assert "Fix the bug" in text            # the unfinished tasks stay docked
+    assert "2 queued" in text and "esc to interrupt" in text
+    assert ta.typing == "also check tests"  # peeking does not consume the line
+    assert ta.partial == "also check tests"
+
+
+def test_a_waiting_prompt_changes_the_box_hint():
+    dock = ui.TurnDock(lambda: "y")
+    dock.asking(True)
+    text = _plain(dock.render())
+    assert "Waiting for your answer" in text and "enter to answer" in text
+
+
+def test_thinking_relabels_the_dock_instead_of_opening_a_second_live():
+    dock = ui.TurnDock(lambda: "").start()
+    try:
+        assert ui.active_dock() is dock
+        with ui.thinking("Compacting"):
+            assert "Compacting…" in _plain(dock.render())
+        assert "Working…" in _plain(dock.render())
+    finally:
+        dock.stop()
+    assert ui.active_dock() is None
+
+
+def test_echo_is_switched_off_only_for_readers_that_collect_keys():
+    keys = _Keys()
+    ta = TypeAhead(poll=keys)
+    assert ta.can_draw
+    ta.set_echo(False)
+    assert keys.echo is False
+    line_mode = TypeAhead(poll=lambda _t: None)
+    assert not line_mode.can_draw
+    line_mode.set_echo(False)  # no-op, no error

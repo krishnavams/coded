@@ -59,14 +59,150 @@ class _NoStatus:
         return False
 
 
+class _DockStatus:
+    """`thinking()` while a TurnDock is up: relabels its spinner, no new Live."""
+
+    def __init__(self, dock: "TurnDock", text: str) -> None:
+        self.dock, self.text = dock, text
+
+    def start(self):
+        self.dock.set_activity(self.text)
+        return self
+
+    def stop(self):
+        self.dock.set_activity(None)
+        return self
+
+    def __enter__(self):
+        return self.start()
+
+    def __exit__(self, *a):
+        self.stop()
+        return False
+
+
+class TurnDock:
+    """The bottom of the screen for a whole REPL turn: what the agent is doing,
+    the unfinished task list and an input box showing what is being typed.
+
+    One rich Live for the turn (rich allows only one at a time), so
+    `thinking()` and the streaming view draw into it instead of opening their
+    own; everything printed meanwhile scrolls above it. Without it the keys
+    typed mid-turn were echoed straight into the output, where the spinner's
+    redraw erased them and no input box was visible at all.
+    """
+
+    def __init__(self, get_input, get_tasks=None, get_queued=None) -> None:
+        self._get_input = get_input
+        self._get_tasks = get_tasks or (lambda: [])
+        self._get_queued = get_queued or (lambda: 0)
+        self._activity: Optional[str] = None
+        self._body = None
+        self._question = False
+        self._live = None
+
+    # -- lifecycle ----------------------------------------------------------
+    def start(self) -> "TurnDock":
+        global _dock
+        if _quiet or self._live is not None:
+            return self
+        from rich.live import Live
+
+        self._live = Live(get_renderable=self.render, console=console,
+                          refresh_per_second=12, transient=True)
+        self._live.start()
+        _dock = self
+        return self
+
+    def stop(self) -> None:
+        global _dock
+        if _dock is self:
+            _dock = None
+        live, self._live = self._live, None
+        if live is not None:
+            try:
+                live.stop()
+            except Exception:  # noqa: BLE001 - restoring the screen is best effort
+                pass
+
+    def __enter__(self) -> "TurnDock":
+        return self.start()
+
+    def __exit__(self, *exc) -> None:
+        self.stop()
+
+    # -- content ------------------------------------------------------------
+    def set_activity(self, text: Optional[str]) -> None:
+        self._activity = text
+
+    def set_body(self, renderable) -> None:
+        """Live content above the spinner (the answer as it streams); None clears."""
+        self._body = renderable
+        if self._live is not None:
+            self._live.refresh()
+
+    def asking(self, on: bool) -> None:
+        """A prompt is waiting for a typed answer: the box says so."""
+        self._question = on
+
+    def render(self):
+        from rich.spinner import Spinner
+
+        parts = []
+        if self._body is not None:
+            parts += [self._body, Text("")]
+        if self._question:
+            parts.append(Text.from_markup(f"[{WARN}]● Waiting for your answer…[/]"))
+        else:
+            if not hasattr(self, "_spinner"):
+                self._spinner = Spinner("dots", style=ACCENT)
+            self._spinner.update(text=Text.from_markup(
+                f"[{ACCENT}]{self._activity or 'Working'}…[/] "
+                f"[{MUTED}](esc to interrupt)[/]"))
+            parts.append(self._spinner)
+        dock = todo_dock(list(self._get_tasks() or []))
+        if dock is not None:
+            parts.append(dock)
+        parts.append(input_box(self._get_input() or "", self._get_queued() or 0,
+                               self._question))
+        return Group(*parts)
+
+
+_dock: Optional[TurnDock] = None
+
+
+def active_dock() -> Optional[TurnDock]:
+    return _dock
+
+
+def input_box(text: str, queued: int = 0, answering: bool = False) -> Group:
+    """The input box drawn during a turn (the REPL's own box is not up then)."""
+    line = Text()
+    line.append("> ", style=f"bold {ACCENT}")
+    line.append(text)
+    line.append("▌", style=ACCENT)
+    if answering:
+        hint = "  enter to answer  ·  esc for no"
+    else:
+        hint = "  enter queues a message for after this turn  ·  esc to interrupt"
+        if queued:
+            hint += f"  ·  {queued} queued"
+    return Group(Panel(line, box=ROUNDED, border_style=ACCENT_DEEP, padding=(0, 1),
+                       expand=True),
+                 Text(hint, style=MUTED))
+
+
 def thinking(text: str = "Thinking", tasks: Optional[list] = None):
     """A spinner shown while waiting on the model. No-op in quiet mode.
 
     With unfinished `tasks`, the task list is docked under the spinner, so it
     stays at the bottom of the screen (next to the input) instead of
-    scrolling away with tool output."""
+    scrolling away with tool output. While a TurnDock is up, its spinner is
+    relabelled instead (it already shows the tasks and the input)."""
     if _quiet:
         return _NoStatus()
+    if _dock is not None:
+        return _DockStatus(_dock, text)
     dock = todo_dock(tasks or [])
     if dock is not None:
         from rich.live import Live

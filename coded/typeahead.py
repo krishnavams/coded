@@ -50,6 +50,7 @@ class _PosixKeys:
         self.fd = sys.stdin.fileno() if fd is None else fd
         self.out = out or sys.stdout
         self.buf: List[str] = []
+        self.echo = True  # off while ui.TurnDock draws the line in its input box
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._saved = None
         self._pending = ""
@@ -77,6 +78,8 @@ class _PosixKeys:
             self._saved = None
 
     def _echo(self, text: str) -> None:
+        if not self.echo:
+            return
         try:
             self.out.write(text)
             self.out.flush()
@@ -159,6 +162,12 @@ class _WindowsPoll:
 
     def __init__(self) -> None:
         self.buf: List[str] = []
+        self.echo = True  # off while ui.TurnDock draws the line in its input box
+
+    def _out(self, text: str) -> None:
+        if self.echo:
+            sys.stdout.write(text)
+            sys.stdout.flush()
 
     def __call__(self, timeout: float) -> Optional[str]:
         import msvcrt
@@ -169,15 +178,13 @@ class _WindowsPoll:
             while msvcrt.kbhit():
                 ch = msvcrt.getwch()
                 if ch in ("\r", "\n"):
-                    sys.stdout.write("\n")
-                    sys.stdout.flush()
+                    self._out("\n")
                     line, self.buf = "".join(self.buf), []
                     return line
                 if ch == "\x08":  # backspace
                     if self.buf:
                         self.buf.pop()
-                        sys.stdout.write("\b \b")
-                        sys.stdout.flush()
+                        self._out("\b \b")
                     continue
                 if ch == "\x1b":  # Esc: stop the turn
                     return ESCAPE
@@ -188,8 +195,7 @@ class _WindowsPoll:
                     msvcrt.getwch()
                     continue
                 self.buf.append(ch)
-                sys.stdout.write(ch)
-                sys.stdout.flush()
+                self._out(ch)
             if time.monotonic() >= deadline:
                 return None
             time.sleep(0.01)
@@ -338,6 +344,21 @@ class TypeAhead:
     @property
     def pending(self) -> int:
         return self._queued.qsize()
+
+    @property
+    def can_draw(self) -> bool:
+        """True when the reader collects keys itself (so a box can show them)."""
+        return isinstance(getattr(self._poll, "buf", None), list)
+
+    def set_echo(self, on: bool) -> None:
+        if self.can_draw:
+            self._poll.echo = on  # type: ignore[union-attr]
+
+    @property
+    def typing(self) -> str:
+        """The line being typed right now (not consumed)."""
+        buf = getattr(self._poll, "buf", None)
+        return "".join(buf) if buf else ""
 
     @property
     def partial(self) -> str:

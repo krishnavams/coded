@@ -761,10 +761,14 @@ class Agent:
         buffer: List[str] = []
         thoughts: List[str] = []
         show_reasoning = self.config.show_reasoning
-        live = Live(console=ui.console, refresh_per_second=12, transient=False)
+        # The REPL's turn dock (spinner, tasks, input box) owns the one live
+        # region: stream into it, then print the final answer above it.
+        turn_dock = ui.active_dock()
+        live = None if turn_dock else Live(console=ui.console, refresh_per_second=12,
+                                           transient=False)
         # The task list stays docked at the bottom while the answer streams;
         # the final frame drops it, so only the answer stays in the scrollback.
-        tasks = self.todos.items if self.verbose else []
+        tasks = self.todos.items if self.verbose and not turn_dock else []
         dock = ui.todo_dock(tasks)
         status = ui.thinking(tasks=tasks)
         status.start()
@@ -784,20 +788,27 @@ class Agent:
             nonlocal started
             if not started:
                 status.stop()
-                live.start()
+                if live is not None:
+                    live.start()
                 started = True
+
+        def show() -> None:
+            if live is not None:
+                live.update(render())
+            else:
+                turn_dock.set_body(render())
 
         def on_text(chunk: str) -> None:
             begin()
             buffer.append(chunk)
-            live.update(render())
+            show()
 
         def on_reasoning(chunk: str) -> None:
             if not show_reasoning:
                 return
             begin()
             thoughts.append(chunk)
-            live.update(render())
+            show()
 
         try:
             completion = self.llm.complete(
@@ -805,9 +816,12 @@ class Agent:
                 on_reasoning=on_reasoning,
             )
         finally:
-            if started:
+            if started and live is not None:
                 live.update(render(final=True))
                 live.stop()
+            elif started:
+                turn_dock.set_body(None)
+                ui.console.print(render(final=True))
             else:
                 status.stop()
         return completion

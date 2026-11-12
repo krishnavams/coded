@@ -525,7 +525,11 @@ config.example.json     # sample configuration
   through `ui.todo_progress`/`todo_bar`/`todo_title`/`current_todo` (panel, REPL
   toolbar and TUI status line all use them), and in the REPL `ui.todo_dock` pins the
   unfinished list under the spinner and the streaming view (transient, so the
-  final answer frame drops it), and input typed mid-turn is queued
+  final answer frame drops it), and input typed mid-turn is queued. During a
+  REPL turn `ui.TurnDock` is the one rich Live (spinner, tasks, an input box
+  showing `TypeAhead.typing`); the key reader's echo is off meanwhile, and
+  `ui.thinking()`/`_call_streaming` draw into the dock (`ui.active_dock()`)
+  instead of opening their own Live — rich allows only one. Input typed mid-turn is queued
   by `typeahead.TypeAhead` (REPL) or `CodedTUI._queued` and run as the next
   message. The type-ahead reader owns stdin during a turn, so a prompt that
   needs an answer asks it via `TypeAhead.ask()` instead of reading stdin itself.
