@@ -52,7 +52,7 @@ coded/
 │                       # compact/ and full/ hold per-profile variants
 ├── repl.py             # interactive REPL and slash commands
 ├── tui.py              # full-screen Textual app (coded --tui), optional
-├── sidebar.py          # the TUI's right panel: session, changed files, queue, shells
+├── sidebar.py          # the TUI's right panel: session, changed files, queue, sub-agents, shells
 ├── ui.py               # rich-based rendering helpers (single Console)
 ├── skills.py           # skill discovery, frontmatter parsing, prompt section
 ├── review.py           # /review pipeline: reviewer→qa→security sub-agents
@@ -573,7 +573,10 @@ config.example.json     # sample configuration
   (`_background_pending`, which also waits when `wait_for_background` — true
   except in the REPL), or by the REPL waking an idle prompt (`_WAKE` via
   `tasks.on_finish`). The REPL shows tasks in `ui.TurnDock`
-  (`ui.running_tasks`), the status bar and `/tasks`. Control keys mid-turn
+  (`ui.running_tasks`), the status bar and `/tasks`; the TUI in the side
+  panel's "Sub-agents" section (`sidebar.render`, refreshed on `task_*`
+  events and by `_tick` while one runs) and a `task_end` note in the
+  transcript. ("Tasks" in the sidebar is the todo list.) Control keys mid-turn
   (`typeahead.CTRL_B/O/T`) go to `TypeAhead(keys=…)`; the POSIX reader clears
   IEXTEN so ^O/^T reach it. **Ctrl+O** flips `ui.set_expanded`: `ui.tool_result`
   then prints whole results and `show_last_cut` re-prints the newest shortened

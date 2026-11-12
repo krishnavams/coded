@@ -118,6 +118,30 @@ def test_long_lines_never_overflow_the_panel(tmp_path):
     assert max(len(line) for line in text.plain.splitlines()) <= sidebar.PANEL_WIDTH - 3  # border + padding
 
 
+def test_sub_agents_are_listed_running_first_with_their_latest_steps(tmp_path):
+    agent = _agent(tmp_path)
+    done = agent.tasks.start("search the auth code", "small")
+    agent.tasks.finish(done, "report")
+    bg = agent.tasks.start("Review API test suites " + "x" * 80, "qwen3-14b", background=True)
+    for step in ("Read(a.py)", "Search(dmFtc2)", "Read(tests/api/" + "y" * 80 + ".py)"):
+        agent.tasks.record(bg, step)
+    text = sidebar.render(agent).plain
+    assert "Sub-agents  1 running" in text
+    assert text.index("● t2") < text.index("✓ t1")          # running first
+    assert "background · 3 tool uses" in text
+    assert "⎿ Search(dmFtc2)" in text and "Read(a.py)" not in text  # last two steps
+    assert max(len(line) for line in text.splitlines()) <= sidebar.PANEL_WIDTH - 3
+    agent.tasks.stop("t2")
+    agent.tasks.finish(bg, "partial")
+    text = sidebar.render(agent).plain
+    assert "Sub-agents\n" in text + "\n" and "stopped · 3 tool uses" in text
+    assert "✗ t2" in text and "⎿" not in text
+
+
+def test_no_sub_agents_no_section(tmp_path):
+    assert "Sub-agents" not in sidebar.render(_agent(tmp_path)).plain
+
+
 # -- in the TUI ------------------------------------------------------------------
 
 pytest.importorskip("textual")
@@ -182,3 +206,44 @@ async def test_a_turn_fills_the_panel_and_tasks_stay_by_the_input(tmp_path, fake
             await pilot.pause()
             # ...and stay there when the panel is closed.
             assert tasks.has_class("shown") and tasks.region.bottom == prompt.region.y
+
+
+@pytest.mark.asyncio
+async def test_a_sub_agent_shows_in_the_panel_and_its_end_in_the_transcript(tmp_path,
+                                                                           fake_server):
+    from textual.widgets import Input, Static
+
+    from coded.tui import CodedTUI
+
+    (tmp_path / "a.py").write_text("x = 1\n")
+    usage = {"prompt_tokens": 1, "completion_tokens": 1}
+
+    def call(name, args, cid):
+        return {"role": "assistant", "content": "", "tool_calls": [{
+            "id": cid, "type": "function",
+            "function": {"name": name, "arguments": json.dumps(args)}}]}
+
+    def script(body):
+        msgs = body["messages"]
+        has_tool = any(m.get("role") == "tool" for m in msgs)
+        if str(msgs[0].get("content", "")).startswith("You are a focused sub-agent"):
+            if not has_tool:
+                return call("read", {"path": "a.py"}, "s1"), usage
+            return {"role": "assistant", "content": "x is 1"}, usage
+        if not has_tool:
+            return call("task", {"description": "check a.py", "prompt": "read a.py"}, "m1"), usage
+        return {"role": "assistant", "content": "Done."}, usage
+
+    with fake_server(script) as server:
+        app = CodedTUI(_agent(tmp_path, server.base_url))
+        async with app.run_test(size=(140, 40)) as pilot:
+            app.query_one("#prompt", Input).value = "look at a.py"
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            await pilot.pause()
+            body = str(app.query_one("#side-body", Static).render())
+            assert "Sub-agents" in body and "✓ t1" in body and "check a.py" in body
+            assert "1 tool use" in body
+            notes = " ".join(str(w.render()) for w in app.query("StatusNote"))
+            assert "t1 Done (1 tool use" in notes

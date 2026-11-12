@@ -1188,7 +1188,8 @@ class Agent:
                 self.tasks.finish(entry, result or "")
             if self.verbose and self.on_event is None and not entry.background:
                 ui.task_finished_line(entry)
-            self._emit("task_end", id=entry.id, status=entry.status, summary=entry.summary())
+            status = "completed" if entry.status == "running" else entry.status
+            self._emit("task_end", id=entry.id, status=status, summary=entry.summary())
             return result
 
         return runner

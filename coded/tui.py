@@ -350,8 +350,9 @@ class CodedTUI(App):
         self._apply_panel()
 
     def _tick(self) -> None:
-        if (self.panel_open and self.agent.shells.list()) or self.statusline.enabled:
-            self._refresh_sidebar()
+        if ((self.panel_open and (self.agent.shells.list() or self.agent.tasks.running()))
+                or self.statusline.enabled):
+            self._refresh_sidebar()  # also keeps a running sub-agent's clock moving
 
     # -- transcript helpers -------------------------------------------------
     def _mount(self, widget) -> None:
@@ -473,6 +474,9 @@ class CodedTUI(App):
             self._mount(DiffView(ev.get("diff", "")))
         elif kind == "status":
             self._mount(StatusNote(ev.get("text", "")))
+        elif kind == "task_end":
+            word = "Done" if ev.get("status") == "completed" else str(ev.get("status", "")).capitalize()
+            self._mount(StatusNote(f"⎿ {ev.get('id', '')} {word} ({ev.get('summary', '')})"))
         if kind in ("assistant_delta", "reasoning_delta"):
             # Per token: only the cheap status line, not the panel.
             try:

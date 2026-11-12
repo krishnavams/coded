@@ -9,6 +9,8 @@ Sections, each shown only when it has something to say:
             it docks the list above the input instead)
   Changed   files written this turn (or last turn), with +/- line counts
   Queued    messages typed while the agent was busy
+  Sub-agents  running sub-agents (task tool) with their latest steps, then
+            the most recent finished ones
   Shells    background shells and whether they are still running
 """
 
@@ -30,6 +32,8 @@ PANEL_WIDTH = 38
 _MAX_DIFF_BYTES = 1_000_000   # bigger files are listed without line counts
 _MAX_FILES = 12
 _MAX_QUEUED = 5
+_MAX_SUBAGENTS = 6   # entries listed (running first, then the newest finished)
+_SUBAGENT_STEPS = 2  # latest steps shown under a running one
 
 
 @dataclass
@@ -214,6 +218,30 @@ def render(agent: Any, *, busy: bool = False, queued: Sequence[str] = (),
             t.append(f"  {i}. {_short(text, inner - 3)}\n")
         if len(queued) > _MAX_QUEUED:
             t.append(f"  … and {len(queued) - _MAX_QUEUED} more\n", style=ui.MUTED)
+
+    # -- sub-agents -----------------------------------------------------------
+    manager = getattr(agent, "tasks", None)
+    entries = manager.all() if manager is not None else []
+    if entries:
+        running = [e for e in entries if e.running]
+        finished = [e for e in reversed(entries) if not e.running]
+        shown = (running + finished)[:_MAX_SUBAGENTS]
+        _heading(t, "Sub-agents", f"{len(running)} running" if running else "")
+        for e in shown:
+            mark, style = (("●", ui.WARN) if e.running else
+                           ("✓", ui.ACCENT2) if e.status == "completed" else ("✗", ui.ERR))
+            t.append(f"  {mark} ", style=style)
+            t.append(f"{e.id} ", style="bold")
+            t.append(_short(e.label, max(inner - len(e.id) - 4, 8)) + "\n",
+                     style="" if e.running else ui.MUTED)
+            where = "background · " if e.background and e.running else ""
+            status = "" if e.running or e.status == "completed" else f"{e.status} · "
+            t.append(f"    {where}{status}{e.summary()}\n", style=ui.MUTED)
+            if e.running:
+                for line in list(e.activity)[-_SUBAGENT_STEPS:]:
+                    t.append(f"    ⎿ {_short(line, inner - 6)}\n", style=ui.MUTED)
+        if len(entries) > len(shown):
+            t.append(f"  … and {len(entries) - len(shown)} more\n", style=ui.MUTED)
 
     # -- shells ---------------------------------------------------------------
     shells = getattr(agent, "shells", None)
