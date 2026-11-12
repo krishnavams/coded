@@ -357,7 +357,8 @@ config.example.json     # sample configuration
   receives the full tool result (truncation is display-only). Colors come from
   the palette constants (`ACCENT`, `MUTED`, …); `ui.thinking()` is the spinner
   used by the streaming path. The REPL (`repl.py`) adds a prompt_toolkit
-  `bottom_toolbar` status bar, `AutoSuggestFromHistory`, and a shared `_PT_STYLE`.
+  `bottom_toolbar` status bar, `AutoSuggestFromHistory` (Tab or → accepts it
+  when no completion menu is open), and a shared `_PT_STYLE`.
 - **Agent display is decoupled via events**: `Agent.on_event` (set by the TUI)
   receives structured events — `assistant_start/_delta/_end`, `reasoning_delta`,
   `tool_call`/`tool_result`/`diff` (with the tool-call `id`), `todos`, `status`.

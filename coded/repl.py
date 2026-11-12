@@ -160,6 +160,7 @@ KEYS = {
     "Ctrl+G": "Write the message in $EDITOR.",
     "Ctrl+V": "Attach the image on the clipboard.",
     "Ctrl+R": "Search earlier messages.",
+    "Tab / →": "Accept the grey suggestion from earlier messages (Tab completes from the menu when it is open).",
 }
 
 
@@ -224,6 +225,21 @@ class Repl:
         def _cycle_mode(event) -> None:  # Shift+Tab: normal → accept edits → plan
             self.agent.cycle_mode()
             event.app.invalidate()  # redraw the status bar
+
+        @Condition
+        def _suggestion_shown() -> bool:
+            from prompt_toolkit.application.current import get_app
+
+            buf = get_app().current_buffer
+            return bool(buf.suggestion and buf.suggestion.text
+                        and buf.document.is_cursor_at_the_end)
+
+        # Tab takes the grey suggestion from history (Right arrow does too);
+        # with the completion menu open, Tab still completes from the menu.
+        @bindings.add("tab", filter=_suggestion_shown & ~has_completions)
+        def _accept_suggestion(event) -> None:
+            buf = event.current_buffer
+            buf.insert_text(buf.suggestion.text)
 
         # A new line without sending: Alt+Enter, Ctrl+J, or `\` then Enter.
         @bindings.add("escape", "enter")

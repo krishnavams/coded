@@ -247,3 +247,41 @@ def test_paste_command_attaches_the_clipboard_image(tmp_path, headless, monkeypa
     monkeypatch.setattr("coded.images.grab_clipboard_image", lambda: None)
     repl._handle_slash("/paste")
     assert repl._pending_images == ["/tmp/clip.png"]
+
+
+
+def _type_into_prompt(tmp_path, keys: list, history=()) -> str:
+    """Build the REPL's real prompt on a pipe, type `keys` with a pause after
+    each (suggestions and completions arrive asynchronously), return the line."""
+    import asyncio
+
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.history import InMemoryHistory
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    with create_pipe_input() as pipe:
+        with create_app_session(input=pipe, output=DummyOutput()):
+            repl = _repl(tmp_path)
+            hist = InMemoryHistory()
+            for line in history:
+                hist.append_string(line)
+            repl.prompt.history = repl.prompt.default_buffer.history = hist
+
+            async def go() -> str:
+                answer = asyncio.ensure_future(repl.prompt.prompt_async("> "))
+                for chunk in keys:
+                    await asyncio.sleep(0.2)
+                    pipe.send_text(chunk)
+                return await asyncio.wait_for(answer, 5)
+
+            return asyncio.run(go())
+
+
+def test_tab_accepts_the_history_suggestion(tmp_path):
+    got = _type_into_prompt(tmp_path, "expl\tZ\r", history=["explain the repository layout"])
+    assert got == "explain the repository layoutZ"
+
+
+def test_tab_still_completes_from_the_menu(tmp_path):
+    assert _type_into_prompt(tmp_path, "/he\tZ\r") == "/helpZ"
