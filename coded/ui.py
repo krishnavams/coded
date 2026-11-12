@@ -115,7 +115,8 @@ def welcome(model_name: str, cwd: str) -> Panel:
     right.append(" to interrupt", style=MUTED)
     grid = Table.grid(padding=(0, 2))
     grid.add_row(logo_text(), right)
-    return Panel(grid, box=ROUNDED, border_style=ACCENT, padding=(0, 1), expand=False)
+    # Full width, like the input box, so the boxes line up at any terminal size.
+    return Panel(grid, box=ROUNDED, border_style=ACCENT, padding=(0, 1), expand=True)
 
 
 def banner(model_name: str, cwd: str) -> None:
@@ -387,4 +388,4 @@ def todos(items: list) -> None:
         t.append("\n")
     t.rstrip()
     console.print(Panel(t, title=todo_title(items), title_align="left", border_style=MUTED,
-                        box=ROUNDED, expand=False))
+                        box=ROUNDED, expand=True))
