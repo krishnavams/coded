@@ -93,7 +93,8 @@ class TurnDock:
     """
 
     def __init__(self, get_input, get_tasks=None, get_queued=None, get_running=None,
-                 can_detach=None) -> None:
+                 can_detach=None, get_queue=None) -> None:
+        self._get_queue = get_queue or (lambda: [])
         self._get_input = get_input
         self._get_tasks = get_tasks or (lambda: [])
         self._get_queued = get_queued or (lambda: 0)
@@ -169,6 +170,9 @@ class TurnDock:
         dock = todo_dock(list(self._get_tasks() or []))
         if dock is not None:
             parts.append(dock)
+        waiting = list(self._get_queue() or [])
+        if waiting and not self._question:
+            parts.append(queued_list(waiting))
         foreground = any(not t.background for t in running) and self._can_detach()
         parts.append(input_box(self._get_input() or "", self._get_queued() or 0,
                                self._question, foreground_task=foreground))
@@ -180,6 +184,23 @@ _dock: Optional[TurnDock] = None
 
 def active_dock() -> Optional[TurnDock]:
     return _dock
+
+
+_QUEUE_SHOWN = 3
+
+
+def queued_list(items: list) -> Text:
+    """Messages waiting to run after this turn, newest last; ↑ edits the newest."""
+    t = Text()
+    t.append(f"  ⏎ queued ({len(items)})", style=ACCENT_SOFT)
+    t.append("  ↑ to edit", style=MUTED)
+    hidden = len(items) - _QUEUE_SHOWN
+    if hidden > 0:
+        t.append(f"\n     … {hidden} older", style=MUTED)
+    for i, item in enumerate(items[-_QUEUE_SHOWN:], start=max(hidden, 0) + 1):
+        t.append(f"\n    {i}. ", style=MUTED)
+        t.append(_one_line(item, 90))
+    return t
 
 
 def input_box(text: str, queued: int = 0, answering: bool = False,
@@ -197,7 +218,7 @@ def input_box(text: str, queued: int = 0, answering: bool = False,
             hint += "  ·  ctrl+b run task in background"
         hint += f"  ·  ctrl+o {'collapse' if _expanded else 'expand'}  ·  ctrl+t tasks"
         if queued:
-            hint += f"  ·  {queued} queued"
+            hint += "  ·  ↑ edit queued"
     return Group(Panel(line, box=ROUNDED, border_style=ACCENT_DEEP, padding=(0, 1),
                        expand=True),
                  Text(hint, style=MUTED))
@@ -574,6 +595,15 @@ def error(msg: str) -> None:
 
 def success(msg: str) -> None:
     _log().print(f"[{ACCENT2}]✓[/] {msg}")
+
+
+def btw_panel(question: str, answer: str) -> Panel:
+    """A /btw side answer: framed apart from the work, and not part of it."""
+    body = Group(Text(_one_line(question, 200), style=f"bold {ACCENT_SOFT}"), Text(""),
+                 Markdown(answer))
+    return Panel(body, title=f"[{ACCENT_SOFT}]btw[/]", title_align="left",
+                 subtitle=f"[{MUTED}]side answer · not added to the conversation[/]",
+                 subtitle_align="left", border_style=MUTED, box=ROUNDED, expand=True)
 
 
 def question_panel(question: str, options: list) -> None:

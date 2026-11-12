@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import List, Optional
 
@@ -126,6 +127,8 @@ SLASH_COMMANDS = {
     "/todos": "Show the agent's current task list.",
     "/shells": "List background shells; /shells kill <id>.",
     "/tasks": "Running and finished sub-agents and shells (Ctrl+T): /tasks [id] | stop <id>.",
+    "/btw": "Quick side question, answered from the conversation without tools; "
+            "works mid-turn and is not added to the history: /btw <question>.",
     "/agents": "List outside agents available to delegate to (external_agent tool).",
     "/commands": "List custom slash commands (.coded/commands/*.md).",
     "/plugins": "List installed plugins (manage with `coded plugin …`).",
@@ -448,6 +451,7 @@ class Repl:
         ta.set_echo(False)
         tasks = (lambda: self.agent.todos.items) if self.agent.verbose else None
         return ui.TurnDock(lambda: ta.typing, tasks, lambda: ta.pending,
+                           get_queue=lambda: ta.queued_items,
                            get_running=self.agent.tasks.running,
                            can_detach=lambda: self.agent.tasks.can_detach).start()
 
@@ -484,6 +488,42 @@ class Repl:
         for t in done:
             ui.task_done(t)
         return report_message(done) if done else ""
+
+    # -- /btw -----------------------------------------------------------------
+    def _cmd_btw(self, question: str) -> None:
+        from coded import btw
+
+        try:
+            with ui.thinking("Answering"):
+                answer = btw.ask(self.agent, question)
+        except KeyboardInterrupt:
+            ui.warn("Side question cancelled.")
+            return
+        except Exception as exc:  # noqa: BLE001
+            ui.error(explain_failure(exc))
+            return
+        ui.console.print(ui.btw_panel(question, answer))
+
+    def _intercept_midturn(self, text: str) -> bool:
+        """A line typed mid-turn: /btw is answered now, alongside the turn;
+        anything else is queued as before."""
+        if not (text == "/btw" or text.startswith("/btw ")):
+            return False
+        question = text[len("/btw"):].strip()
+        ui.console.print(f"[{ui.ACCENT_SOFT}]  ? btw: {question[:80]} — answering "
+                         f"alongside the current work…[/]")
+
+        def answer() -> None:
+            from coded import btw
+
+            try:
+                reply = btw.ask(self.agent, question)
+                ui.console.print(ui.btw_panel(question, reply))
+            except Exception as exc:  # noqa: BLE001
+                ui.error(f"/btw failed: {explain_failure(exc)}")
+
+        threading.Thread(target=answer, name="coded-btw", daemon=True).start()
+        return True
 
     def _detach_task(self) -> None:
         """Ctrl+B mid-turn: move the running sub-agent to the background."""
@@ -580,8 +620,15 @@ class Repl:
                 with TypeAhead(default_poll(), on_queue=self._queued_note,
                                on_escape=self._escape,
                                keys={CTRL_B: self._detach_task, CTRL_O: self._toggle_expand,
-                                     CTRL_T: self._cmd_tasks}) as ta:
+                                     CTRL_T: self._cmd_tasks},
+                               intercept=self._intercept_midturn) as ta:
                     self._typeahead = ta
+                    # Messages still waiting from earlier turns go back in the
+                    # reader's queue, so they are shown and ↑ can edit them.
+                    for waiting in queued:
+                        if waiting != _WAKE:
+                            ta.requeue(waiting)
+                    queued[:] = [q for q in queued if q == _WAKE]
                     self.notifier.start()
                     dock = self._turn_dock(ta)
                     self.agent.tasks.can_detach = ta.available
@@ -703,6 +750,8 @@ class Repl:
             self._cmd_shells(args)
         elif cmd == "/tasks":
             self._cmd_tasks(args)
+        elif cmd == "/btw":
+            self._cmd_btw(text[len("/btw"):].strip())
         elif cmd == "/agents":
             self._cmd_agents()
         elif cmd == "/commands":

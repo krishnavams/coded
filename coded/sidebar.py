@@ -213,7 +213,7 @@ def render(agent: Any, *, busy: bool = False, queued: Sequence[str] = (),
 
     # -- queue ----------------------------------------------------------------
     if queued:
-        _heading(t, "Queued", str(len(queued)))
+        _heading(t, "Queued", f"{len(queued)} · ↑ edit")
         for i, text in enumerate(list(queued)[:_MAX_QUEUED], 1):
             t.append(f"  {i}. {_short(text, inner - 3)}\n")
         if len(queued) > _MAX_QUEUED:

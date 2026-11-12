@@ -420,7 +420,7 @@ def test_the_turn_dock_shows_an_input_box_with_what_is_being_typed():
     text = _plain(dock.render())
     assert "> also check tests" in text
     assert "Fix the bug" in text            # the unfinished tasks stay docked
-    assert "2 queued" in text and "esc to interrupt" in text
+    assert "↑ edit queued" in text and "esc to interrupt" in text
     assert ta.typing == "also check tests"  # peeking does not consume the line
     assert ta.partial == "also check tests"
 

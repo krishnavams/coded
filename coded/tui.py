@@ -190,6 +190,7 @@ class CodedTUI(App):
         Binding("ctrl+u", "undo", "Undo edits"),
         Binding("shift+tab", "toggle_plan", "Mode", priority=True),
         Binding("ctrl+b", "toggle_sidebar", "Side panel", priority=True),
+        Binding("up", "edit_queued", "Edit queued", show=False),
     ]
 
     busy = reactive(False)
@@ -372,6 +373,9 @@ class CodedTUI(App):
         if not text:
             return
         event.input.value = ""
+        if text == "/btw" or text.startswith("/btw "):
+            self._btw(text[len("/btw"):].strip())  # answered now, even mid-turn
+            return
         if self.busy:
             # Don't swallow a question asked mid-turn: queue it and run it next.
             self._queued.append(text)
@@ -379,6 +383,41 @@ class CodedTUI(App):
             self._refresh_sidebar()
             return
         self._submit(text)
+
+    def _btw(self, question: str) -> None:
+        """/btw: a side question answered on its own thread from a copy of the
+        conversation; the turn (if any) carries on and the history is untouched."""
+        from coded import btw
+
+        self._mount(StatusNote(f"btw: {question[:80]} — answering…"))
+
+        def answer() -> None:
+            try:
+                widget = Static(ui.btw_panel(question, btw.ask(self.agent, question)),
+                                classes="btw")
+            except Exception as exc:  # noqa: BLE001
+                from coded.llm import explain_failure
+
+                widget = StatusNote(f"/btw failed: {explain_failure(exc)}")
+            try:
+                self.call_from_thread(self._mount, widget)
+            except RuntimeError:  # the app has closed
+                pass
+
+        threading.Thread(target=answer, name="coded-btw", daemon=True).start()
+
+    def action_edit_queued(self) -> None:
+        """Up in the prompt: take the newest queued message back to edit it
+        (Enter queues it again). Elsewhere Up keeps its usual meaning."""
+        prompt = self.query_one("#prompt", Input)
+        if not self._queued or self.focused is not prompt:
+            return
+        text = self._queued.pop()
+        typed = prompt.value.strip()
+        prompt.value = text + (" " + typed if typed else "")
+        prompt.cursor_position = len(prompt.value)
+        self._mount(StatusNote(f"editing queued message ({len(self._queued)} still queued)"))
+        self._refresh_sidebar()
 
     def _submit(self, text: str) -> None:
         """Handle one message: slash commands first, then a turn."""

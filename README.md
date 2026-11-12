@@ -410,6 +410,7 @@ pip install -e '.[tui]'      # adds Textual
 | `/plan [request]` | Toggle plan mode (read-only until a plan is approved) |
 | `/todos` | Show the agent's task list |
 | `/shells [kill <id>]` | List or stop background shells |
+| `/btw <question>` | A quick side question, answered from the conversation so far (no tools). Works **while the agent is working**, without interrupting it, and neither the question nor the answer is added to the conversation |
 | `/tasks [id \| stop <id>]` | Sub-agents and background shells: list, show one's steps and report, or stop one (also **Ctrl+T**) |
 | `/agents` | List outside agents available for delegation |
 | `/commands` | List custom slash commands |
@@ -431,6 +432,7 @@ pip install -e '.[tui]'      # adds Textual
 | **Ctrl+G** | Write the message in `$EDITOR` |
 | **Ctrl+V** | Attach the clipboard's image (macOS: built in, faster with `pngpaste`; Linux: needs `wl-clipboard` or `xclip`; Windows: PowerShell) |
 | **Ctrl+R** | Search earlier messages |
+| **↑** (during a turn) | Take the newest queued message back into the input to edit it; Enter queues it again (↑ again for the one before). Also in the TUI |
 | **Ctrl+B** | While a sub-agent runs: move it to the background and keep chatting; its report reaches the agent when it finishes |
 | **Ctrl+O** | Expand / collapse tool output: shows the last shortened result (`… +13 lines`) in full, and every step of a running sub-agent |
 | **Ctrl+T** | List running and finished tasks (`/tasks`) |

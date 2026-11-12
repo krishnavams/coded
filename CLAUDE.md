@@ -39,6 +39,7 @@ coded/
 ├── permissions.py      # PermissionManager: approve/deny/always gate, accept-edits mode
 ├── notify.py           # Notifier: bell/desktop notification when a long turn ends or asks
 ├── tasks.py            # TaskManager: running sub-agents (progress, background, stop)
+├── btw.py              # /btw: side question over a copy of the conversation (no tools)
 ├── prompts.py          # assembles main/sub-agent prompts + AGENTS.md/CODED.md/CLAUDE.md hierarchy
 ├── prompt_files.py     # prompt-file loading/overrides/profiles + `coded prompts` CLI
 ├── limits.py           # per-model limits scaled by context_window; result/step caps
@@ -121,6 +122,8 @@ tests/
 ├── test_sidebar.py     # the side panel: file counts, sections, width, Ctrl+B
 ├── test_review.py      # /review pipeline + coded review verdict/exit code
 ├── test_tasks.py       # sub-agent tasks: activity, background, Ctrl+B, /tasks, Ctrl+O
+├── test_queue_edit.py  # ↑ edits the newest queued message (REPL reader, dock, TUI)
+├── test_btw.py         # /btw: session untouched, answered mid-turn, REPL + TUI
 ├── test_session_autosave.py  # per-step autosave, atomic save, orphan tool calls, todos
 ├── test_memory_bounds.py  # bounded output/file reads, timeout kills the process group
 ├── test_compaction.py  # context compaction trigger + tail preservation
@@ -581,6 +584,19 @@ config.example.json     # sample configuration
   IEXTEN so ^O/^T reach it. **Ctrl+O** flips `ui.set_expanded`: `ui.tool_result`
   then prints whole results and `show_last_cut` re-prints the newest shortened
   one; `tool_result_text`'s defaults are unchanged (the TUI shares it).
+- **Queued messages** (`TypeAhead._queued`, a deque): **↑** mid-turn
+  (`typeahead.UP`, from `ESC [A`/`ESC OA` or Windows `\xe0H`) runs
+  `edit_last`, moving the newest one into the line being typed; Enter queues it
+  again. Messages left from earlier turns are requeued into each new turn's
+  reader so they stay visible (`ui.queued_list` in the dock) and editable. TUI:
+  the `up` binding (`action_edit_queued`) does the same when the prompt has focus.
+- **`/btw`** (`btw.py`): one `LLMClient.complete` on a fresh client
+  (`agent._make_llm`) over `side_messages` — a copy of the session with an
+  in-flight tool step dropped and orphans closed, plus `BTW_INSTRUCTION` and the
+  question — with the agent's normal tool schema (valid history, same cached
+  prefix) and any tool call ignored. Never appended to the session; usage is
+  recorded. Mid-turn it is taken out of the queue by `TypeAhead(intercept=…)`
+  (REPL) or before the busy check (TUI) and answered on its own thread.
 - **`@path` mentions** (`mentions.py`) are expanded in `Agent.run` (main agent
   only) so every front-end gets them: a mention starts the message or follows
   whitespace and must name something that exists (cwd or `add_dirs`), so emails
