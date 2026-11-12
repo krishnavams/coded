@@ -48,5 +48,8 @@ coded = ["builtin_skills/*/SKILL.md", "builtin_prompts/*.md", "builtin_prompts/*
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Tests share helpers (`from tests.test_agent_e2e import …`), so the repo root
+# must be importable under plain `pytest`, not only `python -m pytest`.
+pythonpath = ["."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
