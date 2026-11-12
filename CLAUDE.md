@@ -61,7 +61,8 @@ coded/
 ├── embeddings.py       # EmbeddingClient + embedding-model resolution
 ├── index.py            # CodeIndex: chunk/embed/store + cosine search
 ├── websearch.py        # web-search backends + HTML→text fetch
-├── images.py           # image → base64 data URL for vision models
+├── images.py           # image → base64 data URL for vision models; clipboard image grab
+├── mentions.py         # `@path` mentions: expansion (Agent.run) + the REPL path completer
 ├── documents.py        # PDF/DOCX/XLSX/PPTX → text sections for the read tool
 ├── mcp_client.py       # optional MCP stdio client (background asyncio loop)
 ├── hooks.py            # HookRunner: PreToolUse/PostToolUse/UserPromptSubmit/SessionStart/Stop
@@ -443,7 +444,17 @@ config.example.json     # sample configuration
   message. The type-ahead reader owns stdin during a turn, so a prompt that
   needs an answer asks it via `TypeAhead.ask()` instead of reading stdin itself.
   Polling (never a blocking read) is what lets the reader stop with the turn
-  instead of stealing the next prompt's first line.
+  instead of stealing the next prompt's first line. On POSIX the reader
+  (`typeahead._PosixKeys`) puts the terminal in non-canonical, no-echo mode for
+  the turn (signals stay on) so a lone **Esc** is seen; escape sequences (arrow
+  keys) are dropped, and `TypeAhead.stop()` must restore the terminal (`close()`).
+  Esc stops the turn by sending this process SIGINT, so it behaves exactly as
+  Ctrl-C.
+- **`@path` mentions** (`mentions.py`) are expanded in `Agent.run` (main agent
+  only) so every front-end gets them: a mention starts the message or follows
+  whitespace and must name something that exists (cwd or `add_dirs`), so emails
+  and decorators are left alone. The original text is kept; the files follow in
+  a `<mentioned-files>` block, images go to the image list for vision models.
 - **Config is layered**: presets → user file → project file → CLI flags. Don't
   hard-code paths or keys; go through `config.py`. Dict-valued settings
   (`hooks`, `sandbox`, `telemetry`, `external_agents`, `model_roles`) merge

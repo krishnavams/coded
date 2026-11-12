@@ -123,6 +123,19 @@ class Agent:
         skill body, /init) rather than something the user typed.
         """
         self._interrupted = False
+        if not self.is_subagent and isinstance(user_message, str) and "@" in user_message:
+            from coded.mentions import expand_mentions
+
+            exp = expand_mentions(user_message, self.cwd,
+                                  max_chars=self.limits.tool_result_chars,
+                                  vision=self.model.supports_vision,
+                                  dirs=self.config.add_dirs)
+            if exp.attached:
+                if route_hint is None:
+                    route_hint = user_message
+                user_message = exp.text
+                images = list(images or []) + exp.images or None
+                self._status_note("Attached " + ", ".join(exp.attached))
         if not self.is_subagent:
             self.permissions.tainted = False
             self._select_turn_model(

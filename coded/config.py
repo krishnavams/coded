@@ -235,6 +235,10 @@ class Config:
     # Outside coding agents (Claude Code, Codex, Gemini CLI, Aider, ...).
     external_agents: Dict[str, Any] = field(default_factory=dict)
     detect_external_agents: bool = True  # offer installed CLIs automatically
+    # More folders the agent may work in besides the cwd (--add-dir, /add-dir).
+    add_dirs: list = field(default_factory=list)
+    # REPL input: "emacs" (default) or "vi" key bindings.
+    editing_mode: str = "emacs"
     plugins: list = field(default_factory=list)  # names of enabled plugins merged in
     plugin_warnings: list = field(default_factory=list)
     source_paths: list = field(default_factory=list)  # config files that were loaded
@@ -452,7 +456,8 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
     for key in ("auto_approve", "max_turns", "stream", "auto_compact", "auto_fallback",
                 "compact_ratio",
                 "show_reasoning", "parallel_tools", "injection_guard",
-                "detect_external_agents", "shell", "disabled_tools"):
+                "detect_external_agents", "shell", "disabled_tools", "add_dirs",
+                "editing_mode"):
         if key in data:
             setattr(cfg, key, data[key])
 

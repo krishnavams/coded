@@ -386,6 +386,8 @@ pip install -e '.[tui]'      # adds Textual
 | `/skill <name> [task]` | Invoke a skill now |
 | `/review [target]` | Run reviewer→qa→security sub-agents and aggregate |
 | `/image <path>... [prompt]` | Attach image(s) for a vision model |
+| `/paste` | Attach the image on the clipboard (also **Ctrl+V**) |
+| `/vim` | Toggle vi key bindings in the input |
 | `/undo` | Revert the last turn's file changes |
 | `/checkpoints` | List saved checkpoints |
 | `/compact` | Summarize the conversation to free context |
@@ -402,6 +404,20 @@ pip install -e '.[tui]'      # adds Textual
 | `/prompts` | Show which prompt files are in use |
 | `/<custom> [args]` | Run a custom command from `.coded/commands/` |
 | `/exit`, `/quit` | Quit |
+
+### Typing in the REPL
+
+| Key / syntax | What it does |
+|---|---|
+| `@path` | Attach a file to the message: `explain @src/app.py`, just some lines with `@app.py#L10-40`, a folder listing with `@src/`, an image with `@shot.png`; quote paths with spaces (`@"my notes.md"`). **Tab** completes paths. Works in the TUI and `coded -p` too. |
+| **Alt+Enter**, **Ctrl+J**, or `\` then Enter | New line without sending |
+| **Esc** | Stop the agent mid-turn (Ctrl-C works too); at a permission question, Esc means "no" |
+| **Shift+Tab** | Plan mode on/off |
+| **Ctrl+G** | Write the message in `$EDITOR` |
+| **Ctrl+V** | Attach the clipboard's image (macOS: built in, faster with `pngpaste`; Linux: needs `wl-clipboard` or `xclip`; Windows: PowerShell) |
+| **Ctrl+R** | Search earlier messages |
+
+Set `"editing_mode": "vi"` in your config for vi key bindings (or toggle with `/vim`).
 
 ### Permissions
 
@@ -567,6 +583,8 @@ then:
 coded --image screenshot.png "what's wrong with this UI?"
 # or in the REPL:
 /image mockup.png build this layout as HTML
+# or mention it, or paste it with Ctrl+V:
+look at @mockup.png and build this layout as HTML
 ```
 
 ### Checkpoints & undo

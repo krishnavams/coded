@@ -7,9 +7,9 @@ from typing import List, Optional
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.completion import WordCompleter, merge_completers
 from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.filters import has_completions
+from prompt_toolkit.filters import Condition, has_completions
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
@@ -128,6 +128,8 @@ SLASH_COMMANDS = {
     "/prompts": "Show which prompt files are in use (override with `coded prompts init`).",
     "/init": "Analyze the repo and write a CODED.md project guide.",
     "/image": "Attach image(s) to your next message: /image <path>... [prompt].",
+    "/paste": "Attach the image on the clipboard to your next message (also Ctrl+V).",
+    "/vim": "Toggle vi key bindings in the input (config: \"editing_mode\": \"vi\").",
     "/undo": "Undo the last file changes (checkpoint).",
     "/checkpoints": "List saved checkpoints.",
     "/compact": "Summarize the conversation now to free up context.",
@@ -139,6 +141,17 @@ SLASH_COMMANDS = {
     "/verify": "Run the project's checks (and the verify model) over the last change.",
     "/memory": "Project memory: /memory [list|add <note>|forget <id>|clear].",
     "/exit": "Quit (also /quit).",
+}
+
+
+KEYS = {
+    "@path": "Attach a file (@app.py, @app.py#L10-40), a folder listing or an image. Tab completes.",
+    "Alt+Enter / Ctrl+J": "New line without sending (or end the line with \\ and press Enter).",
+    "Esc": "Stop the agent mid-turn (Ctrl-C works too).",
+    "Shift+Tab": "Plan mode on/off.",
+    "Ctrl+G": "Write the message in $EDITOR.",
+    "Ctrl+V": "Attach the image on the clipboard.",
+    "Ctrl+R": "Search earlier messages.",
 }
 
 
@@ -177,7 +190,11 @@ class Repl:
         meta.update({f"/{n}": f"command · {c.description}"[:60] for n, c in self.commands.items()})
         meta.update({name: f"model · {mc.model}" for name, mc in config.models.items()})
         meta.update({name: "skill" for name in agent.skills})
-        completer = WordCompleter(words, meta_dict=meta, sentence=True)
+        from coded.mentions import MentionCompleter
+
+        self.mentions = MentionCompleter(agent.cwd)
+        completer = merge_completers([WordCompleter(words, meta_dict=meta, sentence=True),
+                                      self.mentions])
 
         bindings = KeyBindings()
 
@@ -187,6 +204,35 @@ class Repl:
                                 announce=False)
             event.app.invalidate()  # redraw the status bar
 
+        # A new line without sending: Alt+Enter, Ctrl+J, or `\` then Enter.
+        @bindings.add("escape", "enter")
+        @bindings.add("c-j")
+        def _newline(event) -> None:
+            event.current_buffer.insert_text("\n")
+
+        @Condition
+        def _ends_with_backslash() -> bool:
+            from prompt_toolkit.application.current import get_app
+
+            buf = get_app().current_buffer
+            return buf.document.text_before_cursor.endswith("\\")
+
+        @bindings.add("enter", filter=_ends_with_backslash & ~has_completions)
+        def _continue_line(event) -> None:
+            buf = event.current_buffer
+            buf.delete_before_cursor(1)
+            buf.insert_text("\n")
+
+        @bindings.add("c-g")
+        def _edit_in_editor(event) -> None:  # Ctrl+G: write the message in $EDITOR
+            event.current_buffer.open_in_editor(validate_and_handle=False)
+
+        @bindings.add("c-v")
+        def _paste_image(event) -> None:  # Ctrl+V: attach the clipboard's image
+            path = self._grab_clipboard()
+            if path:
+                event.current_buffer.insert_text(f"[image {len(self._pending_images or [])}] ")
+
         self.prompt = _prompt_session(
             key_bindings=bindings,
             history=FileHistory(str(_history_path())),
@@ -195,6 +241,9 @@ class Repl:
             style=_PT_STYLE,
             bottom_toolbar=self._bottom_toolbar,
             complete_while_typing=True,
+            vi_mode=str(config.editing_mode).lower() == "vi",
+            # Lines after the first line up under the text, not under `>`.
+            prompt_continuation=lambda width, line, wrapped: " " * min(width, 2),
         )
         self._boxed = _box_input(self.prompt, self._bottom_toolbar)
         # Wire the permission prompt into the manager.
@@ -223,7 +272,7 @@ class Repl:
             f"  ·  {s.turns} turns"
             f"  ·  {tok_str} tokens"
             f"  ·  ~${cost:.4f}{compact}{tasks}"
-            f"  ·  shift+tab plan  ·  /help"
+            f"  ·  @ files  ·  shift+tab plan  ·  /help"
         )
 
     def _permission_prompt(self, title: str, detail: str) -> str:
@@ -256,6 +305,44 @@ class Repl:
         except (EOFError, KeyboardInterrupt):
             return "no"
         return answer or "no"
+
+    def _grab_clipboard(self) -> Optional[str]:
+        """Attach the clipboard's image to the next message; None if there is none."""
+        from prompt_toolkit.application import run_in_terminal
+
+        from coded.images import clipboard_hint, grab_clipboard_image
+
+        path = grab_clipboard_image()
+
+        def say() -> None:
+            if path:
+                ui.info(f"Attached the clipboard image ({Path(path).name}) to your next message.")
+            else:
+                ui.warn("No image on the clipboard — " + clipboard_hint())
+
+        from prompt_toolkit.application.current import get_app_or_none
+
+        app = get_app_or_none()
+        if app is not None and app.is_running:  # Ctrl+V inside the prompt
+            run_in_terminal(say)
+        else:  # /paste
+            say()
+        if path:
+            self._pending_images = list(self._pending_images or []) + [path]
+        return path
+
+    def _escape(self) -> None:
+        """Esc during a turn: stop it, as Ctrl-C does."""
+        self.agent.interrupt()
+        import os
+        import signal
+
+        if os.name == "nt":
+            import _thread
+
+            _thread.interrupt_main()
+        else:
+            os.kill(os.getpid(), signal.SIGINT)
 
     # -- main loop ----------------------------------------------------------
     def _queued_note(self, text: str, waiting: int) -> None:
@@ -308,7 +395,8 @@ class Repl:
                 ui.user_prefix()
                 # Keep reading stdin during the turn: anything typed is queued
                 # and run next, instead of being swallowed by the busy terminal.
-                with TypeAhead(default_poll(), on_queue=self._queued_note) as ta:
+                with TypeAhead(default_poll(), on_queue=self._queued_note,
+                               on_escape=self._escape) as ta:
                     self._typeahead = ta
                     try:
                         self.agent.run(text, images=self._pending_images)
@@ -354,6 +442,14 @@ class Repl:
             self._cmd_tools()
         elif cmd == "/image":
             self._cmd_image(args)
+        elif cmd == "/paste":
+            self._grab_clipboard()
+        elif cmd == "/vim":
+            from prompt_toolkit.enums import EditingMode
+
+            vi = self.prompt.editing_mode != EditingMode.VI
+            self.prompt.editing_mode = EditingMode.VI if vi else EditingMode.EMACS
+            ui.info(f"{'vi' if vi else 'emacs'} key bindings in the input.")
         elif cmd == "/undo":
             ui.info(self.agent.checkpoints.undo_last() if self.agent.checkpoints else "Checkpoints disabled.")
         elif cmd == "/checkpoints":
@@ -497,6 +593,12 @@ class Repl:
         for name, c in self.commands.items():
             table.add_row(f"[cyan]/{name}[/cyan]", f"{c.description} [dim](custom)[/dim]")
         ui.console.print(table)
+        keys = Table(show_header=False, box=None, padding=(0, 2, 0, 0), title="Keys",
+                     title_justify="left")
+        for key, desc in KEYS.items():
+            keys.add_row(f"[cyan]{key}[/cyan]", desc)
+        ui.console.print()
+        ui.console.print(keys)
 
     def _cmd_models(self) -> None:
         table = Table(title="Configured models")
