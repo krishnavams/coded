@@ -65,3 +65,40 @@ def test_background_read_returns_only_the_newest_output(tmp_path, monkeypatch):
     assert "earlier bytes not shown" in text and text.rstrip().endswith("END")
     assert len(text) < 200 and status == "exited 0"
     shells_.kill_all()
+
+
+def _running(marker: str) -> int:
+    import subprocess
+
+    ps = subprocess.run(["ps", "-eo", "args"], capture_output=True, text=True).stdout
+    return sum(1 for line in ps.splitlines() if line.startswith(marker))
+
+
+def test_a_timed_out_pipeline_leaves_nothing_running(tmp_path):
+    import os
+    import subprocess
+    import time
+
+    import pytest
+
+    if os.name == "nt":
+        pytest.skip("POSIX process groups")
+    with pytest.raises(subprocess.TimeoutExpired):
+        shells.run("sleep 91 | cat", cwd=str(tmp_path), timeout=1)
+    time.sleep(0.5)
+    assert _running("sleep 91") == 0
+
+
+def test_a_timed_out_search_points_at_the_grep_tool(tmp_path):
+    import os
+
+    import pytest
+
+    from coded.tools.shell import BashTool
+
+    if os.name == "nt":
+        pytest.skip("POSIX commands")
+    res = BashTool().run({"command": "find / -name zz_never_zz -newer /etc/hostname; sleep 30",
+                          "timeout": 1}, _ctx(tmp_path))
+    assert res.is_error and "timed out after 1s (it was stopped)" in res.content
+    assert "grep/glob tools" in res.content

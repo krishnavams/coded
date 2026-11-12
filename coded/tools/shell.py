@@ -104,9 +104,13 @@ them (the user will be asked)."""
             proc = run_command(argv, cwd=ctx.cwd, timeout=timeout,
                                shell=active_shell(ctx.config))
         except subprocess.TimeoutExpired:
+            hint = "For long-running processes use run_in_background=true."
+            if re.match(r"\s*(grep|egrep|rg|ag|find|ack)\b", command):
+                hint = ("A search over the whole tree is slow here (.venv, node_modules, "
+                        "data): use the grep/glob tools, which skip those, or narrow the "
+                        "path and add --exclude-dir.")
             return ToolResult.error(
-                f"Command timed out after {timeout}s: {command}. "
-                "For long-running processes use run_in_background=true.")
+                f"Command timed out after {timeout}s (it was stopped): {command}. {hint}")
         except OSError as exc:
             return ToolResult.error(f"Failed to run command: {exc}")
 
