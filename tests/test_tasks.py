@@ -242,6 +242,9 @@ def test_control_keys_reach_their_handlers_mid_turn():
     master, slave = pty.openpty()
     reader = _PosixKeys(fd=slave, out=io.StringIO())
     try:
+        # Terminal modes first, as in a real turn (the reader runs before any
+        # key is typed): with IEXTEN still on, macOS's tty eats ^O on input.
+        assert reader(0) is None
         os.write(master, b"ab\x02cd\x0f")
         assert reader(0.5) == CTRL_B
         assert reader(0.5) == CTRL_O
@@ -339,6 +342,9 @@ def test_shift_tab_turns_accept_edits_on_mid_turn(tmp_path):
     master, slave = pty.openpty()
     reader = _PosixKeys(fd=slave, out=io.StringIO())
     try:
+        # Terminal modes first, as in a real turn (the reader runs before any
+        # key is typed): with IEXTEN still on, macOS's tty eats ^O on input.
+        assert reader(0) is None
         os.write(master, b"ab\x1b[Zc")
         assert reader(0.5) == SHIFT_TAB
         reader(0.2)

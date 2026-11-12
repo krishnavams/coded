@@ -63,6 +63,9 @@ def test_the_up_arrow_is_recognised_from_the_terminal():
     master, slave = pty.openpty()
     reader = _PosixKeys(fd=slave, out=io.StringIO())
     try:
+        # Terminal modes first, as in a real turn (the reader runs before any
+        # key is typed): with IEXTEN still on, macOS's tty eats ^O on input.
+        assert reader(0) is None
         os.write(master, b"x\x1b[A")
         assert reader(0.5) == UP
         os.write(master, b"\x1bOA\x1b[B")       # application-mode Up; Down is dropped
