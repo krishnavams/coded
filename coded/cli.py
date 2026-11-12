@@ -48,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Non-interactive: run the prompt once, print the result, and exit.")
     p.add_argument("--yolo", "--auto-approve", action="store_true", dest="auto_approve",
                    help="Auto-approve all tool actions (no permission prompts). Use with care.")
+    p.add_argument("--add-dir", action="append", metavar="DIR", dest="add_dirs",
+                   help="Another folder the agent may work in (repeatable).")
     p.add_argument("--accept-edits", action="store_true",
                    help="File edits run without asking (shell commands and deletes still ask).")
     p.add_argument("--max-cost", type=float, metavar="DOLLARS",
@@ -119,6 +121,13 @@ def _apply_overrides(cfg: Config, args: argparse.Namespace) -> None:
         cfg.auto_approve = True
     if getattr(args, "accept_edits", False):
         cfg.accept_edits = True
+    base = getattr(args, "cwd", None) or os.getcwd()
+    dirs = list(cfg.add_dirs or []) + list(getattr(args, "add_dirs", None) or [])
+    cfg.add_dirs = list(dict.fromkeys(
+        os.path.abspath(os.path.join(base, os.path.expanduser(str(d)))) for d in dirs))
+    for d in cfg.add_dirs:
+        if not os.path.isdir(d):
+            raise ConfigError(f"--add-dir: {d} is not a folder.")
     if getattr(args, "max_cost", None) is not None:
         cfg.max_cost = args.max_cost
     if args.no_stream:

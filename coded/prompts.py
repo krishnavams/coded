@@ -99,13 +99,15 @@ def _project_context(cwd: str, limits: Any = None) -> str:
             "precedence over earlier ones.\n\n" + text)
 
 
-def _environment(cwd: str, model: Any = None) -> str:
+def _environment(cwd: str, model: Any = None, add_dirs: Any = ()) -> str:
     from coded.shells import shell_summary
 
     label, posix = shell_summary()
-    lines = [f"# Environment\n- Working directory: {cwd}",
-             f"- Platform: {platform.system()} ({platform.machine()})",
-             f"- Shell for the bash tool: {label}"]
+    lines = [f"# Environment\n- Working directory: {cwd}"]
+    if add_dirs:
+        lines.append("- Also yours to work in (use absolute paths): " + ", ".join(add_dirs))
+    lines += [f"- Platform: {platform.system()} ({platform.machine()})",
+              f"- Shell for the bash tool: {label}"]
     if not posix:
         from coded.shells import active_shell
 
@@ -126,13 +128,13 @@ def _environment(cwd: str, model: Any = None) -> str:
 
 
 def build_system_prompt(cwd: str, extra: str | None = None, model: Any = None,
-                        limits: Any = None) -> str:
+                        limits: Any = None, add_dirs: Any = ()) -> str:
     """system + coder + tools + security prompt files (for `model`'s prompt set),
     environment, project instructions, repository overview (large-context models),
     then extras (skills list, --system). See prompt_files.py."""
     prompt = join_sections(*(load_prompt(n, cwd, model)
                              for n in ("system", "coder", "tools", "security")),
-                           _environment(cwd, model))
+                           _environment(cwd, model, add_dirs))
     prompt += _project_context(cwd, limits)
     if limits is not None and limits.repo_overview_chars > 0:
         from coded.repo_overview import build_repo_overview

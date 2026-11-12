@@ -52,7 +52,7 @@ TOOL_NAME_MAP = {
     "Bash": "bash", "Read": "read", "Write": "write", "Edit": "edit|multi_edit|apply_patch",
     "MultiEdit": "multi_edit", "Glob": "glob", "Grep": "grep", "LS": "ls",
     "WebFetch": "web_fetch", "WebSearch": "web_search", "Task": "task",
-    "TodoWrite": "todo_write", "NotebookEdit": "edit", "ExitPlanMode": "exit_plan_mode",
+    "TodoWrite": "todo_write", "NotebookEdit": "notebook_edit", "ExitPlanMode": "exit_plan_mode",
 }
 
 ConfirmFn = Callable[[str], bool]

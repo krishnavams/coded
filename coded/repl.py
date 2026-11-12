@@ -136,6 +136,7 @@ SLASH_COMMANDS = {
     "/undo": "Undo the last file changes (checkpoint).",
     "/rewind": "Go back to an earlier request (conversation and files): /rewind [n] [--keep-files].",
     "/context": "Show what fills the context window.",
+    "/add-dir": "Let the agent work in another folder too: /add-dir <path> (no path: list).",
     "/export": "Save the conversation as Markdown: /export [path].",
     "/checkpoints": "List saved checkpoints.",
     "/compact": "Summarize the conversation now to free up context.",
@@ -485,6 +486,8 @@ class Repl:
             self._cmd_cost()
         elif cmd == "/rewind":
             self._cmd_rewind(args)
+        elif cmd == "/add-dir":
+            self._cmd_add_dir(args)
         elif cmd == "/context":
             from coded.transcript import context_breakdown, render_context
 
@@ -662,6 +665,23 @@ class Repl:
         ui.console.print(table)
         ui.console.print(f"[{ui.MUTED}]Rules look like bash, bash(git *), edit(src/*). "
                          f"Deny always wins. Shift+Tab cycles the mode.[/]")
+
+    def _cmd_add_dir(self, args: List[str]) -> None:
+        import os
+
+        if not args:
+            dirs = self.config.add_dirs
+            ui.info("Extra folders: " + (", ".join(dirs) if dirs else "none") +
+                    "  (/add-dir <path> adds one)")
+            return
+        path = os.path.abspath(os.path.join(self.agent.cwd, os.path.expanduser(" ".join(args))))
+        if not os.path.isdir(path):
+            ui.warn(f"{path} is not a folder.")
+            return
+        if path not in self.config.add_dirs:
+            self.config.add_dirs.append(path)
+            self.agent.refresh_system_prompt()
+        ui.success(f"The agent may now work in {path} too.")
 
     def _cmd_rewind(self, args: List[str]) -> None:
         """/rewind lists requests; /rewind N goes back to just before request N

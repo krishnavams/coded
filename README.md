@@ -393,6 +393,7 @@ pip install -e '.[tui]'      # adds Textual
 | `/undo` | Revert the last turn's file changes |
 | `/rewind [n] [--keep-files]` | Go back to before request *n*: conversation and its file changes |
 | `/context` | What fills the context window |
+| `/add-dir [path]` | Let the agent work in another folder too |
 | `/export [path]` | Save the conversation as Markdown |
 | `/checkpoints` | List saved checkpoints |
 | `/compact` | Summarize the conversation to free context |
@@ -502,6 +503,52 @@ coded --continue        # resume the most recent session for this directory
 coded --resume <id>     # resume a specific one
 coded sessions          # list them
 ```
+
+### More folders, excluded paths
+
+**`--add-dir <path>`** (repeatable), `"add_dirs": [...]` in config, or `/add-dir
+<path>` in the REPL lets the agent work in folders besides the current one — a
+shared library next to the app, a backend and a frontend in separate repos. The
+agent is told about them, `@mentions` find files there, and with the sandbox on
+they are writable too.
+
+**`.codedignore`** in the project root lists paths the agent must never read or
+change, in `.gitignore` syntax:
+
+```gitignore
+secrets/
+*.pem
+/build
+!public.pem
+```
+
+The file tools refuse them, `grep`/`glob`/`ls` leave them out, and `@mentions`
+won't attach them. A shell command can still reach them, so add a deny rule
+(e.g. `"bash(*secrets*)"`) where that matters.
+
+### Checks after every edit
+
+`"diagnostics": true` runs a quick check on each file right after the agent
+writes or edits it and, if it fails, puts the error in front of the model in
+the same step — so a syntax error or a type error is fixed before it moves on.
+The built-in checks use what is installed: Python (`ruff`, else
+`python -m py_compile`), JSON, shell scripts (`bash -n`) and JavaScript
+(`node --check`). Add your own per file pattern, `{file}` being the edited file:
+
+```json
+"diagnostics": {
+  "commands": {"*.py": "mypy {file}", "*.ts": "npx tsc --noEmit -p ."},
+  "builtin": true,
+  "timeout": 20
+}
+```
+
+### Jupyter notebooks
+
+The `read` tool shows a notebook cell by cell (`cell 3 [code] id=…`) with its
+text outputs; `pages: "3-5"` picks cells. The agent edits notebooks with
+`notebook_edit` — replace, insert or delete one cell — which keeps the JSON
+valid and clears a changed cell's stale outputs.
 
 ### Documents: PDF, Word, Excel, PowerPoint
 

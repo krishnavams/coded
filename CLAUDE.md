@@ -60,6 +60,8 @@ coded/
 ├── sessions_store.py   # persist/restore sessions (--continue/--resume)
 ├── checkpoints.py      # CheckpointManager: per-turn file snapshots for /undo and /rewind
 ├── transcript.py       # /context breakdown and /export Markdown
+├── ignore.py           # .codedignore (gitignore syntax): rules_for(cwd), cached by mtime
+├── diagnostics.py      # per-file checks after an edit (config "diagnostics"), off by default
 ├── embeddings.py       # EmbeddingClient + embedding-model resolution
 ├── index.py            # CodeIndex: chunk/embed/store + cosine search
 ├── websearch.py        # web-search backends + HTML→text fetch
@@ -87,6 +89,7 @@ coded/
     ├── base.py         # Tool, ToolResult, ToolContext, ToolRegistry
     ├── files.py        # read, write, edit, ls, move, delete
     ├── patch.py        # multi_edit, apply_patch (Codex patch format)
+    ├── notebook.py     # notebook_edit (replace/insert/delete a cell; read renders .ipynb)
     ├── todo.py         # todo_write (TodoStore), exit_plan_mode
     ├── external_agent.py  # external_agent (delegate to an outside CLI agent)
     ├── search.py       # glob, grep
@@ -292,6 +295,13 @@ config.example.json     # sample configuration
   text and the checkpoint group id); `turn_history()` drops marks whose message
   compaction or `/clear` removed, and `CheckpointManager.undo_since(id)` undoes
   that group and every later one, newest first.
+- **`.codedignore`** is enforced in `Agent._run_tool` for path tools
+  (`_PATH_TOOLS`, plus apply_patch's file headers via `_tool_paths`), in
+  `search._walk` (grep/glob), `ls`, and `@mentions`/their completion. bash is
+  not covered (documented). **Diagnostics** run after `_CHECKED_TOOLS` succeed,
+  only when `config.diagnostics` is set, and are appended to the tool result.
+  `add_dirs` reach the Environment section only when non-empty (the prompt is
+  otherwise byte-identical), the sandbox's writable list and mentions.
 - **Usage** carries `cached_tokens` (`llm.usage_from` reads OpenAI's
   `prompt_tokens_details.cached_tokens` and DeepSeek's `prompt_cache_hit_tokens`);
   `session.usage_cost` prices them at `cached_input_cost` when a model sets it. `bash` changes are intentionally not tracked. New

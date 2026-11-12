@@ -240,6 +240,9 @@ class Config:
     detect_external_agents: bool = True  # offer installed CLIs automatically
     # More folders the agent may work in besides the cwd (--add-dir, /add-dir).
     add_dirs: list = field(default_factory=list)
+    # Check files right after the agent edits them (see diagnostics.py):
+    # true for the built-in checks, or {"commands": {"*.py": "mypy {file}"}}.
+    diagnostics: Any = None
     # Stop a session once its estimated cost passes this many dollars (--max-cost).
     max_cost: Optional[float] = None
     # Tell the user when a long turn ends or waits for an answer:
@@ -469,7 +472,8 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
                 "compact_ratio",
                 "show_reasoning", "parallel_tools", "injection_guard",
                 "detect_external_agents", "shell", "disabled_tools", "add_dirs",
-                "editing_mode", "max_cost", "notify", "notify_after", "accept_edits"):
+                "editing_mode", "max_cost", "notify", "notify_after", "accept_edits",
+                "diagnostics"):
         if key in data:
             setattr(cfg, key, data[key])
 

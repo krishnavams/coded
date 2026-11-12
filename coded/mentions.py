@@ -82,11 +82,11 @@ def _file_block(path: Path, name: str, suffix: str, max_chars: int) -> str:
     return f'<file path="{name}{suffix}">\n{body}{note}\n</file>'
 
 
-def _dir_block(path: Path, name: str) -> str:
+def _dir_block(path: Path, name: str, ignore=None) -> str:
     entries = []
     try:
         for child in sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
-            if child.name in _SKIP_DIRS:
+            if child.name in _SKIP_DIRS or (ignore is not None and ignore(child)):
                 continue
             entries.append(child.name + ("/" if child.is_dir() else ""))
             if len(entries) >= _MAX_LISTING:
@@ -99,7 +99,11 @@ def _dir_block(path: Path, name: str) -> str:
 
 def expand_mentions(text: str, cwd: str, *, max_chars: int = 100_000,
                     vision: bool = True, dirs: Iterable[str] = ()) -> Expanded:
-    """Attach what each `@mention` names; the message text itself is kept."""
+    """Attach what each `@mention` names; the message text itself is kept.
+    Paths the project's .codedignore excludes are not attached."""
+    from coded.ignore import rules_for
+
+    rules = rules_for(cwd)
     dirs = tuple(dirs)
     blocks: List[str] = []
     out = Expanded(text)
@@ -111,12 +115,16 @@ def expand_mentions(text: str, cwd: str, *, max_chars: int = 100_000,
         if hit is None:
             continue
         path, name, suffix = hit
+        if rules and rules.ignored(path):
+            blocks.append(f'<file path="{name}">(excluded by .codedignore; not attached)</file>')
+            out.attached.append(name + " (excluded)")
+            continue
         key = (str(path), suffix)
         if key in seen:
             continue
         seen.add(key)
         if path.is_dir():
-            blocks.append(_dir_block(path, name))
+            blocks.append(_dir_block(path, name, rules.ignored if rules else None))
         elif path.suffix.lower() in IMAGE_EXTS:
             if vision:
                 out.images.append(str(path))
@@ -204,7 +212,14 @@ class MentionCompleter(Completer):  # type: ignore[misc]
         if not word.startswith("@"):
             return
         if self._paths is None:
-            self._paths = list_paths(self.cwd, ignore=self.ignore)
+            ignore = self.ignore
+            if ignore is None:
+                from coded.ignore import rules_for
+
+                rules = rules_for(self.cwd)
+                if rules:
+                    ignore = lambda p: rules.ignored_rel(p.rstrip("/"), p.endswith("/"))  # noqa: E731
+            self._paths = list_paths(self.cwd, ignore=ignore)
         query = word[1:]
         for path in rank_paths(query, self._paths):
             shown = f'@"{path}"' if " " in path else "@" + path
