@@ -251,7 +251,10 @@ class Agent:
         section = (skills_prompt_section(self.skills, self.cwd, self.model,
                                          budget=self.limits.skills_chars)
                    if self.skills else "")
-        combined = "\n\n".join(x for x in (self.system_extra, section) if x) or None
+        from coded.styles import style_section
+
+        style = style_section(self.config.output_style, self.cwd)
+        combined = "\n\n".join(x for x in (self.system_extra, section, style) if x) or None
         return build_system_prompt(self.cwd, extra=combined, model=self.model, limits=self.limits,
                                    add_dirs=self.config.add_dirs)
 
@@ -1076,6 +1079,11 @@ def create_agent(
     outside = resolve_external_agents(config)
     if outside:
         registry.register(ExternalAgentTool(outside))
+    if config.browser:
+        from coded.tools.browser import BrowserTool
+
+        settings = config.browser if isinstance(config.browser, dict) else {}
+        registry.register(BrowserTool(str(settings.get("executable_path") or "")))
 
     if checkpoints is None:
         checkpoints = CheckpointManager(cwd)

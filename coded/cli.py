@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Subcommands: `coded config setup|init|path|show`, `coded models [--check]`, "
                "`coded skill install|list|remove|update|info`, `coded prompts list|show|init`, "
                "`coded plugin install|list|remove|update|enable|disable|info|search|marketplace`, "
-               "`coded review`, `coded commit`, `coded index`, `coded sessions`, "
+               "`coded review`, `coded commit`, `coded index`, `coded sessions`, `coded doctor`, "
                "`coded acp` (Agent Client Protocol server), `coded mcp-serve` (MCP server).",
     )
     p.add_argument("prompt", nargs="*", help="Initial request. If omitted, starts the interactive REPL.")
@@ -677,6 +677,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _handle_models_command(argv[1:])
     if argv and argv[0] == "agents":
         return _handle_agents_command(argv[1:])
+    if argv and argv[0] == "doctor":
+        from coded.doctor import main as doctor_main
+
+        return doctor_main(argv[1:])
     if argv and argv[0] == "index":
         return _handle_index_command(argv[1:])
     if argv and argv[0] == "review":

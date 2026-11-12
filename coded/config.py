@@ -252,6 +252,18 @@ class Config:
     notify_after: float = 30.0
     # Start in "accept-edits" mode: file edits run without asking.
     accept_edits: bool = False
+    # How the agent talks: a style name from /style (see styles.py); None = default.
+    output_style: Optional[str] = None
+    # A command whose first output line replaces the REPL/TUI status line:
+    # {"command": "~/bin/coded-status", "refresh": 5}. It gets JSON on stdin.
+    statusline: Dict[str, Any] = field(default_factory=dict)
+    # Check (in the background, at most daily) whether a git checkout of coded
+    # is behind its remote, and say so at start-up.
+    update_check: bool = True
+    # The browser tool (Playwright): off unless enabled, since it needs
+    # `pip install playwright && playwright install chromium`. true, or
+    # {"executable_path": "/usr/bin/chromium"} to use an installed browser.
+    browser: Any = False
     # REPL input: "emacs" (default) or "vi" key bindings.
     editing_mode: str = "emacs"
     plugins: list = field(default_factory=list)  # names of enabled plugins merged in
@@ -463,7 +475,7 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
     if data.get("permissions"):
         cfg.permissions = data["permissions"]
     for key in ("hooks", "sandbox", "telemetry", "external_agents", "model_roles",
-                "pools", "routing", "verify"):
+                "pools", "routing", "verify", "statusline"):
         if data.get(key):
             merged = dict(getattr(cfg, key))
             merged.update(data[key])
@@ -473,7 +485,7 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
                 "show_reasoning", "parallel_tools", "injection_guard",
                 "detect_external_agents", "shell", "disabled_tools", "add_dirs",
                 "editing_mode", "max_cost", "notify", "notify_after", "accept_edits",
-                "diagnostics"):
+                "diagnostics", "output_style", "update_check", "browser"):
         if key in data:
             setattr(cfg, key, data[key])
 

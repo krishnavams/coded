@@ -167,7 +167,8 @@ def _one_line(value: Any, width: int = 100) -> str:
 # How each tool call is titled: display name + which argument is the headline.
 _TOOL_TITLES = {
     "read": ("Read", "path"), "write": ("Write", "path"), "edit": ("Edit", "path"),
-    "multi_edit": ("Edit", "path"), "notebook_edit": ("Edit notebook", "path"), "ls": ("List", "path"), "delete": ("Delete", "path"),
+    "multi_edit": ("Edit", "path"), "notebook_edit": ("Edit notebook", "path"),
+    "browser": ("Browser", "url"), "ls": ("List", "path"), "delete": ("Delete", "path"),
     "glob": ("Glob", "pattern"), "grep": ("Search", "pattern"),
     "semantic_search": ("Search", "query"), "bash": ("Bash", "command"),
     "bash_output": ("BashOutput", "shell_id"), "kill_shell": ("KillShell", "shell_id"),

@@ -349,6 +349,7 @@ coded models                   # list configured models
 coded index                    # build the semantic search index
 coded review [target]          # non-interactive review pipeline (CI); exit 1 on NEEDS_CHANGES
 coded commit [--commit]        # draft a Conventional Commits message from staged changes
+coded doctor [--network]       # check install, config, keys, tools (and endpoints)
 coded sessions                 # list saved sessions
 ```
 
@@ -394,6 +395,7 @@ pip install -e '.[tui]'      # adds Textual
 | `/rewind [n] [--keep-files]` | Go back to before request *n*: conversation and its file changes |
 | `/context` | What fills the context window |
 | `/add-dir [path]` | Let the agent work in another folder too |
+| `/style [name\|off]` | List or switch output styles |
 | `/export [path]` | Save the conversation as Markdown |
 | `/checkpoints` | List saved checkpoints |
 | `/compact` | Summarize the conversation to free context |
@@ -549,6 +551,46 @@ The `read` tool shows a notebook cell by cell (`cell 3 [code] id=…`) with its
 text outputs; `pages: "3-5"` picks cells. The agent edits notebooks with
 `notebook_edit` — replace, insert or delete one cell — which keeps the JSON
 valid and clears a changed cell's stale outputs.
+
+### Output styles
+
+`/style` lists styles and switches how the agent talks: **explanatory**
+(explains why it chose an approach and shares insights about your code),
+**concise** (results only, no preamble or recap) and **learning** (does the
+scaffolding and leaves small, key pieces for you to write). `/style off`
+returns to the default; `"output_style": "concise"` sets one in config. Add
+your own as `.coded/styles/<name>.md` (or `~/.config/coded/styles/`): a
+`description` in the frontmatter and the instructions as the body.
+
+### Your own status line
+
+Replace the status line under the input with your own script's output:
+
+```json
+"statusline": {"command": "~/bin/coded-status", "refresh": 5}
+```
+
+The command gets a JSON object on stdin — `model`, `cwd`, `mode`, `turns`,
+`input_tokens`, `output_tokens`, `cost`, `tasks` — and the first line it
+prints (ANSI colors work) is shown in the REPL and the TUI. It runs in the
+background at most every `refresh` seconds; while it hasn't answered, or if it
+fails, the built-in line is shown. For example, the git branch and the cost:
+
+```bash
+#!/bin/sh
+cost=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["cost"])')
+echo "⎇ $(git branch --show-current 2>/dev/null)  ·  \$$cost"
+```
+
+### Testing web apps in a browser
+
+With `"browser": true` the agent gets a `browser` tool that opens a page in
+headless Chromium, runs steps (click, fill, press, select, wait), and reports
+the rendered text, JavaScript console errors, failed requests and a screenshot
+(saved under `.coded/screenshots/`). Loading a page runs without asking;
+steps that act on the page ask first. Install it with
+`pip install 'coded[browser]' && playwright install chromium`, or use a
+Chrome/Chromium you already have: `"browser": {"executable_path": "/usr/bin/chromium"}`.
 
 ### Documents: PDF, Word, Excel, PowerPoint
 
@@ -1428,6 +1470,28 @@ Most of the wait is the model. The parts coded controls:
 - **Startup:** the model SDK now loads in the background, so `coded --version`,
   `coded agents`, `coded skill …` and the first prompt appear in ~0.2 s instead
   of ~0.7 s.
+
+## Checking your setup
+
+`coded doctor` checks everything coded depends on and prints one line per
+area: Python, the required packages and which extras are installed, the config
+files, every model and whether its API key is found, the shell, the sandbox,
+git, the terminal, and helpers like the clipboard reader. `coded doctor
+--network` also sends each model's endpoint the staged probe from `coded models
+--check`. It exits with 1 when something is broken, so it works in scripts.
+
+When coded runs from a git clone, it checks once a day in the background
+whether the clone's remote has moved on, and says so at the next start
+(`git -C <clone> pull` updates it). Turn that off with `"update_check": false`.
+
+## Reviewing pull requests in GitHub Actions
+
+[`examples/github-actions/coded-review.yml`](examples/github-actions/coded-review.yml)
+runs `coded review` on every pull request, posts the reviewer → qa → security
+report as a PR comment (updated on each push) and fails the check when the
+verdict is NEEDS_CHANGES. Copy it to `.github/workflows/`, and add a
+`CODED_API_KEY` secret plus `CODED_BASE_URL` and `CODED_MODEL` variables for any
+OpenAI-compatible endpoint.
 
 ## When a model errors
 

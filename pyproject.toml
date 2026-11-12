@@ -26,6 +26,8 @@ mcp = ["mcp>=1.0"]
 tui = ["textual>=0.60"]
 # Reading PDF, Word, Excel and PowerPoint files with the read tool.
 docs = ["pypdf>=4.0", "openpyxl>=3.1", "python-docx>=1.1", "python-pptx>=0.6.23"]
+# The browser tool ("browser": true); then: playwright install chromium.
+browser = ["playwright>=1.40"]
 # OpenTelemetry export of trace spans (telemetry.otel = true).
 otel = ["opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp-proto-http>=1.20"]
 dev = ["pytest>=7.0", "textual>=0.60", "pytest-asyncio>=0.23"]
@@ -41,7 +43,8 @@ where = ["."]
 include = ["coded*"]
 
 [tool.setuptools.package-data]
-coded = ["builtin_skills/*/SKILL.md", "builtin_prompts/*.md", "builtin_prompts/*/*.md"]
+coded = ["builtin_skills/*/SKILL.md", "builtin_prompts/*.md", "builtin_prompts/*/*.md",
+         "builtin_styles/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

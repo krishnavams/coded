@@ -177,6 +177,11 @@ class CodedTUI(App):
                 return "bell"
             return notify.send(title, message, mode)
 
+        from coded.statusline import StatusLine, status_data
+
+        self.statusline = StatusLine(
+            getattr(agent.config, "statusline", None), lambda: status_data(self.agent),
+            on_change=lambda: self.call_from_thread(self._refresh_sidebar))
         self.notifier = notify.Notifier(getattr(agent.config, "notify", "bell"),
                                         getattr(agent.config, "notify_after", 30.0),
                                         sender=_send)
@@ -220,6 +225,11 @@ class CodedTUI(App):
 
     # -- status line + task list --------------------------------------------
     def _status_text(self) -> Text:
+        custom = self.statusline.text()
+        if custom is not None:
+            line = Text.from_ansi(custom, no_wrap=True, overflow="ellipsis")
+            line.pad_left(1)
+            return line
         s = self.agent.session
         u = s.total_usage
         tok = u.prompt_tokens + u.completion_tokens
@@ -301,7 +311,7 @@ class CodedTUI(App):
         self._apply_panel()
 
     def _tick(self) -> None:
-        if self.panel_open and self.agent.shells.list():
+        if (self.panel_open and self.agent.shells.list()) or self.statusline.enabled:
             self._refresh_sidebar()
 
     # -- transcript helpers -------------------------------------------------

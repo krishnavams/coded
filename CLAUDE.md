@@ -62,6 +62,11 @@ coded/
 ├── transcript.py       # /context breakdown and /export Markdown
 ├── ignore.py           # .codedignore (gitignore syntax): rules_for(cwd), cached by mtime
 ├── diagnostics.py      # per-file checks after an edit (config "diagnostics"), off by default
+├── styles.py           # output styles (/style): builtin_styles/*.md < user < project
+├── builtin_styles/     # explanatory, concise, learning (.md, package-data)
+├── statusline.py       # user status-line command (JSON on stdin, cached, background)
+├── doctor.py           # `coded doctor`: requirements, config, keys, tools, --network probes
+├── update_check.py     # daily background `git ls-remote` for git checkouts; notice at start
 ├── embeddings.py       # EmbeddingClient + embedding-model resolution
 ├── index.py            # CodeIndex: chunk/embed/store + cosine search
 ├── websearch.py        # web-search backends + HTML→text fetch
@@ -90,6 +95,7 @@ coded/
     ├── files.py        # read, write, edit, ls, move, delete
     ├── patch.py        # multi_edit, apply_patch (Codex patch format)
     ├── notebook.py     # notebook_edit (replace/insert/delete a cell; read renders .ipynb)
+    ├── browser.py      # browser (Playwright; opt-in "browser"): render, steps, console, screenshot
     ├── todo.py         # todo_write (TodoStore), exit_plan_mode
     ├── external_agent.py  # external_agent (delegate to an outside CLI agent)
     ├── search.py       # glob, grep
@@ -136,6 +142,7 @@ tests/
                         # worktrees, injection guard, external agents, ACP, MCP server
 examples/skills/        # example SKILL.md packs + install guide
 examples/plugins/       # example plugin (code-quality) + plugin layout guide
+examples/github-actions/coded-review.yml  # PR review workflow (copy to .github/workflows)
 examples/.coded-plugin/marketplace.json  # examples folder doubles as a marketplace
 config.example.json     # sample configuration
 ```
@@ -302,6 +309,10 @@ config.example.json     # sample configuration
   only when `config.diagnostics` is set, and are appended to the tool result.
   `add_dirs` reach the Environment section only when non-empty (the prompt is
   otherwise byte-identical), the sandbox's writable list and mentions.
+- **Opt-in extras must not change the default request**: the `browser` tool is
+  registered only with `config.browser`, an output style only adds a prompt
+  section when set, and `statusline`/`update_check` never block (background
+  threads; tests set `CODED_NO_UPDATE_CHECK=1` via an autouse fixture).
 - **Usage** carries `cached_tokens` (`llm.usage_from` reads OpenAI's
   `prompt_tokens_details.cached_tokens` and DeepSeek's `prompt_cache_hit_tokens`);
   `session.usage_cost` prices them at `cached_input_cost` when a model sets it. `bash` changes are intentionally not tracked. New
@@ -529,7 +540,7 @@ one (e.g. `ruff`, `black`), record the commands here.
 
 - **argparse + free-form prompt**: the top-level parser has a `nargs="*"`
   positional `prompt`, which conflicts with argparse subparsers. Subcommands
-  (`config`, `models`, `agents`, `index`, `review`, `sessions`, `commit`, `skill`,
+  (`config`, `models`, `agents`, `doctor`, `index`, `review`, `sessions`, `commit`, `skill`,
   `plugin`, `prompts`, `acp`, `mcp-serve`) are therefore dispatched manually by the first token in
   `cli.main()` — keep new subcommands on that path, not on `add_subparsers`.
 - **ACP / MCP server modes keep stdout clean** (`ui.set_quiet(True)`): stdout

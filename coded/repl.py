@@ -136,6 +136,7 @@ SLASH_COMMANDS = {
     "/undo": "Undo the last file changes (checkpoint).",
     "/rewind": "Go back to an earlier request (conversation and files): /rewind [n] [--keep-files].",
     "/context": "Show what fills the context window.",
+    "/style": "Change how the agent talks: /style [name|off] (no name: list styles).",
     "/add-dir": "Let the agent work in another folder too: /add-dir <path> (no path: list).",
     "/export": "Save the conversation as Markdown: /export [path].",
     "/checkpoints": "List saved checkpoints.",
@@ -190,6 +191,17 @@ class Repl:
         from coded.notify import Notifier
 
         self.notifier = Notifier.from_config(config)
+        from coded.statusline import StatusLine, status_data
+
+        def _redraw() -> None:
+            from prompt_toolkit.application.current import get_app_or_none
+
+            app = get_app_or_none()
+            if app is not None and app.is_running:
+                app.invalidate()
+
+        self.statusline = StatusLine(config.statusline, lambda: status_data(self.agent),
+                                     on_change=_redraw)
         from coded.commands import discover_commands
 
         self.commands = discover_commands(agent.cwd)
@@ -260,6 +272,11 @@ class Repl:
 
     # -- status bar ---------------------------------------------------------
     def _bottom_toolbar(self):
+        custom = self.statusline.text()
+        if custom is not None:
+            from prompt_toolkit.formatted_text import ANSI
+
+            return ANSI("  " + custom)
         s = self.agent.session
         u = s.total_usage
         cost = s.estimated_cost(self.agent.model)
@@ -377,6 +394,11 @@ class Repl:
 
     def run(self, initial: Optional[str] = None, images: Optional[list] = None) -> None:
         ui.banner(self.agent.model.name, self.agent.cwd)
+        from coded.update_check import notice
+
+        update = notice(self.config.update_check)
+        if update:
+            ui.info(update)
         queued: List[str] = [initial] if initial else []
         self._pending_images = images
         while True:
@@ -486,6 +508,8 @@ class Repl:
             self._cmd_cost()
         elif cmd == "/rewind":
             self._cmd_rewind(args)
+        elif cmd == "/style":
+            self._cmd_style(args)
         elif cmd == "/add-dir":
             self._cmd_add_dir(args)
         elif cmd == "/context":
@@ -665,6 +689,32 @@ class Repl:
         ui.console.print(table)
         ui.console.print(f"[{ui.MUTED}]Rules look like bash, bash(git *), edit(src/*). "
                          f"Deny always wins. Shift+Tab cycles the mode.[/]")
+
+    def _cmd_style(self, args: List[str]) -> None:
+        from coded.styles import discover_styles
+
+        styles = discover_styles(self.agent.cwd)
+        if not args:
+            current = self.config.output_style or "default"
+            table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
+            table.add_row(("● " if current == "default" else "  ") + "[cyan]default[/cyan]",
+                          "coded's normal voice")
+            for name, style in styles.items():
+                mark = "● " if name == current else "  "
+                table.add_row(f"{mark}[cyan]{name}[/cyan]", style.description)
+            ui.console.print(table)
+            ui.console.print(f"[{ui.MUTED}]Add your own in .coded/styles/<name>.md.[/]")
+            return
+        name = args[0]
+        if name in ("off", "default", "none"):
+            self.config.output_style = None
+        elif name in styles:
+            self.config.output_style = name
+        else:
+            ui.warn(f"No style '{name}'. Styles: default, {', '.join(styles)}.")
+            return
+        self.agent.refresh_system_prompt()
+        ui.success(f"Output style: {self.config.output_style or 'default'}.")
 
     def _cmd_add_dir(self, args: List[str]) -> None:
         import os
