@@ -14,7 +14,7 @@ from coded.tools.repo_map import RepoMapTool
 from coded.tools.search import GlobTool, GrepTool
 from coded.tools.semantic_search import SemanticSearchTool
 from coded.tools.shell import BashOutputTool, BashTool, KillShellTool
-from coded.tools.task import TaskTool
+from coded.tools.task import TaskOutputTool, TaskStopTool, TaskTool
 from coded.tools.todo import EnterPlanModeTool, ExitPlanModeTool, TodoWriteTool
 from coded.tools.web import WebFetchTool, WebSearchTool
 
@@ -47,6 +47,8 @@ def build_registry(include_task: bool = True) -> ToolRegistry:
     if include_task:
         reg.register(MemoryTool())  # main agent only: a sub-agent has no session to recall
         reg.register(TaskTool())
+        reg.register(TaskOutputTool())
+        reg.register(TaskStopTool())
         reg.register(ExitPlanModeTool())
         reg.register(EnterPlanModeTool())
         reg.register(AskUserTool())  # main agent only: a sub-agent reports back instead

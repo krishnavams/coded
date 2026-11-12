@@ -18,7 +18,7 @@ from rich.table import Table
 from coded import ui
 from coded.agent import Agent
 from coded.config import Config, ConfigError, load_config
-from coded.typeahead import TypeAhead, default_poll
+from coded.typeahead import CTRL_B, CTRL_O, CTRL_T, TypeAhead, default_poll
 from coded.llm import explain_failure
 
 # prompt_toolkit color theme (matches ui.py accents).
@@ -125,6 +125,7 @@ SLASH_COMMANDS = {
     "/budget": "Show or set the session's spending limit: /budget [dollars|off].",
     "/todos": "Show the agent's current task list.",
     "/shells": "List background shells; /shells kill <id>.",
+    "/tasks": "Running and finished sub-agents and shells (Ctrl+T): /tasks [id] | stop <id>.",
     "/agents": "List outside agents available to delegate to (external_agent tool).",
     "/commands": "List custom slash commands (.coded/commands/*.md).",
     "/plugins": "List installed plugins (manage with `coded plugin …`).",
@@ -178,6 +179,11 @@ def _history_path() -> Path:
     base = Path.home() / ".config" / "coded"
     base.mkdir(parents=True, exist_ok=True)
     return base / "history"
+
+
+# What the prompt returns when a background task finished while the user was
+# idle: the loop then hands its report to the agent.
+_WAKE = "\x00coded-wake\x00"
 
 
 class Repl:
@@ -260,6 +266,18 @@ class Repl:
             buf.delete_before_cursor(1)
             buf.insert_text("\n")
 
+        @bindings.add("c-o")
+        def _expand(event) -> None:  # Ctrl+O: expand / collapse tool output
+            from prompt_toolkit.application import run_in_terminal
+
+            run_in_terminal(self._toggle_expand)
+
+        @bindings.add("c-t")
+        def _tasks(event) -> None:  # Ctrl+T: list running and finished tasks
+            from prompt_toolkit.application import run_in_terminal
+
+            run_in_terminal(self._cmd_tasks)
+
         @bindings.add("c-g")
         def _edit_in_editor(event) -> None:  # Ctrl+G: write the message in $EDITOR
             event.current_buffer.open_in_editor(validate_and_handle=False)
@@ -281,11 +299,16 @@ class Repl:
             vi_mode=str(config.editing_mode).lower() == "vi",
             # Lines after the first line up under the text, not under `>`.
             prompt_continuation=lambda width, line, wrapped: " " * min(width, 2),
+            refresh_interval=1.0,  # keeps a running task's clock moving in the status bar
         )
         self._boxed = _box_input(self.prompt, self._bottom_toolbar)
         # Wire the permission prompt into the manager.
         self.agent.permissions.set_prompt(self._permission_prompt)
         self.agent.permissions.set_question(self._question_prompt)
+        # Background tasks: the REPL wakes the agent with their reports, so a
+        # turn does not have to wait for them.
+        self.agent.wait_for_background = False
+        self.agent.tasks.on_finish = self._task_finished
 
     # -- status bar ---------------------------------------------------------
     def _bottom_toolbar(self):
@@ -312,6 +335,11 @@ class Repl:
         else:
             tasks = (f"  ·  <style fg='{ui.ACCENT_SOFT}'>tasks {done}/{total} "
                      f"{ui.todo_bar(self.agent.todos.items, 8)}</style>")
+        running = self.agent.tasks.running() + self._running_shells()
+        if running:
+            tasks += (f"  ·  <style fg='{ui.WARN}'><b>● {len(running)} running "
+                      f"task{'s' if len(running) != 1 else ''}</b></style>"
+                      f" <style fg='{ui.MUTED}'>ctrl+t</style>")
         return HTML(
             f"  <style fg='{ui.ACCENT}'><b>◆ {self.agent.model.name}</b></style>{mode}"
             f"  ·  {s.turns} turns"
@@ -419,7 +447,64 @@ class Repl:
             return None
         ta.set_echo(False)
         tasks = (lambda: self.agent.todos.items) if self.agent.verbose else None
-        return ui.TurnDock(lambda: ta.typing, tasks, lambda: ta.pending).start()
+        return ui.TurnDock(lambda: ta.typing, tasks, lambda: ta.pending,
+                           get_running=self.agent.tasks.running,
+                           can_detach=lambda: self.agent.tasks.can_detach).start()
+
+    # -- tasks (sub-agents) ---------------------------------------------------
+    def _task_finished(self, entry) -> None:
+        """A background task ended (on its own thread). Mid-turn the agent picks
+        the report up at its next step; at an empty prompt it is woken now."""
+        if self._typeahead is not None:
+            return
+        app = self.prompt.app
+        if not app.is_running:
+            return  # between prompt and turn: the main loop checks before prompting
+
+        def go() -> None:
+            if not app.is_running:
+                return
+            if not app.current_buffer.text.strip():
+                app.exit(result=_WAKE)
+            else:  # the user is typing: say so, deliver with their message
+                from prompt_toolkit.application import run_in_terminal
+
+                run_in_terminal(lambda: ui.task_done(entry, pending=True))
+
+        try:
+            app.loop.call_soon_threadsafe(go)
+        except Exception:  # noqa: BLE001 - the loop closed: the main loop catches it
+            pass
+
+    def _wake_text(self) -> str:
+        """The message that hands finished background reports to the agent."""
+        from coded.tasks import report_message
+
+        done = self.agent.tasks.take_finished()
+        for t in done:
+            ui.task_done(t)
+        return report_message(done) if done else ""
+
+    def _detach_task(self) -> None:
+        """Ctrl+B mid-turn: move the running sub-agent to the background."""
+        entry = self.agent.tasks.foreground()
+        if entry is None:
+            ui.console.print(f"[{ui.MUTED}]  (ctrl+b: no task is running in the foreground)[/]")
+            return
+        entry.detach.set()
+        ui.console.print(f"[{ui.ACCENT_SOFT}]  ↧ {entry.id} \"{entry.label}\" moved to the "
+                         f"background — keep typing; its report arrives when it finishes[/]")
+
+    def _toggle_expand(self) -> None:
+        """Ctrl+O: show tool output in full (and the last cut-off result), or not."""
+        on = not ui.is_expanded()
+        ui.set_expanded(on)
+        if on:
+            shown = ui.show_last_cut()
+            note = "expanded" + ("" if shown else " (nothing was cut off yet)")
+            ui.console.print(f"[{ui.MUTED}]  ⊕ tool output {note} — ctrl+o to collapse[/]")
+        else:
+            ui.console.print(f"[{ui.MUTED}]  ⊖ tool output collapsed — ctrl+o to expand[/]")
 
     def _asking(self, on: bool) -> None:
         dock = ui.active_dock()
@@ -454,9 +539,16 @@ class Repl:
         queued: List[str] = [initial] if initial else []
         self._pending_images = images
         while True:
+            if not queued and self.agent.tasks.has_undelivered():
+                queued.append(_WAKE)  # a background task finished: hand over its report
             if queued:
                 text = queued.pop(0)
-                ui.echo_user(text)
+                if text == _WAKE:
+                    text = self._wake_text()
+                    if not text:
+                        continue
+                else:
+                    ui.echo_user(text)
             else:
                 try:
                     ui.console.print()
@@ -466,6 +558,10 @@ class Repl:
                     text = self.prompt.prompt(HTML("<prompt>&gt;</prompt> "),
                                               default=self._prefill)
                     self._prefill = ""
+                    if text == _WAKE:
+                        text = self._wake_text()
+                        if not text:
+                            continue
                 except KeyboardInterrupt:
                     continue
                 except EOFError:
@@ -482,14 +578,18 @@ class Repl:
                 # Keep reading stdin during the turn: anything typed is queued
                 # and run next, instead of being swallowed by the busy terminal.
                 with TypeAhead(default_poll(), on_queue=self._queued_note,
-                               on_escape=self._escape) as ta:
+                               on_escape=self._escape,
+                               keys={CTRL_B: self._detach_task, CTRL_O: self._toggle_expand,
+                                     CTRL_T: self._cmd_tasks}) as ta:
                     self._typeahead = ta
                     self.notifier.start()
                     dock = self._turn_dock(ta)
+                    self.agent.tasks.can_detach = ta.available
                     try:
                         answer = self.agent.run(text, images=self._pending_images)
                         self.notifier.finished(answer)
                     finally:
+                        self.agent.tasks.can_detach = False
                         if dock is not None:
                             dock.stop()
                             ta.set_echo(True)
@@ -601,6 +701,8 @@ class Repl:
             ui.todos(items) if items else ui.info("No tasks yet.")
         elif cmd == "/shells":
             self._cmd_shells(args)
+        elif cmd == "/tasks":
+            self._cmd_tasks(args)
         elif cmd == "/agents":
             self._cmd_agents()
         elif cmd == "/commands":
@@ -635,6 +737,37 @@ class Repl:
         finally:
             if previous is not None:
                 self.agent.use_model(previous)
+
+    def _running_shells(self) -> list:
+        return [(sid, cmd) for sid, cmd, status in self.agent.shells.list()
+                if status == "running"]
+
+    def _cmd_tasks(self, args=None) -> None:
+        """Sub-agents and background shells: list, show one, or stop one."""
+        args = list(args or [])
+        tasks = self.agent.tasks
+        if args[:1] == ["stop"] and len(args) > 1:
+            tid = args[1]
+            ok = tasks.stop(tid) if tid in {t.id for t in tasks.all()} else \
+                self.agent.shells.kill(tid)
+            (ui.success if ok else ui.error)(
+                f"{'Stopping' if ok else 'Nothing running as'} {tid}.")
+            return
+        if args:
+            t = tasks.get(args[0])
+            if t is not None:
+                ui.task_detail(t)
+                return
+            out = self.agent.shells.read(args[0])
+            if out is None:
+                ui.error(f"No task or shell '{args[0]}'.")
+                return
+            text, status = out
+            ui.console.print(f"[bold]{args[0]}[/] [{ui.MUTED}]{status}[/]")
+            ui.console.print(ui.tool_result_text(text or "(no new output)", max_lines=40),
+                             end="")
+            return
+        ui.tasks_table(tasks.all(), self.agent.shells.list())
 
     def _cmd_shells(self, args) -> None:
         if args[:1] == ["kill"] and len(args) > 1:

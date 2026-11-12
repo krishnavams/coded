@@ -410,6 +410,7 @@ pip install -e '.[tui]'      # adds Textual
 | `/plan [request]` | Toggle plan mode (read-only until a plan is approved) |
 | `/todos` | Show the agent's task list |
 | `/shells [kill <id>]` | List or stop background shells |
+| `/tasks [id \| stop <id>]` | Sub-agents and background shells: list, show one's steps and report, or stop one (also **Ctrl+T**) |
 | `/agents` | List outside agents available for delegation |
 | `/commands` | List custom slash commands |
 | `/plugins` | List installed plugins |
@@ -430,6 +431,9 @@ pip install -e '.[tui]'      # adds Textual
 | **Ctrl+G** | Write the message in `$EDITOR` |
 | **Ctrl+V** | Attach the clipboard's image (macOS: built in, faster with `pngpaste`; Linux: needs `wl-clipboard` or `xclip`; Windows: PowerShell) |
 | **Ctrl+R** | Search earlier messages |
+| **Ctrl+B** | While a sub-agent runs: move it to the background and keep chatting; its report reaches the agent when it finishes |
+| **Ctrl+O** | Expand / collapse tool output: shows the last shortened result (`… +13 lines`) in full, and every step of a running sub-agent |
+| **Ctrl+T** | List running and finished tasks (`/tasks`) |
 
 Set `"editing_mode": "vi"` in your config for vi key bindings (or toggle with `/vim`).
 
@@ -1113,6 +1117,33 @@ an argument, which `cmd.exe` re-parses; coded refuses a prompt containing
 builds without blocking. The agent polls new output with `bash_output` (with an
 optional regex `filter`) and stops them with `kill_shell`. `/shells` lists them;
 all are stopped when coded exits.
+
+### Sub-agents as tasks
+
+Every sub-agent the agent starts with the `task` tool is a **task**. While one
+runs, the bottom of the REPL shows it with its model, running time, tool uses
+and latest steps:
+
+```
+● Task(Review API test suites)  t1 · qwen3-14b · 4 tool uses · 5s
+  ⎿  Read(tests/api/test_auth.py)
+     Search(dmFtc2)
+     Read(tests/api/test_users.py)
+```
+
+and when it ends, `⎿ Done (12 tool uses · 1m 30s)` is printed under its call.
+**Ctrl+O** shows all of its steps; **Ctrl+B** moves it to the background, so the
+turn ends and you can keep chatting. The agent can also start one there itself
+(`task` with `run_in_background: true`), check on it (`task_output`) or stop it
+(`task_stop`). When a background task finishes, its report is handed to the
+agent: at once if you are idle at the prompt, with your next message if you are
+typing, or at the agent's next step if a turn is running. The status bar shows
+`● N running tasks` meanwhile, and `/tasks` (**Ctrl+T**) lists them all.
+
+A background task cannot ask for approval: an action that would need it is
+refused (allow rules, `--yolo` and accept-edits mode still apply), and the task
+says so in its report. In `coded -p`, the TUI and ACP, where nothing can wake the
+agent later, a turn waits for its background tasks before it ends.
 
 ### Multiple endpoints, models and API keys
 

@@ -38,6 +38,7 @@ coded/
 ├── session.py          # Session: message history + usage/cost tracking
 ├── permissions.py      # PermissionManager: approve/deny/always gate, accept-edits mode
 ├── notify.py           # Notifier: bell/desktop notification when a long turn ends or asks
+├── tasks.py            # TaskManager: running sub-agents (progress, background, stop)
 ├── prompts.py          # assembles main/sub-agent prompts + AGENTS.md/CODED.md/CLAUDE.md hierarchy
 ├── prompt_files.py     # prompt-file loading/overrides/profiles + `coded prompts` CLI
 ├── limits.py           # per-model limits scaled by context_window; result/step caps
@@ -110,7 +111,7 @@ coded/
     ├── git.py          # git (read-only free, mutations gated)
     ├── github.py       # github (PR list/get/create, comment) via GITHUB_TOKEN
     ├── web.py          # web_search, web_fetch
-    ├── task.py         # task (sub-agent delegation)
+    ├── task.py         # task (sub-agent delegation, run_in_background), task_output, task_stop
     ├── skill.py        # skill (loads a SKILL.md body into context)
     └── mcp_tool.py     # wraps an MCP server tool; list_mcp_resources, read_mcp_resource
 tests/
@@ -119,6 +120,9 @@ tests/
 ├── test_tui.py         # Textual TUI via Pilot (turn, permission modal, clear)
 ├── test_sidebar.py     # the side panel: file counts, sections, width, Ctrl+B
 ├── test_review.py      # /review pipeline + coded review verdict/exit code
+├── test_tasks.py       # sub-agent tasks: activity, background, Ctrl+B, /tasks, Ctrl+O
+├── test_session_autosave.py  # per-step autosave, atomic save, orphan tool calls, todos
+├── test_memory_bounds.py  # bounded output/file reads, timeout kills the process group
 ├── test_compaction.py  # context compaction trigger + tail preservation
 ├── test_permissions_sessions.py  # allow/deny rules, diff preview, sessions, json
 ├── test_checkpoints.py # checkpoint/undo + move/delete
@@ -556,6 +560,24 @@ config.example.json     # sample configuration
   keys) are dropped, and `TypeAhead.stop()` must restore the terminal (`close()`).
   Esc stops the turn by sending this process SIGINT, so it behaves exactly as
   Ctrl-C.
+- **Tasks** (`tasks.py`, `Agent.tasks`, `ctx.extra["tasks"]`): every sub-agent
+  run is a `TaskEntry`; the sub-agent's `on_activity` (fired in
+  `_show_tool_call`) records its steps. `task` with `run_in_background` runs
+  `_work` on a thread and returns at once; with `TaskManager.can_detach` (set by
+  the REPL for the turn when the type-ahead reader runs) a foreground task also
+  runs on a worker so **Ctrl+B** (`entry.detach`) can return early, and Esc/
+  Ctrl-C stops it. A background thread calls `permissions.set_background`, so
+  `request` denies instead of prompting and `ask`/`question` return None.
+  Finished reports reach the agent as one user message (`report_message`): at
+  the top of each step (`_deliver_background`), before a final answer
+  (`_background_pending`, which also waits when `wait_for_background` — true
+  except in the REPL), or by the REPL waking an idle prompt (`_WAKE` via
+  `tasks.on_finish`). The REPL shows tasks in `ui.TurnDock`
+  (`ui.running_tasks`), the status bar and `/tasks`. Control keys mid-turn
+  (`typeahead.CTRL_B/O/T`) go to `TypeAhead(keys=…)`; the POSIX reader clears
+  IEXTEN so ^O/^T reach it. **Ctrl+O** flips `ui.set_expanded`: `ui.tool_result`
+  then prints whole results and `show_last_cut` re-prints the newest shortened
+  one; `tool_result_text`'s defaults are unchanged (the TUI shares it).
 - **`@path` mentions** (`mentions.py`) are expanded in `Agent.run` (main agent
   only) so every front-end gets them: a mention starts the message or follows
   whitespace and must name something that exists (cwd or `add_dirs`), so emails

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -22,6 +23,7 @@ from coded.permissions import Decision, PermissionManager
 from coded.prompt_files import load_prompt
 from coded.prompts import _dir_instruction_files, build_subagent_prompt, build_system_prompt, read_instructions
 from coded.session import Session
+from coded.tasks import TaskEntry, TaskManager, report_message
 from coded.telemetry import Tracer, run_in_context
 from coded.tools import ToolContext, ToolRegistry, build_registry
 from coded.tools.todo import PLAN_MODE_REMINDER, TodoStore
@@ -91,6 +93,14 @@ class Agent:
         self.shells = shells or BackgroundShells()
         self.hooks = HookRunner(config.hooks, cwd)
         self.todos = TodoStore(on_change=self._show_todos)
+        # Sub-agents started by the task tool (shown and controlled by the REPL).
+        self.tasks = TaskManager()
+        # Each tool call this agent makes, as (name, args): a parent watching
+        # this sub-agent records them as the task's activity.
+        self.on_activity: Optional[Callable[[str, dict], None]] = None
+        # With nobody to wake the agent later (--print, TUI, ACP), a final
+        # answer waits for background tasks; the REPL wakes it instead.
+        self.wait_for_background = True
         self.mode = "default"
         self.limits: Limits = limits_for(model)
         self._sized_model: ModelConfig = model  # whose window limits/compaction target
@@ -367,6 +377,37 @@ class Agent:
             self._status_note(note)
 
     # -- core loop ----------------------------------------------------------
+    def _deliver_background(self) -> None:
+        """Hand finished background tasks' reports to the agent (main agent only)."""
+        if self.is_subagent:
+            return
+        done = self.tasks.take_finished()
+        if not done:
+            return
+        for t in done:
+            self._show_task_done(t)
+        self.session.add_user(report_message(done))
+
+    def _background_pending(self) -> bool:
+        """Before ending a turn: is a background report waiting, or (when nobody
+        can wake the agent later) still being produced? Waits for the latter."""
+        if self.is_subagent:
+            return False
+        if self.tasks.has_undelivered():
+            return True
+        if not self.wait_for_background or not self.tasks.running():
+            return False
+        self._status_note(f"Waiting for {len(self.tasks.running())} background task(s)…")
+        while self.tasks.running() and not self._interrupted:
+            for t in self.tasks.running():
+                t.done.wait(0.2)
+        return self.tasks.has_undelivered()
+
+    def _show_task_done(self, t: TaskEntry) -> None:
+        text = f"Background task {t.id} {t.status}: {t.label} ({t.summary()})"
+        if not self._emit("status", text=text) and self.verbose:
+            ui.task_done(t)
+
     def _step_done(self) -> None:
         if self.on_step is not None and not self.is_subagent:
             try:
@@ -387,6 +428,7 @@ class Agent:
                 self._status_note(stop)
                 final_text = final_text or stop
                 break
+            self._deliver_background()
             self.session.turns += 1
             self._sync_sizing()
             self._maybe_compact()
@@ -422,6 +464,8 @@ class Agent:
             if not completion.tool_calls:
                 self._step_done()
                 final_text = completion.content
+                if self._background_pending():
+                    continue  # a background task's report arrived: let the agent see it
                 feedback = self._verify_turn(final_text)
                 if feedback:
                     self.session.add_user(feedback)
@@ -846,6 +890,11 @@ class Agent:
 
     # -- display routing (ui vs. event sink) --------------------------------
     def _show_tool_call(self, name: str, args: dict, call_id: str = "") -> None:
+        if self.on_activity is not None:
+            try:
+                self.on_activity(name, args)
+            except Exception:  # noqa: BLE001 - display only
+                pass
         if not self._emit("tool_call", name=name, args=args, id=call_id) and self.verbose:
             ui.tool_call(name, args, cwd=self.cwd)
 
@@ -877,6 +926,7 @@ class Agent:
             checkpoints=self.checkpoints,
             extra={
                 "todos": self.todos,
+                "tasks": self.tasks,
                 "shells": self.shells,
                 "get_mode": lambda: self.mode,
                 "set_mode": self.set_mode,
@@ -972,6 +1022,10 @@ class Agent:
             if decision is Decision.DENY:
                 if display:
                     self._show_tool_result("Denied.", True, tc.id, tc.name)
+                if self.permissions.in_background():
+                    return ("Refused: this task runs in the background, so it cannot ask the "
+                            "user for approval. Do not retry it; finish what you can without "
+                            "it and say in your report what still needs to be done.", True, args)
                 return ("The user denied permission to run this action. Do not retry it; ask "
                         "how to proceed or try another approach.", True, args)
 
@@ -1070,7 +1124,8 @@ class Agent:
         return self._make_subagent_runner(role)(prompt, cwd=cwd, model=model)
 
     def _make_subagent_runner(self, role: str = "subagent") -> Callable[..., str]:
-        def runner(prompt: str, cwd: Optional[str] = None, model: Optional[str] = None) -> str:
+        def runner(prompt: str, cwd: Optional[str] = None, model: Optional[str] = None,
+                   task: Optional[TaskEntry] = None) -> str:
             if model:
                 if model not in self.config.models:
                     raise ValueError(f"unknown model '{model}'; configured: "
@@ -1079,7 +1134,8 @@ class Agent:
             else:
                 sub_model = self.config.model_for_role(role, self.model)
             sub_cwd = cwd or self.cwd
-            if self.verbose and self.on_event is None:
+            background = task is not None and task.background
+            if self.verbose and self.on_event is None and not background:
                 where = f" in {sub_cwd}" if cwd else ""
                 ui.info(f"  ↳ spawning sub-agent ({sub_model.name}){where}…")
             sub_system = build_subagent_prompt(sub_cwd, sub_model)
@@ -1103,15 +1159,42 @@ class Agent:
                 shells=self.shells,
                 is_subagent=True,
             )
-            with self.tracer.span("subagent", role=role, model=sub_model.name):
-                result = sub_agent.run(prompt)
-            # Roll the sub-agent's token usage up into the parent session.
-            self.session.record_usage(sub_session.total_usage)
-            self.session.cost += sub_session.cost
-            self.session._priced = self.session._priced or sub_session._priced
+            entry = task or self.tasks.start(role, sub_model.name)
+            entry.model = sub_model.name
+            entry.agent = sub_agent
+
+            def activity(name: str, args: dict) -> None:
+                label, summary = ui.tool_title(name, args, sub_cwd)
+                self.tasks.record(entry, f"{label}({summary})" if summary else label)
+                self._emit("task_activity", id=entry.id, line=entry.activity[-1])
+
+            sub_agent.on_activity = activity
+            self._emit("task_start", id=entry.id, label=entry.label, model=sub_model.name)
+            try:
+                with self.tracer.span("subagent", role=role, model=sub_model.name):
+                    result = sub_agent.run(prompt)
+            except BaseException:
+                if task is None:
+                    self.tasks.finish(entry, "", "failed")
+                raise
+            finally:
+                # Roll the sub-agent's token usage up into the parent session
+                # (background tasks finish on their own threads).
+                with _USAGE_LOCK:
+                    self.session.record_usage(sub_session.total_usage)
+                    self.session.cost += sub_session.cost
+                    self.session._priced = self.session._priced or sub_session._priced
+            if task is None:
+                self.tasks.finish(entry, result or "")
+            if self.verbose and self.on_event is None and not entry.background:
+                ui.task_finished_line(entry)
+            self._emit("task_end", id=entry.id, status=entry.status, summary=entry.summary())
             return result
 
         return runner
+
+
+_USAGE_LOCK = threading.Lock()
 
 
 def create_agent(

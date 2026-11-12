@@ -67,6 +67,22 @@ class PermissionManager:
         # context this turn. "strict" then ignores auto-approval; "warn" flags prompts.
         self.injection_guard = injection_guard
         self.tainted = False
+        # Per thread: a predicate saying "this thread is a background task",
+        # which must never stop to ask (nobody is watching it).
+        self._local = threading.local()
+
+    def set_background(self, predicate: Optional[Callable[[], bool]]) -> None:
+        """Mark the calling thread as (maybe) a background task. The predicate is
+        checked on each request, so a task moved to the background mid-run
+        (Ctrl+B) stops asking from then on."""
+        self._local.background = predicate
+
+    def in_background(self) -> bool:
+        fn = getattr(self._local, "background", None)
+        try:
+            return bool(fn and fn())
+        except Exception:  # noqa: BLE001
+            return False
 
     def set_prompt(self, prompt: Optional[PromptFn], threadsafe: bool = False) -> None:
         self._prompt = prompt
@@ -82,7 +98,7 @@ class PermissionManager:
 
     def ask(self, title: str, detail: str) -> Optional[str]:
         """Ask the user a yes/no question directly. None when non-interactive."""
-        if self._prompt is None:
+        if self._prompt is None or self.in_background():
             return None
         with self._lock:
             return self._prompt(title, detail)
@@ -94,7 +110,7 @@ class PermissionManager:
     def question(self, text: str, options: Optional[List[str]] = None) -> Optional[str]:
         """Ask the user a question; their answer, or None when nobody can answer."""
         fn = getattr(self, "_question", None)
-        if fn is None:
+        if fn is None or self.in_background():
             return None
         with self._lock:
             return fn(text, list(options or []))
@@ -156,8 +172,9 @@ class PermissionManager:
                 return Decision.ALLOW
             if self._matches(self.allow_rules, key, target):
                 return Decision.ALLOW
-        if self._prompt is None:
-            # Non-interactive and not auto-approved: deny by default (safe).
+        if self._prompt is None or self.in_background():
+            # Non-interactive (or a background task) and not auto-approved:
+            # deny by default (safe).
             return Decision.DENY
         if self.tainted and self.injection_guard != "off":
             title = f"⚠ untrusted content is in context — {title}"

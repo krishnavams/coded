@@ -21,12 +21,17 @@ import os
 import queue
 import sys
 import threading
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 POLL_SECONDS = 0.05
 # Returned by a poll when Esc is pressed on its own (not as part of an arrow
 # key's escape sequence): the user wants the running turn stopped.
 ESCAPE = "\x1b"
+# Control keys handed to the front-end mid-turn (TypeAhead's `keys`):
+# Ctrl+B moves the running sub-agent to the background, Ctrl+O expands or
+# collapses tool output, Ctrl+T lists tasks.
+CTRL_B, CTRL_O, CTRL_T = "\x02", "\x0f", "\x14"
+CONTROL_KEYS = (CTRL_B, CTRL_O, CTRL_T)
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +67,9 @@ class _PosixKeys:
 
         self._saved = termios.tcgetattr(self.fd)
         attrs = termios.tcgetattr(self.fd)
-        attrs[3] &= ~(termios.ICANON | termios.ECHO)
+        # IEXTEN off too: otherwise the terminal itself takes ^O (discard
+        # output) and, on macOS, ^T (status), and coded never sees them.
+        attrs[3] &= ~(termios.ICANON | termios.ECHO | termios.IEXTEN)
         attrs[6][termios.VMIN] = 0
         attrs[6][termios.VTIME] = 0
         termios.tcsetattr(self.fd, termios.TCSANOW, attrs)
@@ -135,6 +142,9 @@ class _PosixKeys:
                 self._echo("\b \b" * len(self.buf))
                 self.buf = []
                 continue
+            if ch in CONTROL_KEYS:
+                self._pending = chunk[i:]
+                return ch
             if ch < " " and ch != "\t":
                 continue
             self.buf.append(ch)
@@ -188,6 +198,8 @@ class _WindowsPoll:
                     continue
                 if ch == "\x1b":  # Esc: stop the turn
                     return ESCAPE
+                if ch in CONTROL_KEYS:
+                    return ch
                 if ch == "\x03":  # Ctrl-C: the console signals the process itself
                     self.buf = []
                     return None
@@ -234,10 +246,12 @@ class TypeAhead:
 
     def __init__(self, poll: Optional[Callable[[float], Optional[str]]] = None,
                  on_queue: Optional[Callable[[str, int], None]] = None,
-                 on_escape: Optional[Callable[[], None]] = None):
+                 on_escape: Optional[Callable[[], None]] = None,
+                 keys: Optional[Dict[str, Callable[[], None]]] = None):
         self._poll = poll
         self._on_queue = on_queue
         self._on_escape = on_escape
+        self._keys = dict(keys or {})
         self._queued: "queue.Queue[str]" = queue.Queue()
         self._answers: "queue.Queue[str]" = queue.Queue()
         self._want_answer = threading.Event()
@@ -286,6 +300,14 @@ class TypeAhead:
                 continue
             if line == ESCAPE:
                 self.escape()
+                continue
+            if line in CONTROL_KEYS:
+                fn = self._keys.get(line)
+                if fn is not None:
+                    try:
+                        fn()
+                    except Exception:  # noqa: BLE001 - a key handler must not end type-ahead
+                        pass
                 continue
             self.feed(line)
 

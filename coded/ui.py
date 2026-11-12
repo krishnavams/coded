@@ -92,10 +92,13 @@ class TurnDock:
     redraw erased them and no input box was visible at all.
     """
 
-    def __init__(self, get_input, get_tasks=None, get_queued=None) -> None:
+    def __init__(self, get_input, get_tasks=None, get_queued=None, get_running=None,
+                 can_detach=None) -> None:
         self._get_input = get_input
         self._get_tasks = get_tasks or (lambda: [])
         self._get_queued = get_queued or (lambda: 0)
+        self._get_running = get_running or (lambda: [])
+        self._can_detach = can_detach or (lambda: False)
         self._activity: Optional[str] = None
         self._body = None
         self._question = False
@@ -160,11 +163,15 @@ class TurnDock:
                 f"[{ACCENT}]{self._activity or 'Working'}…[/] "
                 f"[{MUTED}](esc to interrupt)[/]"))
             parts.append(self._spinner)
+        running = list(self._get_running() or [])
+        if running:
+            parts.insert(0, running_tasks(running, expanded=_expanded))
         dock = todo_dock(list(self._get_tasks() or []))
         if dock is not None:
             parts.append(dock)
+        foreground = any(not t.background for t in running) and self._can_detach()
         parts.append(input_box(self._get_input() or "", self._get_queued() or 0,
-                               self._question))
+                               self._question, foreground_task=foreground))
         return Group(*parts)
 
 
@@ -175,7 +182,8 @@ def active_dock() -> Optional[TurnDock]:
     return _dock
 
 
-def input_box(text: str, queued: int = 0, answering: bool = False) -> Group:
+def input_box(text: str, queued: int = 0, answering: bool = False,
+              foreground_task: bool = False) -> Group:
     """The input box drawn during a turn (the REPL's own box is not up then)."""
     line = Text()
     line.append("> ", style=f"bold {ACCENT}")
@@ -184,7 +192,10 @@ def input_box(text: str, queued: int = 0, answering: bool = False) -> Group:
     if answering:
         hint = "  enter to answer  ·  esc for no"
     else:
-        hint = "  enter queues a message for after this turn  ·  esc to interrupt"
+        hint = "  enter queues a message  ·  esc to interrupt"
+        if foreground_task:
+            hint += "  ·  ctrl+b run task in background"
+        hint += f"  ·  ctrl+o {'collapse' if _expanded else 'expand'}  ·  ctrl+t tasks"
         if queued:
             hint += f"  ·  {queued} queued"
     return Group(Panel(line, box=ROUNDED, border_style=ACCENT_DEEP, padding=(0, 1),
@@ -323,6 +334,7 @@ _TOOL_TITLES = {
     "bash_output": ("BashOutput", "shell_id"), "kill_shell": ("KillShell", "shell_id"),
     "web_search": ("WebSearch", "query"), "web_fetch": ("Fetch", "url"),
     "task": ("Task", "description"), "skill": ("Skill", "name"),
+    "task_output": ("TaskOutput", "task_id"), "task_stop": ("TaskStop", "task_id"),
     "external_agent": ("Agent", "agent"), "apply_patch": ("Patch", None),
     "repo_map": ("Map repo", None),
     "memory": ("Memory", None),
@@ -394,21 +406,25 @@ def tool_call(name: str, args: dict, cwd: str = "") -> None:
 
 
 def tool_result_text(content: str, is_error: bool = False, name: str = "",
-                     cwd: str = "", max_lines: int = 0) -> Text:
-    """Tool output under a `⎿` elbow, shortened for display (the model sees it all)."""
+                     cwd: str = "", max_lines: int = 0, full: bool = False,
+                     expand_hint: bool = False) -> Text:
+    """Tool output under a `⎿` elbow, shortened for display (the model sees it all).
+
+    `full` shows every line (Ctrl+O); `expand_hint` says how to get there."""
     max_lines = max_lines or _MAX_RESULT_LINES
     if cwd:
         content = content.replace(cwd.rstrip("/") + "/", "")
     lines = content.splitlines()
-    if name == "read" and not is_error and len(lines) > 1:
+    if name == "read" and not is_error and len(lines) > 1 and not full:
         lines = [f"Read {len(lines)} lines"]
     elif name == "todo_write" and not is_error and lines:
         # The list itself is already on screen (panel / dock); keep the
         # headline and any nudge the tool gave the model.
         lines = [lines[0].rstrip(":")] + [ln for ln in lines[1:] if ln.startswith("Note:")]
-    shown = lines[:max_lines]
+    shown = lines if full else lines[:max_lines]
     text = "\n".join(shown)
-    if len(text) > _MAX_RESULT_CHARS:
+    cut_chars = not full and len(text) > _MAX_RESULT_CHARS
+    if cut_chars:
         text = text[:_MAX_RESULT_CHARS] + "…"
     if not text.strip():
         text = "(no output)"
@@ -418,13 +434,130 @@ def tool_result_text(content: str, is_error: bool = False, name: str = "",
         body.append("  ⎿  " if i == 0 else "     ", style=style)
         body.append(line + "\n", style=style)
     extra = len(lines) - len(shown)
+    hint = " (ctrl+o to expand)" if expand_hint else ""
     if extra > 0:
-        body.append(f"     … +{extra} lines\n", style=f"{MUTED} italic")
+        body.append(f"     … +{extra} lines{hint}\n", style=f"{MUTED} italic")
+    elif cut_chars and hint:
+        body.append(f"     …{hint}\n", style=f"{MUTED} italic")
     return body
 
 
 def tool_result(content: str, is_error: bool = False, name: str = "", cwd: str = "") -> None:
-    console.print(tool_result_text(content, is_error, name, cwd), end="")
+    """A tool result in the REPL: shortened (Ctrl+O shows it in full), or whole
+    while output is expanded."""
+    global _last_cut
+    if _expanded:
+        console.print(tool_result_text(content, is_error, name, cwd, full=True), end="")
+        return
+    text = tool_result_text(content, is_error, name, cwd, expand_hint=True)
+    if "ctrl+o to expand" in text.plain:
+        _last_cut = (content, is_error, name, cwd)
+    console.print(text, end="")
+
+
+# Ctrl+O: tool output shown whole instead of shortened (REPL), and the
+# running tasks' full activity instead of the last few steps.
+_expanded = False
+_last_cut: Optional[tuple] = None  # the newest result that was shortened
+
+
+def is_expanded() -> bool:
+    return _expanded
+
+
+def set_expanded(on: bool) -> None:
+    global _expanded
+    _expanded = bool(on)
+
+
+def show_last_cut() -> bool:
+    """Print the newest shortened tool result in full; False if there is none."""
+    if _last_cut is None:
+        return False
+    content, is_error, name, cwd = _last_cut
+    console.print(Text("  ⊕ full output of the last shortened result:", style=MUTED))
+    console.print(tool_result_text(content, is_error, name, cwd, full=True), end="")
+    return True
+
+
+# -- tasks (sub-agents) -------------------------------------------------------
+_TASK_ACTIVITY = 3  # activity lines per task in the dock, unless expanded
+
+
+def running_tasks(entries: list, expanded: bool = False) -> Text:
+    """Running sub-agents: one headline each, their latest tool calls under it."""
+    t = Text()
+    for n, e in enumerate(entries):
+        if n:
+            t.append("\n")
+        t.append("● ", style=WARN)
+        t.append("Task", style="bold")
+        t.append("(", style=MUTED)
+        t.append(_one_line(e.label, 60))
+        t.append(")", style=MUTED)
+        where = "background" if e.background else e.model
+        t.append(f"  {e.id} · {where} · {e.summary()}" if where else f"  {e.id} · {e.summary()}",
+                 style=MUTED)
+        lines = list(e.activity)
+        shown = lines if expanded else lines[-_TASK_ACTIVITY:]
+        if not shown:
+            t.append("\n  ⎿  starting…", style=MUTED)
+        hidden = len(lines) - len(shown)
+        for i, line in enumerate(shown):
+            t.append("\n  ⎿  " if i == 0 else "\n     ", style=MUTED)
+            t.append(_one_line(line, 90))
+        if hidden:
+            t.append(f"\n     … +{hidden} earlier (ctrl+o to expand)", style=f"{MUTED} italic")
+    return t
+
+
+def task_finished_line(e) -> None:
+    """Under a foreground Task(...) call once it ends: "⎿ Done (7 tool uses · 1m 2s)"."""
+    word = {"completed": "Done", "running": "Done"}.get(e.status, e.status.capitalize())
+    console.print(Text(f"  ⎿  {word} ({e.summary()})", style=MUTED))
+
+
+def task_done(e, pending: bool = False) -> None:
+    """A background task has finished (its report goes to the agent)."""
+    t = Text()
+    t.append("● ", style=ACCENT2 if e.status == "completed" else WARN)
+    t.append(f"Background task {e.id} {e.status}", style="bold")
+    t.append(f": {_one_line(e.label, 60)} ({e.summary()})", style=MUTED)
+    if pending:
+        t.append("  — its report goes with your next message", style=MUTED)
+    console.print(t)
+
+
+def task_detail(e) -> None:
+    """/tasks <id>: the task's state, every recorded step, and its report."""
+    console.print(Text.assemble(("● ", WARN if e.running else ACCENT2),
+                                (f"{e.id} ", "bold"), (e.label, "bold"),
+                                (f"  {e.status} · {e.model} · {e.summary()}", MUTED)))
+    for line in e.activity:
+        console.print(Text(f"     {_one_line(line, 110)}", style=MUTED))
+    if not e.running:
+        console.print(tool_result_text(e.result or "(no output)", max_lines=40), end="")
+
+
+def tasks_table(entries: list, shells: list) -> None:
+    """/tasks: every sub-agent and background shell of this session."""
+    from rich.table import Table
+
+    if not entries and not shells:
+        info("No tasks yet. The agent starts them with the task tool; "
+             "ctrl+b moves a running one to the background.")
+        return
+    table = Table(box=ROUNDED, border_style=MUTED, title="Tasks", title_justify="left")
+    for col in ("id", "kind", "status", "what", "time / tools", "latest"):
+        table.add_column(col, style="cyan" if col == "id" else None, overflow="fold")
+    for e in entries:
+        status = e.status + (" · bg" if e.background and e.running else "")
+        table.add_row(e.id, "agent", status, _one_line(e.label, 40), e.summary(),
+                      _one_line(e.activity[-1], 40) if e.activity else "")
+    for sid, cmd, status in shells:
+        table.add_row(sid, "shell", status, _one_line(cmd, 40), "", "")
+    console.print(table)
+    info("/tasks <id> for details · /tasks stop <id> to stop one")
 
 
 def info(msg: str) -> None:
