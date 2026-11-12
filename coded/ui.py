@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
+from typing import Any, Optional
 
 from rich.box import ROUNDED
 from rich.console import Console, Group
@@ -59,10 +59,23 @@ class _NoStatus:
         return False
 
 
-def thinking(text: str = "Thinking"):
-    """A spinner shown while waiting on the model. No-op in quiet mode."""
+def thinking(text: str = "Thinking", tasks: Optional[list] = None):
+    """A spinner shown while waiting on the model. No-op in quiet mode.
+
+    With unfinished `tasks`, the task list is docked under the spinner, so it
+    stays at the bottom of the screen (next to the input) instead of
+    scrolling away with tool output."""
     if _quiet:
         return _NoStatus()
+    dock = todo_dock(tasks or [])
+    if dock is not None:
+        from rich.live import Live
+        from rich.spinner import Spinner
+
+        spinner = Spinner("dots", text=Text.from_markup(
+            f"[{ACCENT}]{text}…[/] [{MUTED}](Ctrl-C to interrupt)[/]"), style=ACCENT)
+        return Live(Group(spinner, dock), console=console, refresh_per_second=12,
+                    transient=True)
     return console.status(f"[{ACCENT}]{text}…[/] [{MUTED}](Ctrl-C to interrupt)[/]",
                           spinner="dots", spinner_style=ACCENT)
 
@@ -370,6 +383,38 @@ def current_todo(items: list) -> str:
         if item.get("status") == "in_progress":
             return item.get("content", "")
     return ""
+
+
+_DOCK_ITEMS = 6
+
+
+def todo_dock(items: list, max_items: int = _DOCK_ITEMS) -> Optional[Text]:
+    """A compact task list for the bottom of the screen during a turn.
+
+    None when there is nothing unfinished. Long lists show a window around
+    the current task, with a count of what is hidden."""
+    done, total, _ = todo_progress(items)
+    if not total or done == total:
+        return None
+    current = next((n for n, i in enumerate(items) if i.get("status") == "in_progress"),
+                   next((n for n, i in enumerate(items) if i.get("status") != "completed"), 0))
+    start = max(0, min(current - 1, total - max_items))
+    shown = items[start:start + max_items]
+    t = Text()
+    t.append(f"  {todo_title(items)}", style=ACCENT_SOFT)
+    if start:
+        t.append(f"\n    … {start} more above", style=MUTED)
+    for item in shown:
+        status = item.get("status", "pending")
+        mark, color = _TODO_MARK.get(status, ("☐", MUTED))
+        style = f"{MUTED} strike" if status == "completed" else (
+            "bold" if status == "in_progress" else "")
+        t.append(f"\n    {mark} ", style=color)
+        t.append(_one_line(item.get("content", ""), 90), style=style)
+    rest = total - start - len(shown)
+    if rest > 0:
+        t.append(f"\n    … {rest} more", style=MUTED)
+    return t
 
 
 def todos(items: list) -> None:

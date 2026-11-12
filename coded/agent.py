@@ -745,15 +745,23 @@ class Agent:
         thoughts: List[str] = []
         show_reasoning = self.config.show_reasoning
         live = Live(console=ui.console, refresh_per_second=12, transient=False)
-        status = ui.thinking()
+        # The task list stays docked at the bottom while the answer streams;
+        # the final frame drops it, so only the answer stays in the scrollback.
+        tasks = self.todos.items if self.verbose else []
+        dock = ui.todo_dock(tasks)
+        status = ui.thinking(tasks=tasks)
         status.start()
         started = False
 
-        def render():
+        def render(final: bool = False):
             md = Markdown("".join(buffer))
+            parts = [md]
             if show_reasoning and thoughts:
-                return Group(Text("".join(thoughts), style=f"{ui.MUTED} italic"), md)
-            return md
+                parts.insert(0, Text("".join(thoughts), style=f"{ui.MUTED} italic"))
+            if dock is not None and not final:
+                parts.append(Text(""))
+                parts.append(dock)
+            return parts[0] if len(parts) == 1 else Group(*parts)
 
         def begin():
             nonlocal started
@@ -781,7 +789,7 @@ class Agent:
             )
         finally:
             if started:
-                live.update(render())
+                live.update(render(final=True))
                 live.stop()
             else:
                 status.stop()

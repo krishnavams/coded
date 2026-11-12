@@ -474,7 +474,9 @@ config.example.json     # sample configuration
   `Prompter`, so the flow is testable without a TTY.
 - **A long turn must stay legible and interruptible**: task progress goes
   through `ui.todo_progress`/`todo_bar`/`todo_title`/`current_todo` (panel, REPL
-  toolbar and TUI status line all use them), and input typed mid-turn is queued
+  toolbar and TUI status line all use them), and in the REPL `ui.todo_dock` pins the
+  unfinished list under the spinner and the streaming view (transient, so the
+  final answer frame drops it), and input typed mid-turn is queued
   by `typeahead.TypeAhead` (REPL) or `CodedTUI._queued` and run as the next
   message. The type-ahead reader owns stdin during a turn, so a prompt that
   needs an answer asks it via `TypeAhead.ask()` instead of reading stdin itself.

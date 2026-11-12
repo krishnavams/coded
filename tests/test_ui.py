@@ -35,6 +35,37 @@ def test_thinking_spinner_is_context_manager():
         ui.set_quiet(False)
 
 
+
+def _tasks(*statuses):
+    return [{"content": f"task {n}", "status": st} for n, st in enumerate(statuses, 1)]
+
+
+def test_todo_dock_shows_unfinished_lists_only():
+    assert ui.todo_dock([]) is None
+    assert ui.todo_dock(_tasks("completed", "completed")) is None
+    dock = ui.todo_dock(_tasks("completed", "in_progress", "pending")).plain
+    assert "Tasks  1/3" in dock
+    assert "task 1" in dock and "task 2" in dock and "task 3" in dock
+
+
+def test_todo_dock_windows_a_long_list_around_the_current_task():
+    items = _tasks(*(["completed"] * 8 + ["in_progress"] + ["pending"] * 6))
+    dock = ui.todo_dock(items, max_items=4).plain
+    assert "task 9" in dock and "task 8" in dock
+    assert "task 1\n" not in dock and "task 15" not in dock
+    assert "7 more above" in dock and "4 more" in dock
+
+
+def test_thinking_docks_the_task_list_under_the_spinner():
+    from rich.live import Live
+
+    live = ui.thinking(tasks=_tasks("in_progress", "pending"))
+    assert isinstance(live, Live) and live.transient
+    with live:
+        pass
+    # Nothing unfinished: the plain spinner, as before.
+    assert not isinstance(ui.thinking(tasks=_tasks("completed")), Live)
+
 def test_repl_bottom_toolbar(headless):
     from prompt_toolkit.formatted_text import to_formatted_text
 
