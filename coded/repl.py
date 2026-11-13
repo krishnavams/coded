@@ -14,6 +14,7 @@ from prompt_toolkit.filters import Condition, has_completions, vi_navigation_mod
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
+from rich.markup import escape
 from rich.table import Table
 
 from coded import choice, ui
@@ -558,7 +559,7 @@ class Repl:
         if not (text == "/btw" or text.startswith("/btw ")):
             return False
         question = text[len("/btw"):].strip()
-        ui.console.print(f"[{ui.ACCENT_SOFT}]  ? btw: {question[:80]} — answering "
+        ui.console.print(f"[{ui.ACCENT_SOFT}]  ? btw: {escape(question[:80])} — answering "
                          f"alongside the current work…[/]")
 
         def answer() -> None:
@@ -580,7 +581,7 @@ class Repl:
             ui.console.print(f"[{ui.MUTED}]  (ctrl+b: no task is running in the foreground)[/]")
             return
         entry.detach.set()
-        ui.console.print(f"[{ui.ACCENT_SOFT}]  ↧ {entry.id} \"{entry.label}\" moved to the "
+        ui.console.print(f"[{ui.ACCENT_SOFT}]  ↧ {entry.id} \"{escape(entry.label)}\" moved to the "
                          f"background — keep typing; its report arrives when it finishes[/]")
 
     def _toggle_edits(self) -> None:
@@ -614,7 +615,7 @@ class Repl:
 
     def _queued_note(self, text: str, waiting: int) -> None:
         short = text if len(text) <= 60 else text[:57] + "…"
-        ui.console.print(f"[{ui.ACCENT_SOFT}]  ⏎ queued ({waiting}): {short}[/]")
+        ui.console.print(f"[{ui.ACCENT_SOFT}]  ⏎ queued ({waiting}): {escape(short)}[/]")
 
     def _show_tasks_above_prompt(self) -> bool:
         """Show the task list right above the input, as the TUI docks it.
@@ -915,7 +916,7 @@ class Repl:
                 ui.error(f"No task or shell '{args[0]}'.")
                 return
             text, status = out
-            ui.console.print(f"[bold]{args[0]}[/] [{ui.MUTED}]{status}[/]")
+            ui.console.print(f"[bold]{escape(args[0])}[/] [{ui.MUTED}]{status}[/]")
             ui.console.print(ui.tool_result_text(text or "(no new output)", max_lines=40),
                              end="")
             return
@@ -935,7 +936,7 @@ class Repl:
         table.add_column("status")
         table.add_column("command")
         for sid, cmd, status in shells:
-            table.add_row(sid, status, cmd[:80])
+            table.add_row(sid, status, escape(cmd[:80]))
         ui.console.print(table)
 
     def _cmd_agents(self) -> None:
@@ -950,7 +951,7 @@ class Repl:
         table.add_column("command")
         table.add_column("description")
         for a in tool.agents.values():
-            table.add_row(a.name, " ".join(a.command), a.description)
+            table.add_row(escape(a.name), escape(" ".join(a.command)), escape(a.description))
         ui.console.print(table)
         ui.info("`coded agents` (in a shell) lists the others and how to install them.")
 
@@ -966,9 +967,9 @@ class Repl:
         for col in ("plugin", "version", "scope", "status", "description"):
             table.add_column(col)
         for p in plugins:
-            table.add_row(p.name, p.version, p.scope,
+            table.add_row(escape(p.name), escape(p.version), p.scope,
                           "[green]enabled[/green]" if p.enabled else "[dim]disabled[/dim]",
-                          p.description[:60])
+                          escape(p.description[:60]))
         ui.console.print(table)
         ui.info("Install/remove/enable with `coded plugin …` in a shell, then restart coded.")
 
@@ -982,7 +983,7 @@ class Repl:
         table.add_column("args")
         table.add_column("description")
         for n, c in self.commands.items():
-            table.add_row(f"/{n}", c.argument_hint, c.description)
+            table.add_row(escape(f"/{n}"), escape(c.argument_hint), escape(c.description))
         ui.console.print(table)
 
     def _cmd_permissions(self, args: List[str]) -> None:
@@ -1025,10 +1026,10 @@ class Repl:
         table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
         table.add_row("[cyan]mode[/cyan]", mode + ("  (yolo: everything runs)"
                                                    if perms.auto_approve else ""))
-        table.add_row("[cyan]allow[/cyan]", ", ".join(perms.allow_rules) or "[dim]none[/dim]")
-        table.add_row("[cyan]deny[/cyan]", ", ".join(perms.deny_rules) or "[dim]none[/dim]")
+        table.add_row("[cyan]allow[/cyan]", escape(", ".join(perms.allow_rules)) or "[dim]none[/dim]")
+        table.add_row("[cyan]deny[/cyan]", escape(", ".join(perms.deny_rules)) or "[dim]none[/dim]")
         table.add_row("[cyan]always (session)[/cyan]",
-                      ", ".join(perms.always_allowed) or "[dim]none[/dim]")
+                      escape(", ".join(perms.always_allowed)) or "[dim]none[/dim]")
         ui.console.print(table)
         ui.console.print(f"[{ui.MUTED}]Rules look like bash, bash(git *), edit(src/*). "
                          f"Deny always wins. Shift+Tab cycles the mode.[/]")
@@ -1044,7 +1045,7 @@ class Repl:
                           "coded's normal voice")
             for name, style in styles.items():
                 mark = "● " if name == current else "  "
-                table.add_row(f"{mark}[cyan]{name}[/cyan]", style.description)
+                table.add_row(f"{mark}[cyan]{escape(name)}[/cyan]", escape(style.description))
             ui.console.print(table)
             ui.console.print(f"[{ui.MUTED}]Add your own in .coded/styles/<name>.md.[/]")
             return
@@ -1089,7 +1090,8 @@ class Repl:
             table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
             for n, turn in enumerate(turns, 1):
                 text = " ".join(turn["text"].split())
-                table.add_row(f"[cyan]{n}[/cyan]", text[:90] + ("…" if len(text) > 90 else ""))
+                table.add_row(f"[cyan]{n}[/cyan]",
+                              escape(text[:90] + ("…" if len(text) > 90 else "")))
             ui.console.print(table)
             ui.console.print(f"[{ui.MUTED}]/rewind N goes back to just before request N and "
                              f"undoes its file changes (--keep-files leaves files alone).[/]")
@@ -1152,14 +1154,15 @@ class Repl:
     def _cmd_help(self) -> None:
         table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
         for name, desc in SLASH_COMMANDS.items():
-            table.add_row(f"[cyan]{name}[/cyan]", desc)
+            table.add_row(f"[cyan]{name}[/cyan]", escape(desc))
         for name, c in self.commands.items():
-            table.add_row(f"[cyan]/{name}[/cyan]", f"{c.description} [dim](custom)[/dim]")
+            table.add_row(f"[cyan]/{escape(name)}[/cyan]",
+                          f"{escape(c.description)} [dim](custom)[/dim]")
         ui.console.print(table)
         keys = Table(show_header=False, box=None, padding=(0, 2, 0, 0), title="Keys",
                      title_justify="left")
         for key, desc in KEYS.items():
-            keys.add_row(f"[cyan]{key}[/cyan]", desc)
+            keys.add_row(f"[cyan]{escape(key)}[/cyan]", escape(desc))
         ui.console.print()
         ui.console.print(keys)
 
@@ -1171,7 +1174,7 @@ class Repl:
         table.add_column("", style="green")
         for name, mc in self.config.models.items():
             active = "● active" if name == self.agent.model.name else ""
-            table.add_row(name, mc.model, mc.provider, active)
+            table.add_row(escape(name), escape(mc.model), escape(mc.provider or ""), active)
         ui.console.print(table)
 
     def _cmd_setup(self) -> None:
@@ -1255,7 +1258,7 @@ class Repl:
             ui.success("Verification passed.")
             return
         ui.warn("Verification found something:")
-        ui.console.print(feedback)
+        ui.console.print(feedback, markup=False)
         if self.agent.permissions.ask("Send this back to the agent to fix?", feedback[:400]) \
                 in ("y", "yes"):
             ui.user_prefix()
@@ -1280,7 +1283,7 @@ class Repl:
             table.add_column("note")
             table.add_column("by", style="dim")
             for e in entries:
-                table.add_row(e.id, e.kind, e.text, e.source)
+                table.add_row(e.id, e.kind, escape(e.text), escape(e.source))
             ui.console.print(table)
         elif action == "search":
             hits = store.search(rest)
@@ -1288,7 +1291,7 @@ class Repl:
                 ui.info(f"No notes about '{rest}'." if rest else "Usage: /memory search <words>")
                 return
             for e in hits:
-                ui.console.print(f"  [cyan]{e.id}[/cyan] ({e.kind}) {e.text}", highlight=False)
+                ui.console.print(f"  [cyan]{e.id}[/cyan] ({e.kind}) {escape(e.text)}", highlight=False)
         elif action == "add":
             if not rest:
                 ui.error("Nothing to add: /memory add <note>  (prefix with "
@@ -1364,7 +1367,7 @@ class Repl:
         for t in self.agent.registry.all():
             perm = "[yellow]asks[/yellow]" if t.requires_permission else "auto"
             desc = t.description.strip().splitlines()[0]
-            table.add_row(t.name, perm, desc[:80])
+            table.add_row(escape(t.name), perm, escape(desc[:80]))
         ui.console.print(table)
 
     def _cmd_image(self, args) -> None:
@@ -1425,7 +1428,7 @@ class Repl:
         table.add_column("label")
         table.add_column("files", justify="right")
         for g in groups:
-            table.add_row(g.get("label", ""), str(len(g.get("files", []))))
+            table.add_row(escape(g.get("label", "")), str(len(g.get("files", []))))
         ui.console.print(table)
         ui.info("Use /undo to revert the most recent one.")
 
@@ -1438,7 +1441,7 @@ class Repl:
         table.add_column("skill", style="cyan")
         table.add_column("description")
         for name, s in self.agent.skills.items():
-            table.add_row(name, s.description or "(no description)")
+            table.add_row(escape(name), escape(s.description or "(no description)"))
         ui.console.print(table)
 
     def _cmd_skill(self, args) -> None:
@@ -1480,7 +1483,7 @@ class Repl:
         if self.config.source_paths:
             ui.info("Loaded config from:")
             for p in self.config.source_paths:
-                ui.console.print(f"  [dim]{p}[/dim]")
+                ui.console.print(f"  [dim]{escape(str(p))}[/dim]")
         else:
             ui.info("No config files loaded (using defaults / CLI flags / env).")
         if self.config.mcp_servers:

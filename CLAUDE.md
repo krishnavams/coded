@@ -140,6 +140,7 @@ tests/
 ├── test_trust.py       # project trust gate: what applies untrusted, remembered fingerprint, CLI
 ├── test_events.py      # event log: tool outcomes, denials, timings, saved, bounded, thread-safe
 ├── test_dashboard.py   # /dashboard render, REPL + mid-turn, TUI modal
+├── test_slash_smoke.py # every slash command on a session full of "[x]"/"[/x]" text: no crash, shown verbatim
 ├── test_timeline.py    # timeline turns, per-turn file changes, restore preview + rewind, saved
 ├── test_adversary.py   # findings need file:line + trigger, read-only tools, model note, opt-in
 ├── test_twin.py        # same answers with/without the cache, outside the repo, /twin changes
@@ -454,6 +455,15 @@ config.example.json     # sample configuration
   bare `console.print()`. Assistant text gets a `● ` with a hanging indent
   (`ui.answer_block`) only when the REPL turns it on (`set_answer_bullets`), so
   `-p` output stays plain.
+- **Printed text is markup unless you say otherwise**: rich reads `[x]` in a
+  `str` as a style tag (dropped silently) and raises `MarkupError` on a stray
+  `[/x]`. `ui.info/warn/error/success` take **plain text** and escape it, so
+  never put markup in their message. Anywhere else, text that is not a literal
+  of ours (user messages, labels, commands, paths, descriptions, model or tool
+  output, exception text) goes through `rich.markup.escape`, a `Text`, or
+  `print(..., markup=False)` — table cells included. `tests/test_slash_smoke.py`
+  runs every slash command on a session full of such text; add new commands to
+  its `COMMANDS`.
 - **UI**: use the helpers in `coded/ui.py` and its single shared `console`.
   Displayed tool output is truncated for readability; the **model** always
   receives the full tool result (truncation is display-only). Colors come from

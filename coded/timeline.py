@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from rich.box import ROUNDED
 from rich.console import Group
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -235,7 +236,7 @@ def render_list(turns: List[Turn]) -> Any:
     for t in turns:
         tools = [s for s in t.steps if s.kind == "tool"]
         bad = sum(1 for s in tools if (s.event or {}).get("error"))
-        table.add_row(str(t.number), ui._one_line(t.prompt, 90), str(len(tools)),
+        table.add_row(str(t.number), escape(ui._one_line(t.prompt, 90)), str(len(tools)),
                       Text(str(bad), style=ui.ERR if bad else ui.MUTED),
                       "✎" if t.checkpoint else "")
     hint = Text("/timeline N replays request N · /timeline restore N goes back to just "

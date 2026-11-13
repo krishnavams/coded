@@ -7,6 +7,7 @@ import os
 import sys
 from typing import List, Optional
 
+from rich.markup import escape
 from rich.table import Table
 
 from coded import ui
@@ -39,7 +40,7 @@ def _confirm_fn(assume_yes: bool):
         return None
 
     def confirm(summary: str) -> bool:
-        ui.console.print(summary)
+        ui.console.print(summary, markup=False)
         if not sys.stdin.isatty():
             ui.error("Not running interactively: re-run with --yes after reviewing the above.")
             return False
@@ -116,7 +117,8 @@ def skill_main(argv: List[str]) -> int:
             for col in ("skill", "scope", "source", "description"):
                 table.add_column(col)
             for r in rows:
-                table.add_row(r["name"], r["scope"], r["source"], r["description"][:70])
+                table.add_row(*(escape(str(r[k])) for k in ("name", "scope", "source")),
+                              escape(r["description"][:70]))
             ui.console.print(table)
         elif args.cmd == "remove":
             remove_skill(args.name, scope=_scope(args), cwd=_cwd(args))
@@ -136,10 +138,10 @@ def skill_main(argv: List[str]) -> int:
             if skill is None:
                 ui.error(f"No skill '{args.name}'.")
                 return 1
-            ui.console.print(f"[bold]{skill.name}[/bold]  {skill.path}")
-            ui.console.print(skill.description)
+            ui.console.print(f"[bold]{escape(skill.name)}[/bold]  {escape(str(skill.path))}")
+            ui.console.print(skill.description, markup=False)
             if skill.allowed_tools:
-                ui.console.print(f"allowed-tools: {', '.join(skill.allowed_tools)}")
+                ui.console.print(f"allowed-tools: {', '.join(skill.allowed_tools)}", markup=False)
     except (InstallError, SourceError) as exc:
         ui.error(str(exc))
         return 1
@@ -216,7 +218,7 @@ def plugin_main(argv: List[str]) -> int:
                     provides.append(f"{len(pl_.mcp_servers())} MCP")
                 if pl_.external_agents():
                     provides.append("agents")
-                table.add_row(pl_.name, pl_.version, pl_.scope,
+                table.add_row(escape(pl_.name), escape(pl_.version), pl_.scope,
                               "[green]enabled[/green]" if pl_.enabled else "[dim]disabled[/dim]",
                               ", ".join(provides))
             ui.console.print(table)
@@ -240,9 +242,9 @@ def plugin_main(argv: List[str]) -> int:
                 ui.error(f"No plugin '{args.name}'.")
                 return 1
             pl_ = match[0]
-            ui.console.print(pl_.summary())
+            ui.console.print(pl_.summary(), markup=False)
             ui.console.print(f"  location: {pl_.root}   status: "
-                             f"{'enabled' if pl_.enabled else 'disabled'}")
+                             f"{'enabled' if pl_.enabled else 'disabled'}", markup=False)
         elif args.cmd == "search":
             entries = marketplace_entries(cwd)
             q = args.query.lower()
@@ -257,8 +259,9 @@ def plugin_main(argv: List[str]) -> int:
             for col in ("plugin", "marketplace", "version", "description", ""):
                 table.add_column(col)
             for e in entries:
-                table.add_row(e["name"], e["marketplace"], str(e.get("version", "")),
-                              str(e.get("description", ""))[:60],
+                table.add_row(escape(str(e["name"])), escape(str(e["marketplace"])),
+                              escape(str(e.get("version", ""))),
+                              escape(str(e.get("description", ""))[:60]),
                               "installed" if e["name"] in installed else "")
             ui.console.print(table)
             ui.info("Install with: coded plugin install <plugin>@<marketplace>")

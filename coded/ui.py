@@ -10,6 +10,7 @@ from rich.box import ROUNDED
 from rich.console import Console, Group
 from rich.control import Control
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
 from rich.theme import Theme
@@ -722,28 +723,29 @@ def tasks_table(entries: list, shells: list) -> None:
         table.add_column(col, style="cyan" if col == "id" else None, overflow="fold")
     for e in entries:
         status = e.status + (" · bg" if e.background and e.running else "")
-        table.add_row(e.id, "agent", status, _one_line(e.label, 40), e.summary(),
-                      _one_line(e.activity[-1], 40) if e.activity else "")
+        table.add_row(e.id, "agent", status, escape(_one_line(e.label, 40)), escape(e.summary()),
+                      escape(_one_line(e.activity[-1], 40)) if e.activity else "")
     for sid, cmd, status in shells:
-        table.add_row(sid, "shell", status, _one_line(cmd, 40), "", "")
+        table.add_row(sid, "shell", status, escape(_one_line(cmd, 40)), "", "")
     console.print(table)
     info("/tasks <id> for details · /tasks stop <id> to stop one")
 
 
 def info(msg: str) -> None:
-    _log().print(f"[{MUTED}]{msg}[/]")
+    # Messages are plain text: a path or an error may hold "[x]" or "[/x]".
+    _log().print(f"[{MUTED}]{escape(str(msg))}[/]")
 
 
 def warn(msg: str) -> None:
-    _log().print(f"[{WARN}]![/] {msg}")
+    _log().print(f"[{WARN}]![/] {escape(str(msg))}")
 
 
 def error(msg: str) -> None:
-    _log().print(f"[{ERR}]✗[/] {msg}")
+    _log().print(f"[{ERR}]✗[/] {escape(str(msg))}")
 
 
 def success(msg: str) -> None:
-    _log().print(f"[{ACCENT2}]✓[/] {msg}")
+    _log().print(f"[{ACCENT2}]✓[/] {escape(str(msg))}")
 
 
 def btw_panel(question: str, answer: str) -> Panel:

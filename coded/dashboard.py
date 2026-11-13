@@ -14,6 +14,7 @@ from typing import Any, List
 
 from rich.box import ROUNDED
 from rich.console import Group
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -80,15 +81,16 @@ def render(agent: Any, *, busy: bool = False, width: int = 100) -> Group:
 
     # -- agents -----------------------------------------------------------------
     agents = _table("Agents", ["id", "status", "what", "model", "time / tools", "latest"])
-    agents.add_row("main", "working" if busy else "idle", ui._one_line(
-        getattr(agent, "_last_request", "") or "—", 40), agent.model.name, "", "")
+    agents.add_row("main", "working" if busy else "idle", escape(ui._one_line(
+        getattr(agent, "_last_request", "") or "—", 40)), escape(agent.model.name), "", "")
     for t in agent.tasks.all():
         status = t.status + (" · bg" if t.background and t.running else "")
-        agents.add_row(t.id, status, ui._one_line(t.label, 40), t.model or "", t.summary(),
-                       ui._one_line(t.activity[-1], 36) if t.activity else "")
+        agents.add_row(t.id, status, escape(ui._one_line(t.label, 40)), escape(t.model or ""),
+                       escape(t.summary()),
+                       escape(ui._one_line(t.activity[-1], 36)) if t.activity else "")
     shells = agent.shells.list() if getattr(agent, "shells", None) else []
     for sid, cmd, status in shells:
-        agents.add_row(sid, status, ui._one_line(cmd, 40), "shell", "", "")
+        agents.add_row(sid, status, escape(ui._one_line(cmd, 40)), "shell", "", "")
     parts.append(agents)
 
     # -- models -----------------------------------------------------------------
@@ -96,7 +98,7 @@ def render(agent: Any, *, busy: bool = False, width: int = 100) -> Group:
     if usage:
         models = _table("Models", ["model", "calls", "input", "output", "cost"])
         for name, m in usage.items():
-            models.add_row(name, str(int(m["calls"])), f"{int(m['input']):,}",
+            models.add_row(escape(name), str(int(m["calls"])), f"{int(m['input']):,}",
                            f"{int(m['output']):,}", f"${m['cost']:.4f}")
         parts.append(models)
 
@@ -106,7 +108,7 @@ def render(agent: Any, *, busy: bool = False, width: int = 100) -> Group:
         tools = _table("Tools", ["tool", "calls", "failed", "denied", "avg", "total"])
         for name, s in list(stats.items())[:12]:
             n = int(s["calls"])
-            tools.add_row(name, str(n),
+            tools.add_row(escape(name), str(n),
                           Text(str(int(s["errors"])), style=ui.ERR if s["errors"] else ui.MUTED),
                           Text(str(int(s["denied"])), style=ui.WARN if s["denied"] else ui.MUTED),
                           _secs(s["ms"] / max(n, 1)), _secs(s["ms"]))
@@ -161,6 +163,6 @@ def render(agent: Any, *, busy: bool = False, width: int = 100) -> Group:
                 what, why = "checks", f"{e['result']}: {e.get('detail') or e.get('command', '')}"
             else:
                 what, why = kind.replace("_", " "), e.get("limit", "") and f"limit {e['limit']}"
-            table.add_row(_ago(e["t"]), what, ui._one_line(str(why), 70))
+            table.add_row(_ago(e["t"]), escape(str(what)), escape(ui._one_line(str(why), 70)))
         parts.append(table)
     return Group(*parts)

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- `/dashboard` crashed (`ValueError: too many values to unpack`) whenever the
+  session had a task list.
+- Text that looks like terminal markup no longer breaks the display. A request,
+  task, shell command, memory note, command description or error message
+  containing `[/x]` crashed `/help`, `/memory`, `/timeline`, `/dashboard`,
+  `/checkpoints`, `/rewind`, `/shells`, `/tasks`, `/commands` and any status
+  message; text such as `[name]` was silently dropped, so `/help` showed
+  `/model .` instead of `/model [name]` and `pip install 'coded[mcp]'` lost its
+  extra. Skill and plugin install summaries are now printed verbatim too.
+
 ## 0.3.0
 
 ### Security
