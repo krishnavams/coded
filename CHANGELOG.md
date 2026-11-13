@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 ### Security
 - **Project trust.** A repository's `.coded/config.json` (and project-scope
