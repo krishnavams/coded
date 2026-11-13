@@ -1343,8 +1343,13 @@ knob, and the default is 128k.
 - **Per-model prompt files.** `prompts_dir` points at a folder of that model's own
   prompt files, which win over everything else. A relative path is resolved
   against the project directory.
-- **Longer runs.** `max_turns` per model raises or lowers the step limit; the CLI
-  `--max-turns` still wins.
+- **Longer runs.** `max_turns` (default 100) is the number of steps one request
+  may take; set it per model or globally. When a request reaches it while still
+  making progress, the limit grows by `max_turns` again, up to five times
+  `max_turns`, with a note each time. It stops early when the agent looks stuck:
+  the same tool call 4 times in its last 30, or 10 failing calls in a row. After a
+  stop, type `continue` to pick up where it left off. `"auto_extend_turns": false`
+  makes `max_turns` a hard cap, and so does an explicit `--max-turns N`.
 - **Repository overview** (`repo_overview`: `auto`, `true` or `false`; auto means
   on for windows ≥200k). Large-context models get a map of the repository in the
   system prompt: file paths (or directories with counts for big repos), key

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -30,6 +31,29 @@ from coded.tools.todo import PLAN_MODE_REMINDER, TodoStore
 
 _MAX_PARALLEL = 8
 _MAX_STOP_CONTINUATIONS = 3
+# When a request reaches max_turns while still making progress, the limit grows
+# by max_turns again, up to this many times max_turns (auto_extend_turns).
+_TURN_CEILING_FACTOR = 5
+_LOOP_WINDOW = 30   # recent tool calls checked for a loop
+_LOOP_REPEATS = 4   # the identical call this often in the window = stuck
+_ERROR_RUN = 10     # this many failing tool calls in a row = stuck
+
+
+def stuck_reason(calls) -> Optional[str]:
+    """Why recent tool calls look like a loop rather than progress, or None.
+
+    `calls` is a sequence of (tool name, raw arguments, is_error), oldest first.
+    """
+    calls = list(calls)
+    if len(calls) >= _ERROR_RUN and all(err for _, _, err in calls[-_ERROR_RUN:]):
+        return f"the last {_ERROR_RUN} tool calls all failed"
+    counts: Dict[Tuple[str, str], int] = {}
+    for name, args, _ in calls[-_LOOP_WINDOW:]:
+        key = (name, args or "")
+        counts[key] = counts.get(key, 0) + 1
+        if counts[key] >= _LOOP_REPEATS:
+            return f"it repeated the same `{name}` call {counts[key]} times"
+    return None
 _FILE_TOOLS = ("read", "edit", "multi_edit", "write")
 # Tools whose path arguments .codedignore can refuse, and those whose result
 # gets the configured diagnostics after a successful change.
@@ -131,6 +155,9 @@ class Agent:
         # One entry per request the user sent: its user message (by identity),
         # what was typed and the checkpoint group it opened (for /rewind).
         self._turn_marks: List[Dict[str, Any]] = []
+        # This request's recent tool calls (name, raw args, is_error), for the
+        # progress check when it reaches max_turns.
+        self._recent_calls: deque = deque(maxlen=_LOOP_WINDOW)
         # Verification state (see _verify_turn): whether this turn touched
         # anything, whether it did so through the shell, and how many times it
         # has been sent back.
@@ -273,6 +300,29 @@ class Agent:
         """CLI --max-turns, else the model's max_turns, else config.max_turns."""
         return (self.config.max_turns_override or self.model.max_turns
                 or self.config.max_turns)
+
+    def _turn_ceiling(self) -> int:
+        """How far auto-extension may take this request's step limit."""
+        if not self.config.auto_extend_turns or self.config.max_turns_override:
+            return self.max_turns  # off, or the user set an exact --max-turns
+        return self.max_turns * _TURN_CEILING_FACTOR
+
+    def _extend_turns(self, limit: int) -> Tuple[Optional[int], str]:
+        """At the step limit: the new limit if the request is still making progress."""
+        ceiling = self._turn_ceiling()
+        if limit >= ceiling:
+            if ceiling == self.max_turns:
+                return None, "raise max_turns or use --max-turns for longer requests"
+            return None, f"{ceiling} steps is the most auto-extension allows"
+        reason = stuck_reason(self._recent_calls)
+        if reason:
+            return None, f"it does not look like progress: {reason}"
+        new = min(limit + self.max_turns, ceiling)
+        self.events.add("turns_extended", limit=new,
+                        **({"task": self.event_task} if self.event_task else {}))
+        self._status_note(f"Still working after {limit} steps; "
+                          f"extending the limit to {new}.")
+        return new, ""
 
     def interrupt(self) -> None:
         """Ask the running turn to stop at the next checkpoint (between steps)."""
@@ -461,7 +511,17 @@ class Agent:
         final_text = ""
         stop_continuations = 0
         context_retry = False
-        for _ in range(self.max_turns):
+        self._recent_calls.clear()
+        limit = self.max_turns
+        steps = 0
+        while True:
+            if steps >= limit:
+                more, why = self._extend_turns(limit)
+                if more is None:
+                    self._stop_at_limit(limit, why)
+                    break
+                limit = more
+            steps += 1
             if self._interrupted:
                 self._status_note("Interrupted.")
                 break
@@ -544,14 +604,19 @@ class Agent:
                 self.session.add_user_multimodal(
                     _TOOL_IMAGES + ", ".join(ui._rel(p, self.cwd) for p in paths), paths)
             self._step_done()
-        else:
-            self.events.add("max_turns", limit=self.max_turns)
-            if not self._emit("status", text=f"Reached max turns ({self.max_turns})."):
-                if self.verbose:
-                    ui.warn(f"Reached max turns ({self.max_turns}); stopping.")
         if final_text and not self.is_subagent:
             self.events.add("answer", chars=len(final_text))
         return final_text
+
+    def _stop_at_limit(self, limit: int, why: str) -> None:
+        self.events.add("max_turns", limit=limit,
+                        **({"task": self.event_task} if self.event_task else {}))
+        text = f"Reached max turns ({limit}); stopping: {why}."
+        if not self.is_subagent:
+            text += " Type `continue` to pick up where it left off."
+        if not self._emit("status", text=text):
+            if self.verbose or not self.is_subagent:
+                ui.warn(text)
 
     def _verify_turn(self, final_text: Optional[str]) -> Optional[str]:
         """Run the project's checks and/or a second model over this turn's change.
@@ -708,13 +773,16 @@ class Agent:
                     batch.append(tool_calls[j])
                     j += 1
             if len(batch) == 1:
-                results.append((batch[0], self._run_tool(batch[0])[0]))
+                content, is_error, _ = self._run_tool(batch[0])
+                self._recent_calls.append((batch[0].name, batch[0].arguments, is_error))
+                results.append((batch[0], content))
                 i += 1
                 continue
             with ThreadPoolExecutor(max_workers=min(_MAX_PARALLEL, len(batch))) as pool:
                 futures = [pool.submit(run_in_context(self._run_tool, tc, False)) for tc in batch]
                 outcomes = [f.result() for f in futures]
             for tc, (content, is_error, args) in zip(batch, outcomes):
+                self._recent_calls.append((tc.name, tc.arguments, is_error))
                 self._show_tool_call(tc.name, args if args is not None else {"_raw": tc.arguments}, tc.id)
                 self._show_tool_result(content, is_error, tc.id, tc.name)
                 results.append((tc, content))

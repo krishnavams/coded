@@ -145,6 +145,7 @@ tests/
 ├── test_adversary.py   # findings need file:line + trigger, read-only tools, model note, opt-in
 ├── test_twin.py        # same answers with/without the cache, outside the repo, /twin changes
 ├── test_lab.py         # lab heuristics, per-folder sessions, one-by-one apply, loosening flagged
+├── test_turn_limit.py  # max_turns grows with progress, stops a loop, ceiling, hard-cap switches
 ├── test_session_autosave.py  # per-step autosave, atomic save, orphan tool calls, todos
 ├── test_memory_bounds.py  # bounded output/file reads, timeout kills the process group
 ├── test_compaction.py  # context compaction trigger + tail preservation
@@ -657,6 +658,13 @@ config.example.json     # sample configuration
   project memory (gitignored) or `.coded/config.json` (via `config_wizard`),
   never to committed instruction files. Denials count only with
   `reason == "user"`.
+- **Step limit** (`Agent._loop`, `_extend_turns`, `stuck_reason`): at
+  `max_turns` the limit grows by `max_turns` while the request makes progress,
+  up to `_TURN_CEILING_FACTOR` × `max_turns`; `_recent_calls` (name, raw args,
+  is_error) decides "stuck" (an identical call `_LOOP_REPEATS` times in
+  `_LOOP_WINDOW`, or `_ERROR_RUN` failures in a row). `auto_extend_turns: false`
+  or `--max-turns` (`max_turns_override`) is a hard cap. Events:
+  `turns_extended`, then `max_turns` on the stop.
 - **Sessions survive a crash**: `Agent.on_step` (main agent only; the CLI sets
   it to autosave) runs after the user message, each tool step and the final
   answer, so a kill loses at most one step; the REPL also saves after Ctrl-C.

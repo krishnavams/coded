@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Changed
+- A long request no longer stops at `max_turns` (100) while it is still making
+  progress: the limit grows by `max_turns` again, up to five times, and stops
+  early only when the agent repeats the same tool call or keeps failing. The
+  stop message says why and that `continue` picks up where it left off, and it
+  is shown even without verbose output. `"auto_extend_turns": false` or an
+  explicit `--max-turns` keeps the old hard cap.
+
 ### Fixed
 - `/dashboard` crashed (`ValueError: too many values to unpack`) whenever the
   session had a task list.

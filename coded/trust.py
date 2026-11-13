@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional
 # looks or which of *your* models it picks, never what it runs or where it
 # connects. Everything else is sensitive.
 SAFE_KEYS = frozenset({
-    "default_model", "model_roles", "pools", "routing", "max_turns", "stream",
+    "default_model", "model_roles", "pools", "routing", "max_turns", "auto_extend_turns", "stream",
     "auto_compact", "compact_ratio", "auto_fallback", "show_reasoning",
     "parallel_tools", "disabled_tools", "editing_mode", "max_cost", "notify",
     "notify_after", "output_style", "update_check", "embedding_model",
