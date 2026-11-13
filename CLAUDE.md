@@ -152,6 +152,7 @@ tests/
 ├── test_speed.py       # lazy SDK import, disabled_tools, compact tool schema, --speed
 ├── test_verify.py      # the verification loop: checks, second opinion, rounds
 ├── test_self_heal.py   # detected checks, ask-once approval, affected tests first, stall stop
+├── test_auto_memory.py # fix notes, search, grouped recall, the fix-note offer after a healed turn
 ├── test_model_chain.py # failover cooldown, sizing for a smaller fallback, stream retry,
 │                       # per-model timeout, unknown-alias warnings
 ├── test_big_models.py  # scaled limits, caps, overflow retry, max_turns, profiles, repo overview
@@ -527,7 +528,14 @@ config.example.json     # sample configuration
   `requires_permission`, which would also drag the turn through the verify
   gate), and not at all while `permissions.tainted`. Every write re-reads first,
   so a concurrent session's note is not clobbered. Sub-agents get no memory
-  tool. An empty store must leave the system prompt byte-identical.
+  tool. An empty store must leave the system prompt byte-identical. Kinds:
+  convention, decision, fix, gotcha, fact; recall is grouped in that order
+  (newest first within a kind) and `search` (tool + `/memory search`) ranks by
+  matched words. Automatic capture is one nudge, not a model call per turn:
+  when the checks failed earlier in a turn and then pass, `_fix_note_nudge`
+  asks the agent once to propose a `fix` note (approved like any note; never
+  while tainted). Checks run with `PYTHONDONTWRITEBYTECODE=1` so a same-size
+  fix within a second is not hidden by a stale .pyc.
 - **Verification** (`verify.py`, `Agent._verify_turn`): after a turn that
   changed something, the project's `verify.command` and/or the `verify` role
   model gate the answer; a complaint goes back as a `[verify]` user message,

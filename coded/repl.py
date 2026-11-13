@@ -152,7 +152,7 @@ SLASH_COMMANDS = {
     "/config": "Show which config files are loaded.",
     "/setup": "Configure models interactively (adds, tests, roles, pools, routing).",
     "/verify": "Run the project's checks (and the verify model) over the last change.",
-    "/memory": "Project memory: /memory [list|add <note>|forget <id>|clear].",
+    "/memory": "Project memory: /memory [list|search <words>|add <note>|forget <id>|clear].",
     "/refactor": "Find code-quality hot spots and improve a few safely: /refactor [path].",
     "/heal": "Self-healing: after each change run the project's tests and fix failures "
              "automatically: /heal [on|off].",
@@ -1201,6 +1201,13 @@ class Repl:
             for e in entries:
                 table.add_row(e.id, e.kind, e.text, e.source)
             ui.console.print(table)
+        elif action == "search":
+            hits = store.search(rest)
+            if not hits:
+                ui.info(f"No notes about '{rest}'." if rest else "Usage: /memory search <words>")
+                return
+            for e in hits:
+                ui.console.print(f"  [cyan]{e.id}[/cyan] ({e.kind}) {e.text}", highlight=False)
         elif action == "add":
             if not rest:
                 ui.error("Nothing to add: /memory add <note>  (prefix with "

@@ -162,8 +162,14 @@ def run_checks(command: str, cwd: str, timeout: float, limit: int = _OUTPUT_LIMI
     """Run the project's own check command. Its exit status is the verdict."""
     from coded.shells import run
 
+    import os
+
+    # No .pyc from the checks: a fix made within the same second and at the
+    # same size as the broken file would otherwise run the cached old code,
+    # and the next round would report a correct fix as still failing.
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     try:
-        proc = run(command, cwd=cwd, timeout=timeout)
+        proc = run(command, cwd=cwd, timeout=timeout, env=env)
     except Exception as exc:  # noqa: BLE001 - a timeout or a missing shell
         return CheckResult(False, "", command, error=f"{type(exc).__name__}: {exc}")
     out = ((proc.stdout or "") + (proc.stderr or "")).strip()

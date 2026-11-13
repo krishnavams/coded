@@ -218,6 +218,7 @@ class Agent:
         self._turn_changed_things = False
         self._turn_ran_shell = False
         self._verify_rounds = 0
+        self._fix_nudged = False
         self._last_request = str(user_message)
         if self.checkpoints is not None:
             self.checkpoints.begin(str(user_message)[:60])
@@ -591,9 +592,27 @@ class Agent:
                                   f"(round {self._verify_rounds}/{settings.max_rounds}).")
                 return review_feedback(notes)
             self._status_note(f"Second opinion: {verdict.lower()}.")
+        healed = checks is not None and checks.ok and self._verify_rounds > 1
         self._verify_rounds = 0  # this turn is clean; a later one starts fresh
         self._verify_prev_output = ""
+        # Verified: only a new change from here on needs checking again.
+        self._turn_changed_things = False
+        if healed:
+            return self._fix_note_nudge()
         return None
+
+    def _fix_note_nudge(self) -> Optional[str]:
+        """The checks failed earlier this turn and now pass: once, offer to keep
+        what was learned as a `fix` note (the user approves it, as any note).
+        Not while untrusted content is in context, which could plant one."""
+        if (self.registry.get("memory") is None or self.permissions.tainted
+                or getattr(self, "_fix_nudged", False)):
+            return None
+        self._fix_nudged = True
+        return ("[memory] The project's checks failed earlier in this turn and your change "
+                "fixed them. If the cause is likely to bite again in this repository, propose "
+                "one `fix` note with the memory tool (symptom → cause → fix, one sentence); "
+                "otherwise just give your answer. Do not change any more code for this.")
 
     def auto_check_command(self, ask: bool = False) -> Optional[str]:
         """The project's detected test command, once the user has approved it
