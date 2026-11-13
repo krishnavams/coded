@@ -364,6 +364,12 @@ config.example.json     # sample configuration
   text and the checkpoint group id); `turn_history()` drops marks whose message
   compaction or `/clear` removed, and `CheckpointManager.undo_since(id)` undoes
   that group and every later one, newest first.
+- **Paths outside the project ask first** (`Agent._outside_paths`,
+  `_SCOPED_TOOLS`): a path that resolves (symlinks included) outside the cwd,
+  `add_dirs` and the skill folders needs a yes — read-only tools get their own
+  prompt ("Read file outside the project"), mutating tools reuse theirs with
+  `request(always_ask=True)`, so accept-edits mode and sandbox auto-allow do
+  not skip it. `--yolo`, "always" and allow rules (`read(/path/*)`) answer it.
 - **`.codedignore`** is enforced in `Agent._run_tool` for path tools
   (`_PATH_TOOLS`, plus apply_patch's file headers via `_tool_paths`), in
   `search._walk` (grep/glob), `ls`, and `@mentions`/their completion. bash is

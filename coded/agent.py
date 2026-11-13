@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -35,6 +36,9 @@ _FILE_TOOLS = ("read", "edit", "multi_edit", "write")
 _PATH_TOOLS = ("read", "write", "edit", "multi_edit", "notebook_edit", "move", "delete", "ls",
                "view_image", "lsp")
 _CHECKED_TOOLS = ("write", "edit", "multi_edit", "apply_patch", "notebook_edit")
+# Tools whose paths must stay inside the project (cwd, add_dirs, skill folders)
+# unless the user agrees: reading ~/.ssh or ~/.aws needs a yes like an edit does.
+_SCOPED_TOOLS = _PATH_TOOLS + ("apply_patch", "grep", "glob")
 
 
 def _tool_paths(name: str, args: Dict[str, Any]) -> List[str]:
@@ -996,6 +1000,21 @@ class Agent:
                                                tc.id, tc.name)
                     return f"Error: {refusal(p)}", True, args
 
+        outside = self._outside_paths(tc.name, args) if tc.name in _SCOPED_TOOLS else []
+        if outside and not tool.requires_permission:
+            decision = self.permissions.request(
+                key=tc.name, title=f"{self._perm_title(tc.name)} outside the project",
+                detail="\n".join(outside), target=outside[0], always_ask=True)
+            if decision is Decision.DENY:
+                feedback = self.permissions.take_feedback()
+                if display:
+                    self._show_tool_result(f"Denied: {feedback}" if feedback else "Denied.",
+                                           True, tc.id, tc.name)
+                msg = (f"The user did not allow access outside the project ({outside[0]}). "
+                       "Stay inside the working directory, or ask the user to add the folder "
+                       "with --add-dir.")
+                return (msg + (f" They said: {feedback}" if feedback else ""), True, args)
+
         ctx = self._ctx()
 
         pre = self.hooks.run("PreToolUse", {"tool_input": args}, tool_name=tc.name)
@@ -1023,12 +1042,17 @@ class Agent:
                 auto = bool(tool.auto_allowed(args, ctx)) or pre.allow
             except Exception:  # noqa: BLE001
                 auto = pre.allow
+            title = self._perm_title(tc.name)
+            if outside:
+                title += " outside the project"
+                auto = False  # a sandbox or hook vouches for the project, not ~/.ssh
             decision = self.permissions.request(
                 key=tc.name,
-                title=self._perm_title(tc.name),
+                title=title,
                 detail=tool.permission_detail(args),
                 target=tool.permission_target(args),
                 auto_allowed=auto,
+                always_ask=bool(outside),
             )
             if decision is Decision.DENY:
                 feedback = self.permissions.take_feedback()
@@ -1122,6 +1146,42 @@ class Agent:
         return ("\n\n<system-reminder>Directory instructions that apply to files here "
                 f"(follow them):\n{text}</system-reminder>")
 
+    def _allowed_roots(self) -> List[str]:
+        roots = [self.cwd] + list(self.config.add_dirs or [])
+        try:
+            from coded.skills import skill_search_dirs
+
+            roots += [str(d) for d in skill_search_dirs(self.cwd)]
+        except Exception:  # noqa: BLE001 - skills are optional
+            pass
+        out = []
+        for r in roots:
+            try:
+                out.append(os.path.realpath(os.path.expanduser(str(r))))
+            except (OSError, ValueError):
+                continue
+        return out
+
+    def _outside_paths(self, name: str, args: Dict[str, Any]) -> List[str]:
+        """The paths of a tool call that resolve (symlinks too) outside the
+        project, its --add-dir folders and the skill folders."""
+        paths = _tool_paths(name, args)
+        if name in ("grep", "glob", "ls") and not paths:
+            return []
+        roots = self._allowed_roots()
+        out = []
+        for raw in paths:
+            full = os.path.expanduser(raw)
+            if not os.path.isabs(full):
+                full = os.path.join(self.cwd, full)
+            try:
+                real = os.path.realpath(full)
+            except (OSError, ValueError):
+                real = full
+            if not any(real == r or real.startswith(r.rstrip(os.sep) + os.sep) for r in roots):
+                out.append(real)
+        return out
+
     @staticmethod
     def _perm_title(tool_name: str) -> str:
         return {
@@ -1132,6 +1192,8 @@ class Agent:
             "apply_patch": "Apply patch",
             "notebook_edit": "Edit notebook",
             "external_agent": "Delegate to outside agent",
+            "read": "Read file", "ls": "List folder", "grep": "Search", "glob": "Find files",
+            "view_image": "View image", "lsp": "Code lookup",
         }.get(tool_name, f"Run {tool_name}")
 
     # -- sub-agents ---------------------------------------------------------

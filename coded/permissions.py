@@ -192,7 +192,7 @@ class PermissionManager:
         return any(_rule_matches(p, key, target) for p in patterns)
 
     def request(self, *, key: str, title: str, detail: str, target: Optional[str] = None,
-                auto_allowed: bool = False) -> Decision:
+                auto_allowed: bool = False, always_ask: bool = False) -> Decision:
         """Ask whether an action is permitted.
 
         key          — a stable identifier (usually the tool name), matched by rules.
@@ -200,6 +200,9 @@ class PermissionManager:
         detail       — the specifics shown in the prompt (command or file path).
         target       — the matchable string for allow/deny rules (defaults to detail).
         auto_allowed — the tool vouches the call is safe (e.g. it runs sandboxed).
+        always_ask   — accept-edits mode and auto_allowed do not skip the prompt
+                       (a path outside the project); --yolo, "always" and allow
+                       rules still answer it.
         """
         target = target if target is not None else detail
         self._local.feedback = ""
@@ -210,9 +213,9 @@ class PermissionManager:
             return Decision.DENY
         strict = self.tainted and self.injection_guard == "strict"
         if not strict:
-            if auto_allowed or self.auto_approve or key in self._always:
+            if (auto_allowed and not always_ask) or self.auto_approve or key in self._always:
                 return Decision.ALLOW
-            if self.accept_edits and key in EDIT_KEYS:
+            if self.accept_edits and key in EDIT_KEYS and not always_ask:
                 return Decision.ALLOW
             if self._matches(self.allow_rules, key, target):
                 return Decision.ALLOW

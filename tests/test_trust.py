@@ -87,3 +87,81 @@ def test_cli_asks_once_and_print_mode_notes_on_stderr(tmp_path, monkeypatch, cap
     cli._note_untrusted(info)
     captured = capsys.readouterr()
     assert "--trust-project" in captured.err and "--trust-project" not in captured.out
+
+
+# -- paths outside the project ask first (audit S-02) ----------------------------
+def _agent(tmp_path, perms, add_dirs=None):
+    from coded.agent import create_agent
+    from coded.config import Config, ModelConfig
+
+    cfg = Config()
+    m = ModelConfig(name="m", model="m", base_url="http://x/v1", api_key="k")
+    cfg.add_model(m, make_default=True)
+    cfg.add_dirs = add_dirs or []
+    return create_agent(model=m, config=cfg, cwd=str(tmp_path), permissions=perms,
+                        stream=False, verbose=False)
+
+
+def _call(name, args):
+    from coded.llm import ToolCall
+
+    return ToolCall(id="c1", name=name, arguments=json.dumps(args))
+
+
+def test_reading_outside_the_project_asks_and_can_be_refused(tmp_path):
+    from coded.permissions import PermissionManager
+
+    secret = tmp_path / "home" / ".ssh" / "id_rsa"
+    secret.parent.mkdir(parents=True)
+    secret.write_text("PRIVATE KEY")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "a.txt").write_text("inside")
+    asked = []
+    perms = PermissionManager()
+    perms.set_prompt(lambda title, detail: asked.append((title, detail)) or "no")
+    agent = _agent(proj, perms)
+    out, err, _ = agent._run_tool(_call("read", {"path": "a.txt"}), display=False)
+    assert "inside" in out and not err and not asked  # inside: no prompt
+    out, err, _ = agent._run_tool(_call("read", {"path": str(secret)}), display=False)
+    assert err and "PRIVATE KEY" not in out and "outside the project" in asked[0][0]
+    # A symlink inside the project that points out is outside too.
+    (proj / "link").symlink_to(secret)
+    out, err, _ = agent._run_tool(_call("read", {"path": "link"}), display=False)
+    assert err and len(asked) == 2
+    # Saying yes lets it through; an --add-dir folder never asks.
+    perms.set_prompt(lambda t, d: "yes")
+    out, err, _ = agent._run_tool(_call("read", {"path": str(secret)}), display=False)
+    assert "PRIVATE KEY" in out and not err
+    agent2 = _agent(proj, PermissionManager(), add_dirs=[str(secret.parent)])
+    out, err, _ = agent2._run_tool(_call("read", {"path": str(secret)}), display=False)
+    assert "PRIVATE KEY" in out
+
+
+def test_accept_edits_still_asks_for_a_write_outside_the_project(tmp_path):
+    from coded.permissions import PermissionManager
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    asked = []
+    perms = PermissionManager()
+    perms.accept_edits = True
+    perms.set_prompt(lambda title, detail: asked.append(title) or "no")
+    agent = _agent(proj, perms)
+    agent._run_tool(_call("write", {"path": "in.txt", "content": "x"}), display=False)
+    assert (proj / "in.txt").exists() and not asked
+    agent._run_tool(_call("write", {"path": str(tmp_path / "out.txt"), "content": "x"}),
+                    display=False)
+    assert not (tmp_path / "out.txt").exists() and "outside the project" in asked[0]
+
+
+def test_bundled_skill_files_stay_readable(tmp_path):
+    from coded.permissions import PermissionManager
+    from coded.skills import builtin_skills_dir
+
+    perms = PermissionManager()
+    perms.set_prompt(lambda t, d: "no")
+    agent = _agent(tmp_path, perms)
+    skill = next(builtin_skills_dir().glob("*/SKILL.md"))
+    out, err, _ = agent._run_tool(_call("read", {"path": str(skill)}), display=False)
+    assert not err
