@@ -346,6 +346,8 @@ class Chooser:
                 row.append("[✔] " if on else "[ ] ", style=ui.ACCENT2 if on else ui.MUTED)
             row.append(f"{other + 1}. ", style=accent if here else ui.MUTED)
             if self.texts[qi] or here:
+                if q.other_empty_ok and self.texts[qi]:
+                    row.append("No: ", style=f"bold {accent}" if here else "white")
                 row.append(self.texts[qi], style="white")
                 if here:
                     row.append("▌", style=accent)
