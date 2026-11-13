@@ -131,6 +131,8 @@ SLASH_COMMANDS = {
     "/tasks": "Running and finished sub-agents and shells (Ctrl+T): /tasks [id] | stop <id>.",
     "/btw": "Quick side question, answered from the conversation without tools; "
             "works mid-turn and is not added to the history: /btw <question>.",
+    "/mission": "Work on a goal unattended on its own branch, ending with a report: "
+                "/mission <goal> [--budget N] | --resume | --list.",
     "/agents": "List outside agents available to delegate to (external_agent tool).",
     "/commands": "List custom slash commands (.coded/commands/*.md).",
     "/plugins": "List installed plugins (manage with `coded plugin …`).",
@@ -552,6 +554,32 @@ class Repl:
             return
         ui.console.print(ui.btw_panel(question, answer))
 
+    def _cmd_mission(self, rest: str) -> None:
+        """/mission: the same as `coded mission`, run here with this session's
+        model and folder. It asks its questions now, then runs until done."""
+        import shlex
+
+        from coded.mission import mission_main
+
+        try:
+            argv = shlex.split(rest)
+        except ValueError:  # an apostrophe in the goal ("don't")
+            argv = rest.split()
+        if not argv:
+            ui.info('Usage: /mission <goal> [--budget N]  ·  /mission --resume  ·  '
+                    '/mission --list  (the same as `coded mission`)')
+            return
+        argv += ["--cwd", self.agent.cwd]
+        if self.agent.model.name in self.config.models and "-m" not in argv \
+                and "--model" not in argv:
+            argv += ["-m", self.agent.model.name]
+        try:
+            mission_main(argv)
+        except SystemExit:  # argparse: --help or a bad option already printed
+            pass
+        except KeyboardInterrupt:
+            ui.warn("Mission stopped. `/mission --resume` carries on.")
+
     def _slash_entries(self) -> list:
         """(name, description) of the built-in and custom slash commands."""
         entries = list(SLASH_COMMANDS.items())
@@ -758,6 +786,8 @@ class Repl:
             self._cmd_verify()
         elif cmd == "/memory":
             self._cmd_memory(args)
+        elif cmd == "/mission":
+            self._cmd_mission(text[len(cmd):].strip())
         elif cmd == "/heal":
             self._cmd_heal(args)
         elif cmd == "/lab":

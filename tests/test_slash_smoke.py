@@ -29,6 +29,7 @@ COMMANDS = [
     "/image pic.png describe it", "/image pic.png -- describe it", "/paste", "/checkpoints",
     "/skills", "/skill", "/skill planner", "/skill planner plan a thing", "/skill nope",
     "/planner", "/planner plan a [/x] thing",
+    "/mission", "/mission --list", "/mission --bogus-flag",
     "/review", "/review a.py", "/review --adversarial a.py", "/cost", "/rewind", "/rewind x",
     "/rewind 99", "/style", "/style concise", "/style nope", "/style off", "/style default",
     "/add-dir", "/add-dir .", "/add-dir nope", "/add-dir sub", "/context", "/export",
@@ -150,3 +151,14 @@ def test_a_skill_runs_as_its_own_slash_command(repl, monkeypatch):
     assert "for this task: write a mail" in sent[0]
     assert ("/planner", ) == tuple(n for n, _ in repl._slash_entries() if n == "/planner")
     assert repl._complete_midturn("/plann") == "/planner "
+
+
+def test_slash_mission_runs_a_mission_for_this_session(repl, monkeypatch):
+    import coded.mission as mission
+
+    seen = []
+    monkeypatch.setattr(mission, "mission_main", lambda argv: seen.append(argv) or 0)
+    repl._handle_slash("/mission don't break the [/x] build --budget 2")
+    argv = seen[0]
+    assert "don't" in argv and "--budget" in argv and "2" in argv
+    assert argv[argv.index("--cwd") + 1] == repl.agent.cwd

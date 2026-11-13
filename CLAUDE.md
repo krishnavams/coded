@@ -686,7 +686,8 @@ config.example.json     # sample configuration
   (the up-front answers, session id, branch, worktree, status), saved at each
   run; `--resume` reloads it (`main_root` finds the main checkout from inside
   a worktree) and the session's todos, so it skips planning. Never pushes or
-  merges.
+  merges. The REPL's `/mission …` calls `mission_main` with `--cwd` and the
+  session's model; the TUI only points to it (the questions need a terminal).
 - **Sessions survive a crash**: `Agent.on_step` (main agent only; the CLI sets
   it to autosave) runs after the user message, each tool step and the final
   answer, so a kill loses at most one step; the REPL also saves after Ctrl-C.

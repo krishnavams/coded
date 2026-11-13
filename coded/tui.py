@@ -507,6 +507,11 @@ class CodedTUI(App):
         if text.split()[0] == "/dashboard":
             self.push_screen(DashboardModal(self))
             return
+        if text.split()[0] == "/mission":
+            self._mount(StatusNote("Missions ask a few questions in the terminal first: run "
+                                   "/mission in the REPL (coded without --tui) or `coded "
+                                   "mission \"<goal>\"` in a terminal."))
+            return
         if text.split()[0] == "/twin":
             from coded import twin
 

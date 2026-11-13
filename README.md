@@ -441,6 +441,7 @@ pip install -e '.[tui]'      # adds Textual
 | `/plan [request]` | Toggle plan mode (read-only until a plan is approved) |
 | `/todos` | Show the agent's task list |
 | `/shells [kill <id>]` | List or stop background shells |
+| `/mission <goal>` | Start an unattended [mission](#missions-work-while-youre-away) with this session's model (`/mission --resume`, `/mission --list`) |
 | `/btw <question>` | A quick side question, answered from the conversation so far (no tools). Works **while the agent is working**, without interrupting it, and neither the question nor the answer is added to the conversation |
 | `/tasks [id \| stop <id>]` | Sub-agents and background shells: list, show one's steps and report, or stop one (also **Ctrl+T**) |
 | `/agents` | List outside agents available for delegation |
@@ -529,6 +530,9 @@ elsewhere); `"notify": "off"` turns it off.
 coded mission "add CSV export to the reports page" --budget 2.00
 coded mission "fix the flaky date tests" --notify-url https://ntfy.sh/my-topic
 ```
+
+Inside coded, `/mission <goal>` (also `/mission --resume`, `/mission --list`)
+does the same with the session's model and folder.
 
 A mission asks everything up front — trust this project? run its checks
 (`npm test`, `pytest`, …) after each change? run shell commands without

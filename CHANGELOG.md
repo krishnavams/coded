@@ -14,6 +14,8 @@
   list before any change is allowed. `coded mission --resume [id]` carries on
   with a mission that was killed (sleep, restart, closed terminal) and still
   writes the report; `coded mission --list` shows them.
+- `/mission <goal>` in the REPL starts a mission with the session's model
+  and folder (`/mission --resume`, `/mission --list`).
 
 ### Changed
 - The REPL spinner cycles through coded's own words while the model works
