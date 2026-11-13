@@ -849,16 +849,17 @@ class Agent:
             parts = [md]
             if show_reasoning and thoughts:
                 parts.insert(0, Text("".join(thoughts), style=f"{ui.MUTED} italic"))
+            body = ui.answer_block(parts[0] if len(parts) == 1 else Group(*parts))
             if dock is not None and not final:
-                parts.append(Text(""))
-                parts.append(dock)
-            return parts[0] if len(parts) == 1 else Group(*parts)
+                return Group(body, Text(""), dock)
+            return body
 
         def begin():
             nonlocal started
             if not started:
                 status.stop()
                 if live is not None:
+                    ui.answer_gap()
                     live.start()
                 started = True
 
@@ -889,8 +890,10 @@ class Agent:
             if started and live is not None:
                 live.update(render(final=True))
                 live.stop()
+                ui.mark_printed()
             elif started:
                 turn_dock.set_body(None)
+                ui.answer_gap()
                 ui.console.print(render(final=True))
             else:
                 status.stop()

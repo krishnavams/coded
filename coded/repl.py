@@ -309,6 +309,7 @@ class Repl:
         # Wire the permission prompt into the manager.
         self.agent.permissions.set_prompt(self._permission_prompt)
         self.agent.permissions.set_questions(self._questions_prompt)
+        ui.set_answer_bullets(True)  # the transcript layout: `● ` before answers
         # Background tasks: the REPL wakes the agent with their reports, so a
         # turn does not have to wait for them.
         self.agent.wait_for_background = False
@@ -393,7 +394,7 @@ class Repl:
         if self._keys_ready():
             self._choose(chooser)
             return choice.permission_answer(chooser)
-        ui.console.print()
+        ui.gap()
         ui.console.print(chooser.render(line_mode=True))
         while True:
             line = self._read_line("Answer (1-3):")
@@ -422,7 +423,7 @@ class Repl:
             self._choose(chooser)
         else:
             while not chooser.done:
-                ui.console.print()
+                ui.gap()
                 ui.console.print(chooser.render(line_mode=True))
                 line = self._read_line("Answer:")
                 if line is None:

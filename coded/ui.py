@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from rich.box import ROUNDED
 from rich.console import Console, Group
+from rich.control import Control
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
@@ -31,8 +32,71 @@ _THEME = Theme({
     "markdown.link_url": ACCENT, "markdown.item.bullet": ACCENT,
     "markdown.item.number": ACCENT, "markdown.block_quote": MUTED,
 })
-console = Console(theme=_THEME)
+class TranscriptConsole(Console):
+    """A Console that remembers whether the last row it printed was blank, so
+    `gap()` can keep exactly one empty line between blocks however many
+    `console.print()` calls (notes, panels, prompts) happen in between. A
+    Live's redraw (`print(Control())`) is not content and does not count."""
+
+    last_blank = True
+
+    def print(self, *objects, **kwargs):  # noqa: A003 - Console API
+        super().print(*objects, **kwargs)
+        if objects and all(isinstance(o, Control) for o in objects):
+            return
+        self.last_blank = all(
+            (isinstance(o, str) and not o.strip()) or (isinstance(o, Text) and not o.plain.strip())
+            for o in objects)
+
+
+def make_console(**kwargs) -> TranscriptConsole:
+    return TranscriptConsole(theme=_THEME, **kwargs)
+
+
+console = make_console()
 _err_console = Console(stderr=True, theme=_THEME)
+
+# The REPL's transcript layout: assistant text gets a `● ` bullet with a
+# hanging indent and its own gap. Off elsewhere (`-p` output stays plain).
+_answer_bullets = False
+
+
+def set_answer_bullets(on: bool) -> None:
+    global _answer_bullets
+    _answer_bullets = bool(on)
+
+
+def gap() -> None:
+    """One blank line before a new block, never two. A console that does not
+    track its last row (a plain Console in a test) always gets the line."""
+    if getattr(console, "last_blank", False):
+        return
+    console.print()
+
+
+def mark_printed() -> None:
+    """Something was drawn outside `console.print` (a Live's final frame)."""
+    if hasattr(console, "last_blank"):
+        console.last_blank = False
+
+
+def answer_block(renderable):
+    """The assistant's text, as the REPL shows it: `● ` then the text, with
+    wrapped lines indented under it."""
+    if not _answer_bullets:
+        return renderable
+    from rich.table import Table
+
+    grid = Table.grid(padding=0, expand=True)
+    grid.add_column(width=2, no_wrap=True)
+    grid.add_column(ratio=1)
+    grid.add_row(Text("● ", style="bold white"), renderable)
+    return grid
+
+
+def answer_gap() -> None:
+    if _answer_bullets:
+        gap()
 
 
 def set_quiet(enabled: bool) -> None:
@@ -341,7 +405,8 @@ def echo_user(text: str) -> None:
 
 def assistant_markdown(text: str) -> None:
     if text.strip():
-        console.print(Markdown(text))
+        answer_gap()
+        console.print(answer_block(Markdown(text)))
 
 
 def _home_short(path: str) -> str:
@@ -450,7 +515,7 @@ def tool_call_text(name: str, args: dict, cwd: str = "") -> Text:
 def tool_call(name: str, args: dict, cwd: str = "") -> None:
     global _last_call
     _last_call = tool_call_text(name, args, cwd)
-    console.print()
+    gap()
     console.print(_last_call)
 
 
@@ -739,10 +804,14 @@ def diff_text(text: str, max_lines: int = _MAX_DIFF_LINES) -> Text:
             old, new = int(m.group(1)), int(m.group(2))
             continue
         if line.startswith("+"):
-            body.append(f"     {new:>4} + {line[1:]}\n", style="#86efac on #12301f")
+            body.append("     ")  # the indent stays unshaded, under the tool call
+            body.append(f"{new:>4} + {line[1:]}", style="#86efac on #12301f")
+            body.append("\n")
             new += 1
         elif line.startswith("-"):
-            body.append(f"     {old:>4} - {line[1:]}\n", style="#fca5a5 on #3a1620")
+            body.append("     ")
+            body.append(f"{old:>4} - {line[1:]}", style="#fca5a5 on #3a1620")
+            body.append("\n")
             old += 1
         else:
             body.append(f"     {new:>4}   {line[1:]}\n", style=MUTED)

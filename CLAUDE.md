@@ -412,6 +412,14 @@ config.example.json     # sample configuration
   with results under `⎿` (`ui.tool_call_text` / `tool_result_text` / `diff_text`
   / `welcome`); the REPL and the TUI both render through these so they match.
   A new tool gets a readable title by adding it to `ui._TOOL_TITLES`.
+- **Transcript spacing** (REPL): every block (tool call, assistant text,
+  line-mode prompt) starts with `ui.gap()`, which prints a blank line only if
+  the last row was not blank — `ui.console` is a `TranscriptConsole` that
+  tracks this for every `print` (a Live's `Control` redraw does not count), so
+  there is exactly one empty line between blocks. Never start a block with a
+  bare `console.print()`. Assistant text gets a `● ` with a hanging indent
+  (`ui.answer_block`) only when the REPL turns it on (`set_answer_bullets`), so
+  `-p` output stays plain.
 - **UI**: use the helpers in `coded/ui.py` and its single shared `console`.
   Displayed tool output is truncated for readability; the **model** always
   receives the full tool result (truncation is display-only). Colors come from
@@ -605,8 +613,9 @@ config.example.json     # sample configuration
   transcript. ("Tasks" in the sidebar is the todo list.) Control keys mid-turn
   (`typeahead.CTRL_B/O/T`) go to `TypeAhead(keys=…)`; the POSIX reader clears
   IEXTEN so ^O/^T reach it. **Ctrl+O** flips `ui.set_expanded`: `ui.tool_result`
-  then prints whole results and `show_last_cut` re-prints the newest shortened
-  one. Folded output is 3 lines (`_MAX_RESULT_LINES`), blank runs squeezed and
+  then prints whole results and `show_last_cut` re-prints every result
+  shortened this turn (`_cuts`, cleared by `reset_cuts` at each turn), each
+  under its tool call. Folded output is 3 lines (`_MAX_RESULT_LINES`), blank runs squeezed and
   long lines cut to one terminal row; the TUI's `ToolResult` folds the same way
   and a click (or Ctrl+O, `action_toggle_output`, for all) expands it.
 - **Queued messages** (`TypeAhead._queued`, a deque): **↑** mid-turn

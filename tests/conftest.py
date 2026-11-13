@@ -57,6 +57,8 @@ class _Handler(BaseHTTPRequestHandler):
                 sse({**base, "choices": [{"index": 0, "delta": {"reasoning_content": piece},
                                           "finish_reason": None}]})
         if message.get("tool_calls"):
+            for piece in _chunks(message.get("content") or ""):
+                sse({**base, "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}]})
             for idx, tc in enumerate(message["tool_calls"]):
                 sse({**base, "choices": [{"index": 0, "delta": {"tool_calls": [
                     {"index": idx, "id": tc["id"], "type": "function",
@@ -105,6 +107,7 @@ def _loud_ui():
 
     yield
     ui.set_quiet(False)
+    ui.set_answer_bullets(False)
 
 
 @pytest.fixture(autouse=True)
