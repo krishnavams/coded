@@ -269,8 +269,12 @@ def thinking(text: str = "Thinking", tasks: Optional[list] = None):
 
 # Truncation limits for displaying tool activity (the model still sees full output).
 _MAX_ARG_LEN = 300
-_MAX_RESULT_LINES = 12
-_MAX_RESULT_CHARS = 1600
+# Folded tool output (as Claude Code shows it): a few lines, then
+# "… +N lines (ctrl+o to expand)". Long lines are cut so they cannot wrap
+# into many rows. The model always gets the whole result.
+_MAX_RESULT_LINES = 3
+_MAX_RESULT_CHARS = 600
+_MAX_LINE_CHARS = 160
 
 
 def _short_path(cwd: str, width: int = 48) -> str:
@@ -450,10 +454,11 @@ def tool_call(name: str, args: dict, cwd: str = "") -> None:
 
 def tool_result_text(content: str, is_error: bool = False, name: str = "",
                      cwd: str = "", max_lines: int = 0, full: bool = False,
-                     expand_hint: bool = False) -> Text:
+                     expand_hint=False) -> Text:
     """Tool output under a `⎿` elbow, shortened for display (the model sees it all).
 
-    `full` shows every line (Ctrl+O); `expand_hint` says how to get there."""
+    `full` shows every line (Ctrl+O); `expand_hint` says how to get there
+    (True: the REPL's "(ctrl+o to expand)", or the hint text to use)."""
     max_lines = max_lines or _MAX_RESULT_LINES
     if cwd:
         content = content.replace(cwd.rstrip("/") + "/", "")
@@ -464,11 +469,14 @@ def tool_result_text(content: str, is_error: bool = False, name: str = "",
         # The list itself is already on screen (panel / dock); keep the
         # headline and any nudge the tool gave the model.
         lines = [lines[0].rstrip(":")] + [ln for ln in lines[1:] if ln.startswith("Note:")]
-    shown = lines if full else lines[:max_lines]
+    lines = _squeeze_blank(lines)
+    shown = lines if full else [_cut_line(ln) for ln in lines[:max_lines]]
     text = "\n".join(shown)
     cut_chars = not full and len(text) > _MAX_RESULT_CHARS
     if cut_chars:
         text = text[:_MAX_RESULT_CHARS] + "…"
+    cut_chars = cut_chars or (not full and any(len(ln) > _line_limit()
+                                               for ln in lines[:max_lines]))
     if not text.strip():
         text = "(no output)"
     style = ERR if is_error else MUTED
@@ -477,12 +485,39 @@ def tool_result_text(content: str, is_error: bool = False, name: str = "",
         body.append("  ⎿  " if i == 0 else "     ", style=style)
         body.append(line + "\n", style=style)
     extra = len(lines) - len(shown)
-    hint = " (ctrl+o to expand)" if expand_hint else ""
+    hint = (expand_hint if isinstance(expand_hint, str) else " (ctrl+o to expand)") \
+        if expand_hint else ""
     if extra > 0:
         body.append(f"     … +{extra} lines{hint}\n", style=f"{MUTED} italic")
     elif cut_chars and hint:
         body.append(f"     …{hint}\n", style=f"{MUTED} italic")
     return body
+
+
+def _squeeze_blank(lines: list) -> list:
+    """No blank lines at the ends, and at most one in a row (display only)."""
+    out: list = []
+    for ln in lines:
+        if not ln.strip() and (not out or not out[-1].strip()):
+            continue
+        out.append(ln.rstrip())
+    while out and not out[-1].strip():
+        out.pop()
+    return out
+
+
+def _line_limit() -> int:
+    """Folded lines fit one terminal row (after the 5-column `⎿` indent)."""
+    try:
+        width = int(console.width) - 6
+    except Exception:  # noqa: BLE001
+        width = _MAX_LINE_CHARS
+    return max(40, min(_MAX_LINE_CHARS, width))
+
+
+def _cut_line(line: str) -> str:
+    limit = _line_limit()
+    return line if len(line) <= limit else line[:limit - 1] + "…"
 
 
 def tool_result(content: str, is_error: bool = False, name: str = "", cwd: str = "") -> None:

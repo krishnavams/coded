@@ -144,7 +144,7 @@ def test_tool_result_display_is_short_and_project_relative():
     out = ui.tool_result_text("Edited /proj/app.py (1 replacement(s)).", cwd="/proj").plain
     assert "Edited app.py" in out and "/proj" not in out
     long = ui.tool_result_text("\n".join(map(str, range(40)))).plain
-    assert "… +28 lines" in long
+    assert "… +37 lines" in long
 
 
 def test_diff_display_has_line_numbers_and_no_file_headers():
@@ -192,3 +192,11 @@ def test_todo_write_result_does_not_repeat_the_list():
     assert "one\n" not in shown.replace("Note: keep only one", "") and "two" not in shown
     # Errors are shown in full.
     assert "two" in ui.tool_result_text(content, is_error=True, name="todo_write").plain
+
+
+def test_folded_output_drops_blank_lines_and_cuts_long_ones():
+    out = ui.tool_result_text("\n\nfirst\n\n\n\nsecond\n\n", expand_hint=True).plain
+    assert [ln.rstrip() for ln in out.splitlines()] == ["  ⎿  first", "", "     second"]
+    long = ui.tool_result_text("x" * 500, expand_hint=True).plain
+    assert "x" * 200 not in long and "(ctrl+o to expand)" in long
+    assert "x" * 500 in ui.tool_result_text("x" * 500, full=True).plain

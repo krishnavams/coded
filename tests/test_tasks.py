@@ -221,7 +221,7 @@ def test_ctrl_o_expands_and_collapses_tool_output(monkeypatch):
     long = "\n".join(f"line {i}" for i in range(40))
     ui.tool_result(long, name="bash")
     out = con.export_text()
-    assert "+28 lines (ctrl+o to expand)" in out and "line 39" not in out
+    assert "+37 lines (ctrl+o to expand)" in out and "line 39" not in out
     ui.set_expanded(True)
     assert ui.show_last_cut()
     assert "line 39" in con.export_text()

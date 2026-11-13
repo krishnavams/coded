@@ -64,10 +64,39 @@ class ToolCall(Static):
 
 
 class ToolResult(Static):
-    def __init__(self, content: str, is_error: bool, name: str = "", cwd: str = ""):
-        body = ui.tool_result_text(content, is_error, name, cwd)
+    """A tool result, folded to a few lines; a click (or Ctrl+O for all of
+    them) shows it whole and folds it again."""
+
+    _HINT = " (click or ctrl+o to expand)"
+
+    def __init__(self, content: str, is_error: bool, name: str = "", cwd: str = "",
+                 expanded: bool = False):
+        self._args = (content, is_error, name, cwd)
+        folded = ui.tool_result_text(content, is_error, name, cwd, expand_hint=self._HINT)
+        self.foldable = self._HINT in folded.plain
+        self.expanded = expanded and self.foldable
+        classes = "toolresult error" if is_error else "toolresult"
+        if self.foldable:
+            classes += " foldable"
+        super().__init__(self._body(), classes=classes)
+
+    def _body(self):
+        content, is_error, name, cwd = self._args
+        if self.expanded:
+            body = ui.tool_result_text(content, is_error, name, cwd, full=True)
+            body.append("     (click or ctrl+o to collapse)\n", style=f"{ui.MUTED} italic")
+        else:
+            body = ui.tool_result_text(content, is_error, name, cwd, expand_hint=self._HINT)
         body.rstrip()
-        super().__init__(body, classes="toolresult error" if is_error else "toolresult")
+        return body
+
+    def set_expanded(self, on: bool) -> None:
+        if self.foldable and on != self.expanded:
+            self.expanded = on
+            self.update(self._body())
+
+    def on_click(self) -> None:
+        self.set_expanded(not self.expanded)
 
 
 class DiffView(Static):
@@ -169,6 +198,7 @@ class CodedTUI(App):
     .toolcall {{ margin: 1 0 0 0; }}
     .toolresult {{ color: {ui.MUTED}; }}
     .toolresult.error {{ color: {ui.ERR}; }}
+    .toolresult.foldable:hover {{ background: #181426; }}
     .statusnote {{ margin: 1 0 0 0; }}
     #main {{ height: 1fr; }}
     #left {{ width: 1fr; }}
@@ -192,6 +222,7 @@ class CodedTUI(App):
         Binding("ctrl+u", "undo", "Undo edits"),
         Binding("shift+tab", "toggle_plan", "Mode", priority=True),
         Binding("ctrl+b", "toggle_sidebar", "Side panel", priority=True),
+        Binding("ctrl+o", "toggle_output", "Expand output", priority=True),
         Binding("up", "edit_queued", "Edit queued", show=False),
     ]
 
@@ -209,6 +240,7 @@ class CodedTUI(App):
         self._thought: Optional[Static] = None
         self._thought_buf = ""
         self._queued: list = []  # messages typed while a turn was running
+        self._expanded = False  # Ctrl+O: tool results shown whole
         self._panel_choice: Optional[bool] = None  # None: follow the terminal width
         self._changes: list = []  # sidebar.FileChange, recomputed after tool results
         from coded import notify
@@ -347,6 +379,12 @@ class CodedTUI(App):
 
     def on_resize(self, event) -> None:
         self._apply_panel()
+
+    def action_toggle_output(self) -> None:
+        """Ctrl+O: show every tool result whole, or fold them all again."""
+        self._expanded = not self._expanded
+        for widget in self.query(ToolResult):
+            widget.set_expanded(self._expanded)
 
     def action_toggle_sidebar(self) -> None:
         self._panel_choice = not self.panel_open
@@ -510,7 +548,8 @@ class CodedTUI(App):
             self._mount(ToolCall(ev["name"], ev.get("args", {}), self.agent.cwd))
         elif kind == "tool_result":
             self._mount(ToolResult(ev.get("content", ""), ev.get("is_error", False),
-                                   ev.get("name", ""), self.agent.cwd))
+                                   ev.get("name", ""), self.agent.cwd,
+                                   expanded=self._expanded))
         elif kind == "diff":
             self._mount(DiffView(ev.get("diff", "")))
         elif kind == "status":

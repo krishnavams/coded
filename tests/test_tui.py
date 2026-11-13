@@ -157,3 +157,27 @@ async def test_tui_question_modal_answers_ask_user(tmp_path, fake_server):
             await pilot.pause()
     tool_msg = next(m for m in requests[-1]["messages"] if m["role"] == "tool")
     assert tool_msg["content"] == "The user answered: SQLite"
+
+
+@pytest.mark.asyncio
+async def test_tui_tool_results_fold_and_expand_by_click_or_ctrl_o(tmp_path, fake_server):
+    from coded.tui import ToolResult
+
+    with fake_server(lambda body: ({"role": "assistant", "content": "ok"}, {})) as server:
+        app = CodedTUI(_agent(tmp_path, server.base_url))
+        async with app.run_test() as pilot:
+            long = "\n".join(f"line {i}" for i in range(20))
+            widget = ToolResult(long, False, "bash")
+            short = ToolResult("done", False, "bash")
+            await app.query_one("#transcript").mount_all([widget, short])
+            await pilot.pause()
+            assert widget.foldable and not short.foldable
+            assert "line 19" not in str(widget.render()) and "+17 lines" in str(widget.render())
+            await pilot.click(widget)
+            assert widget.expanded and "line 19" in str(widget.render())
+            await pilot.click(widget)
+            assert not widget.expanded
+            await pilot.press("ctrl+o")
+            assert widget.expanded and not short.expanded
+            await pilot.press("ctrl+o")
+            assert not widget.expanded
