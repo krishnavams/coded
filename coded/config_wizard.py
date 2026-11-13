@@ -150,6 +150,8 @@ def write_file(path: Path, data: Dict[str, Any], *, secret: Optional[bool] = Non
     the edit was only a rename. An existing file keeps the mode it has.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    project_root = _project_root_of(path)
+    trusted_before = project_root is not None and _trusted_now(project_root)
     secret = holds_a_key(data) if secret is None else (secret or holds_a_key(data))
     mode = None
     try:
@@ -163,6 +165,33 @@ def write_file(path: Path, data: Dict[str, Any], *, secret: Optional[bool] = Non
     except OSError:  # a no-op on Windows
         pass
     os.replace(tmp, path)
+    if trusted_before:
+        # The user just confirmed exactly these settings: keep the project
+        # trusted, so what they added is not dropped as untrusted on reload.
+        # A project that was not trusted stays that way (its other settings
+        # were never reviewed) and is asked about at the next start.
+        from coded import trust
+        from coded.config import project_fingerprint
+
+        fp = project_fingerprint(project_root)
+        if fp:
+            trust.remember(project_root, fp)
+
+
+def _project_root_of(path: Path) -> Optional[str]:
+    """The project folder when `path` is its .coded/config.json, else None."""
+    path = Path(path)
+    if path.name == "config.json" and path.parent.name == ".coded":
+        return str(path.parent.parent)
+    return None
+
+
+def _trusted_now(root: str) -> bool:
+    from coded import trust
+    from coded.config import project_fingerprint
+
+    fp = project_fingerprint(root)
+    return fp is None or trust.is_trusted(root, fp) or trust.env_trusts()
 
 
 # ---------------------------------------------------------------------------

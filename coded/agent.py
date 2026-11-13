@@ -565,6 +565,13 @@ class Agent:
             self._status_note(f"Verifying: {command}")
             checks = run_checks(command, self.cwd, settings.timeout,
                                 limit=self.limits.tool_result_chars)
+            if checks.ok and command != settings.command:
+                # The import graph cannot see fixtures, plugins or data files:
+                # the affected tests passing is a fast first answer, not a pass.
+                self._status_note(f"Affected tests passed; running all: {settings.command}")
+                command = settings.command
+                checks = run_checks(command, self.cwd, settings.timeout,
+                                    limit=self.limits.tool_result_chars)
             if not checks.ok:
                 from coded.verify import same_failure, stalled_note
 
@@ -605,8 +612,13 @@ class Agent:
         """The checks failed earlier this turn and now pass: once, offer to keep
         what was learned as a `fix` note (the user approves it, as any note).
         Not while untrusted content is in context, which could plant one."""
+        from coded.tools.base import tool_disabled
+
         if (self.registry.get("memory") is None or self.permissions.tainted
-                or getattr(self, "_fix_nudged", False)):
+                or getattr(self, "_fix_nudged", False)
+                or tool_disabled("memory", self.config.disabled_tools_for(self.model))
+                # Nobody could approve the note: don't spend a call on a denial.
+                or not (self.permissions.interactive or self.permissions.auto_approve)):
             return None
         self._fix_nudged = True
         return ("[memory] The project's checks failed earlier in this turn and your change "

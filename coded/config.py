@@ -507,6 +507,29 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
             setattr(cfg, key, data[key])
 
 
+def _project_sensitive(cwd: Optional[str], current_guard: str = "warn",
+                       plugins: bool = True) -> tuple:
+    """(data, safe, sensitive) of ./.coded/config.json, project plugins included."""
+    from coded import trust
+
+    data = _load_json(project_config_path(cwd))
+    safe, sensitive = trust.split(data, current_guard)
+    if plugins:
+        contrib = trust.project_plugin_contributions(cwd)
+        if contrib:
+            sensitive = dict(sensitive, plugins=contrib)
+    return data, safe, sensitive
+
+
+def project_fingerprint(cwd: Optional[str]) -> Optional[str]:
+    """The trust fingerprint of this folder's sensitive project settings, or
+    None when it has none (nothing to trust)."""
+    from coded import trust
+
+    _, _, sensitive = _project_sensitive(cwd)
+    return trust.fingerprint(sensitive) if sensitive else None
+
+
 def _merge_project(cfg: Config, cwd: Optional[str], trust_project: Optional[bool],
                    plugins: bool) -> bool:
     """Merge ./.coded/config.json. Its sensitive settings (and project-scope
@@ -516,12 +539,7 @@ def _merge_project(cfg: Config, cwd: Optional[str], trust_project: Optional[bool
     from coded import trust
 
     path = project_config_path(cwd)
-    data = _load_json(path)
-    safe, sensitive = trust.split(data, cfg.injection_guard)
-    if plugins:
-        contrib = trust.project_plugin_contributions(cwd)
-        if contrib:
-            sensitive = dict(sensitive, plugins=contrib)
+    data, safe, sensitive = _project_sensitive(cwd, cfg.injection_guard, plugins)
     if not sensitive:
         _merge_into(cfg, data, path)
         return True

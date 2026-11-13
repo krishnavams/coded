@@ -143,3 +143,33 @@ def test_the_same_failure_twice_stops_early(tmp_path, fake_server):
         agent.run("add it")
     assert len(rounds) == 1  # sent back once; the identical failure ended the loop
     assert any("failed the same way" in n for n in notes)
+
+
+def test_a_narrowed_pass_is_confirmed_by_the_full_suite(tmp_path, fake_server):
+    """A test that reaches the changed code only through a conftest fixture is
+    invisible to the import graph; the full run must still catch it."""
+    _heal_project(tmp_path)
+    (tmp_path / "tests" / "conftest.py").write_text(
+        "import sys, pathlib, pytest\nsys.path.insert(0, str(pathlib.Path(__file__).parent.parent))\n"
+        "@pytest.fixture\ndef doubled():\n    import calc\n    return calc.double(2)\n")
+    (tmp_path / "tests" / "test_fixture.py").write_text(
+        "def test_double(doubled):\n    assert doubled == 4\n")
+    trust.approve_check(str(tmp_path), _PYTEST)
+    sent_back = []
+
+    def script(body):
+        last = body["messages"][-1]
+        if last["role"] == "user" and "[verify]" in str(last["content"]):
+            sent_back.append(last["content"])
+            return _write("calc.py", "def add(a, b):\n    return a + b\n\n"
+                          "def double(x):\n    return x * 2\n", "fix"), _U
+        if any(m["role"] == "tool" for m in body["messages"]):
+            return {"role": "assistant", "content": "Done."}, _U
+        return _write("calc.py", "def add(a, b):\n    return a + b\n\n"
+                      "def double(x):\n    return x + 2 + 1\n", "bug"), _U
+
+    with fake_server(script) as server:
+        agent = _agent(tmp_path, server.base_url, PermissionManager(auto_approve=True),
+                       {"auto": True})
+        agent.run("add double()")
+    assert len(sent_back) == 1 and "test_double" in sent_back[0]

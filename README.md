@@ -60,6 +60,23 @@ runtime.
   optional OpenTelemetry export.
 - **Prompt-injection guard** — web/PR/MCP output is fenced as untrusted, and
   risky actions after reading it are flagged (or always confirmed, in strict mode).
+- **Project trust** — a repository's own `.coded/config.json` cannot run hooks
+  or MCP servers, point a model at another endpoint, or loosen permissions
+  until you trust it: coded asks once at start and lists every command and
+  endpoint (again if they change). Non-interactive runs ignore those settings
+  unless `--trust-project` or `CODED_TRUST_PROJECT=1`. Reading or writing
+  outside the project, and `web_fetch`/`browser` requests to localhost, the
+  local network or `file://`, ask first.
+- **Self-healing** — `/heal` (or `"verify": {"auto": true}`) runs the project's
+  own tests after each change — detected: npm, cargo, go, pytest, make — and
+  sends failures back to fix; the affected tests run first, an identical
+  failure twice stops the loop, and it asks before running the repo's code.
+- **Dependency map** — `repo_map` answers `imports`, `dependents`, `impact`
+  (what a change can affect, and which tests to run) and `cycles` for Python
+  and JS/TS.
+- **Refactor finder** — `/refactor [path]`: a scan for long, branchy or deeply
+  nested functions and copy-pasted blocks (`repo_map` `health`), then small,
+  tested, behavior-preserving fixes by the built-in `refactor` skill.
 - **Editor & agent integration** — `coded acp` speaks the Agent Client Protocol
   (Zed, JetBrains, …); `coded mcp-serve` exposes coded as an MCP server.
 - **Semantic code search** — build an embedding index (`coded index`) and let
@@ -84,7 +101,8 @@ runtime.
   for large searches or multi-step subtasks.
 - **Skills & agent roles** — Claude Code-style `SKILL.md` instruction packs with
   progressive disclosure; the agent auto-invokes them when a task matches.
-  Ships with built-in `planner`, `reviewer`, `debugger`, `qa`, and `security` roles.
+  Ships with built-in `planner`, `reviewer`, `debugger`, `qa`, `security` and
+  `refactor` roles.
 - **MCP client** — connect Model Context Protocol servers and expose their tools
   to the agent (optional).
 - **Context auto-compaction** — long sessions are summarized automatically as

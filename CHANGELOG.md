@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### Security
+- **Project trust.** A repository's `.coded/config.json` (and project-scope
+  plugins) no longer apply hooks, MCP servers, outside agents, model endpoints,
+  allow rules, auto-approve, sandbox or similar settings until you trust the
+  project; the REPL/TUI ask once and remember the answer until those settings
+  change. `-p`, `coded review`, `coded commit`, ACP and `mcp-serve` ignore them
+  (note on stderr) unless `--trust-project` / `CODED_TRUST_PROJECT=1`.
+  **If you keep hooks or endpoints in a project config, you will be asked once.**
+- Permission rule lists add up across config files; a later file can no longer
+  drop a deny rule.
+- Reading, listing or writing outside the project (or `--add-dir` folders)
+  asks first, symlinks included; accept-edits mode does not skip it.
+- `web_fetch` and `browser` ask before localhost, private/link-local/metadata
+  addresses and `file://` outside the project, including after redirects.
+- `coded commit` no longer auto-approves every tool (git only, with `--commit`,
+  deny rules respected); `coded review` honours `injection_guard`.
+- `apply_patch` refuses to move onto an existing file; a timed-out MCP call is
+  cancelled. The review workflow installs coded from the base branch and no
+  longer uses `--yolo`.
+
+### New
+- `/heal` self-healing loop, `/refactor`, `repo_map` operations `imports`,
+  `dependents`, `impact`, `cycles` and `health`, `fix` memory notes and
+  `/memory search`.
+- Claude Code-style prompts: arrow-key permission prompt with "No, and tell
+  coded what to do differently", `ask_user` with up to four questions and a
+  review page; folded tool output (ctrl+o / click to expand); new wordmark.
+
 ## 0.2.0
 
 ### Sub-agents as tasks
