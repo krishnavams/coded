@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
+from rich.markup import escape
+
 from coded import __version__, ui
 from coded.agent import create_agent
 from coded.config import (
@@ -39,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Subcommands: `coded config setup|init|path|show`, `coded models [--check]`, "
                "`coded skill install|list|remove|update|info`, `coded prompts list|show|init`, "
                "`coded plugin install|list|remove|update|enable|disable|info|search|marketplace`, "
-               "`coded review`, `coded commit`, `coded lab`, `coded index`, `coded sessions`, "
+               "`coded mission \"<goal>\"` (unattended, on a branch), `coded review`, `coded commit`, `coded lab`, `coded index`, `coded sessions`, "
                "`coded doctor`, "
                "`coded import` (MCP servers from other agents), "
                "`coded acp` (Agent Client Protocol server), `coded mcp-serve` (MCP server).",
@@ -316,8 +318,8 @@ def _handle_agents_command(argv: List[str]) -> int:
                 detail += f"\n{'✓' if ok else '✗'} {out}"
             if s.state == "detection off":
                 detail += "\nadd it under `external_agents` to offer it"
-        table.add_row(s.name + (" *" if s.configured else ""), marks.get(s.state, s.state),
-                      oss, detail)
+        table.add_row(escape(s.name) + (" *" if s.configured else ""),
+                      marks.get(s.state, s.state), oss, escape(detail))
     ui.console.print(table)
     if any(s.configured for s in statuses):
         ui.console.print(f"[{ui.MUTED}]* defined or changed in your config[/]")
@@ -325,10 +327,10 @@ def _handle_agents_command(argv: List[str]) -> int:
         ui.console.print(f"\n[bold {ui.ACCENT}]To install[/] [{ui.MUTED}](run these yourself; "
                          "check each project's page first):[/]")
         for s in missing:
-            ui.console.print(f"  [bold]{s.name}[/]  [{ui.MUTED}]{s.homepage}[/]")
+            ui.console.print(f"  [bold]{escape(s.name)}[/]  [{ui.MUTED}]{escape(s.homepage)}[/]")
             ui.console.print(f"    {s.install}", markup=False, highlight=False, soft_wrap=True)
             if s.note:
-                ui.console.print(f"    [{ui.WARN}]{s.note}[/]")
+                ui.console.print(f"    [{ui.WARN}]{escape(s.note)}[/]")
         ui.console.print(f"[{ui.MUTED}]Once installed, coded finds it on PATH automatically "
                          "(start a new session). Point an open-source agent at your own models "
                          "with `env` under `external_agents` in config.json.[/]")
@@ -431,17 +433,17 @@ def _speed_models(cfg: Config, names: List[str], runs: int, minimal: bool, cwd: 
         table.add_column(col, justify=justify)
     for r in results:
         if not r.ok:
-            table.add_row(r.name, f"[{ui.ERR}]failed[/]", "", "", "", r.error[:60])
+            table.add_row(escape(r.name), f"[{ui.ERR}]failed[/]", "", "", "", escape(r.error[:60]))
             continue
         mark = "~" if r.estimated else ""
-        table.add_row(r.name, f"{r.first_token:.2f}s", f"{r.total:.2f}s",
+        table.add_row(escape(r.name), f"{r.first_token:.2f}s", f"{r.total:.2f}s",
                       f"{r.tokens_per_second:.0f} tok/s" if r.tokens_per_second else "–",
                       f"{mark}{r.prompt_tokens:,}", f"{mark}{r.output_tokens:,}")
     ui.console.print(table)
     if any(r.estimated for r in results if r.ok):
         ui.console.print(f"[{ui.MUTED}]~ estimated: the server did not report token usage[/]")
     for line in advice(results):
-        ui.console.print(f"[{ui.MUTED}]{line}[/]")
+        ui.console.print(f"[{ui.MUTED}]{escape(line)}[/]")
     return 0 if all(r.ok for r in results) else 1
 
 
@@ -728,7 +730,7 @@ def _handle_review_command(argv: List[str]) -> int:
             ui.error(f"Could not write {args.output}: {exc}")
 
     if verdict:
-        ui.console.print(f"\n[bold]Verdict:[/bold] {verdict}")
+        ui.console.print(f"\n[bold]Verdict:[/bold] {escape(str(verdict))}")
         if verdict == NEEDS_CHANGES and args.fail_on == "needs-changes":
             return 1
         if verdict == UNKNOWN:
@@ -814,6 +816,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _handle_sessions_command(argv[1:])
     if argv and argv[0] == "commit":
         return _handle_commit_command(argv[1:])
+    if argv and argv[0] == "mission":
+        from coded.mission import mission_main
+
+        return mission_main(argv[1:])
     if argv and argv[0] == "lab":
         return _handle_lab_command(argv[1:])
     if argv and argv[0] == "skill":

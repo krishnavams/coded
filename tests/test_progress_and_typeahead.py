@@ -5,6 +5,7 @@ while the agent is busy.
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -438,7 +439,8 @@ def test_thinking_relabels_the_dock_instead_of_opening_a_second_live():
         assert ui.active_dock() is dock
         with ui.thinking("Compacting"):
             assert "Compacting…" in _plain(dock.render())
-        assert "Working…" in _plain(dock.render())
+        text = _plain(dock.render())
+        assert any(f"{w}…" in text for w in ui.SPINNER_WORDS) and "esc to interrupt" in text
     finally:
         dock.stop()
     assert ui.active_dock() is None
@@ -453,3 +455,80 @@ def test_echo_is_switched_off_only_for_readers_that_collect_keys():
     line_mode = TypeAhead(poll=lambda _t: None)
     assert not line_mode.can_draw
     line_mode.set_echo(False)  # no-op, no error
+
+
+_CMDS = [("/help", "Show this help."), ("/model", "Show or switch the active model."),
+         ("/models", "List all configured models."), ("/review", "Run the review [x] pipeline.")]
+
+
+def test_typing_a_slash_mid_turn_lists_matching_commands():
+    dock = ui.TurnDock(lambda: "/mo", get_commands=lambda: _CMDS)
+    text = _plain(dock.render())
+    assert "/model " in text and "/models" in text and "/help" not in text
+    assert "tab to complete" in text
+    # every command for a bare "/", the description shown as plain text
+    text = _plain(ui.TurnDock(lambda: "/", get_commands=lambda: _CMDS).render())
+    assert "/help" in text and "/review" in text and "[x]" in text
+    # gone once arguments are being typed, for plain text, and while answering
+    for typed in ("/model gpt", "fix the bug"):
+        text = _plain(ui.TurnDock(lambda t=typed: t, get_commands=lambda: _CMDS).render())
+        assert "Show this help" not in text and "tab to complete" not in text
+    dock = ui.TurnDock(lambda: "/mo", get_commands=lambda: _CMDS)
+    dock.asking(True)
+    assert "/models" not in _plain(dock.render())
+
+
+def test_tab_completes_the_slash_command_being_typed():
+    assert ui.complete_slash("/rev", _CMDS) == "/review "
+    assert ui.complete_slash("/m", _CMDS) == "/model"      # common prefix
+    assert ui.complete_slash("/model", _CMDS) is None      # still ambiguous
+    assert ui.complete_slash("/zzz", _CMDS) is None
+    assert ui.complete_slash("hello", _CMDS) is None
+
+    keys = _Keys()
+    keys.echo = False
+    ta = TypeAhead(poll=keys, complete=lambda t: ui.complete_slash(t, _CMDS))
+    keys.buf[:] = list("/rev")
+    assert ta.complete() == "/review " and ta.typing == "/review "
+    assert ta.pending == 0  # completing does not queue anything
+
+
+def test_the_posix_reader_hands_tab_to_the_completer():
+    import io
+    import os
+
+    if os.name == "nt":
+        pytest.skip("POSIX terminal reader")
+    import pty
+
+    from coded.typeahead import _PosixKeys
+
+    master, slave = pty.openpty()
+    reader = _PosixKeys(fd=slave, out=io.StringIO())
+    reader.echo = False
+    ta = TypeAhead(poll=reader, complete=lambda t: ui.complete_slash(t, _CMDS))
+    try:
+        with ta:
+            os.write(master, b"/rev\t")
+            for _ in range(100):
+                if ta.typing == "/review ":
+                    break
+                time.sleep(0.02)
+        assert ta.typing == "/review " and ta.pending == 0
+    finally:
+        reader.close()
+        os.close(master)
+        os.close(slave)
+
+
+def test_the_dock_spinner_rotates_words_and_shows_elapsed_time():
+    words = {ui.spinner_word(t) for t in range(0, 400, 4)}
+    assert len(words) == len(ui.SPINNER_WORDS)          # every word comes round
+    assert ui.spinner_word(0) == ui.spinner_word(3.9)   # steady for a few seconds
+    assert ui.spinner_word(0) != ui.spinner_word(4)
+    dock = ui.TurnDock(lambda: "")
+    dock._started -= 75
+    text = _plain(dock.render())
+    assert "1m 15s · esc to interrupt" in text
+    dock.set_activity("Compacting")                     # a specific label wins
+    assert "Compacting…" in _plain(dock.render())

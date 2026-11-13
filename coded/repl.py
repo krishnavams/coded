@@ -14,6 +14,7 @@ from prompt_toolkit.filters import Condition, has_completions, vi_navigation_mod
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
+from rich.markup import escape
 from rich.table import Table
 
 from coded import choice, ui
@@ -119,7 +120,7 @@ SLASH_COMMANDS = {
     "/route": "Difficulty routing: /route [on|off] (shows the current state).",
     "/tools": "List available tools.",
     "/skills": "List available skills.",
-    "/skill": "Invoke a skill now: /skill <name> [task].",
+    "/skill": "Invoke a skill now: /skill <name> [task], or just /<name> [task].",
     "/review": "Run reviewer→qa→security sub-agents on the changes: /review [target].",
     "/plan": "Toggle plan mode (read-only research, then approve a plan). Also Shift+Tab.",
     "/permissions": "Show or change what may run without asking: "
@@ -130,6 +131,8 @@ SLASH_COMMANDS = {
     "/tasks": "Running and finished sub-agents and shells (Ctrl+T): /tasks [id] | stop <id>.",
     "/btw": "Quick side question, answered from the conversation without tools; "
             "works mid-turn and is not added to the history: /btw <question>.",
+    "/mission": "Work on a goal unattended on its own branch, ending with a report: "
+                "/mission <goal> [--budget N] | --resume | --list.",
     "/agents": "List outside agents available to delegate to (external_agent tool).",
     "/commands": "List custom slash commands (.coded/commands/*.md).",
     "/plugins": "List installed plugins (manage with `coded plugin …`).",
@@ -236,6 +239,9 @@ class Repl:
         meta.update({f"/{n}": f"command · {c.description}"[:60] for n, c in self.commands.items()})
         meta.update({name: f"model · {mc.model}" for name, mc in config.models.items()})
         meta.update({name: "skill" for name in agent.skills})
+        skill_cmds = [f"/{n}" for n in agent.skills if f"/{n}" not in meta]
+        words += skill_cmds
+        meta.update({c: f"skill · {agent.skills[c[1:]].description}"[:60] for c in skill_cmds})
         from coded.mentions import MentionCompleter
 
         self.mentions = MentionCompleter(agent.cwd)
@@ -496,7 +502,8 @@ class Repl:
                            get_queue=lambda: ta.queued_items,
                            get_running=self.agent.tasks.running,
                            can_detach=lambda: self.agent.tasks.can_detach,
-                           get_mode=lambda: self.agent.permission_mode).start()
+                           get_mode=lambda: self.agent.permission_mode,
+                           get_commands=self._slash_entries).start()
 
     # -- tasks (sub-agents) ---------------------------------------------------
     def _task_finished(self, entry) -> None:
@@ -547,6 +554,44 @@ class Repl:
             return
         ui.console.print(ui.btw_panel(question, answer))
 
+    def _cmd_mission(self, rest: str) -> None:
+        """/mission: the same as `coded mission`, run here with this session's
+        model and folder. It asks its questions now, then runs until done."""
+        import shlex
+
+        from coded.mission import mission_main
+
+        try:
+            argv = shlex.split(rest)
+        except ValueError:  # an apostrophe in the goal ("don't")
+            argv = rest.split()
+        if not argv:
+            ui.info('Usage: /mission <goal> [--budget N]  ·  /mission --resume  ·  '
+                    '/mission --list  (the same as `coded mission`)')
+            return
+        argv += ["--cwd", self.agent.cwd]
+        if self.agent.model.name in self.config.models and "-m" not in argv \
+                and "--model" not in argv:
+            argv += ["-m", self.agent.model.name]
+        try:
+            mission_main(argv)
+        except SystemExit:  # argparse: --help or a bad option already printed
+            pass
+        except KeyboardInterrupt:
+            ui.warn("Mission stopped. `/mission --resume` carries on.")
+
+    def _slash_entries(self) -> list:
+        """(name, description) of the built-in and custom slash commands."""
+        entries = list(SLASH_COMMANDS.items())
+        entries += [(f"/{n}", f"command · {c.description}") for n, c in self.commands.items()]
+        taken = {n for n, _ in entries}
+        entries += [(f"/{n}", f"skill · {getattr(s, 'description', '')}")
+                    for n, s in self.agent.skills.items() if f"/{n}" not in taken]
+        return entries
+
+    def _complete_midturn(self, text: str) -> Optional[str]:
+        return ui.complete_slash(text, self._slash_entries())
+
     def _intercept_midturn(self, text: str) -> bool:
         """A line typed mid-turn: /btw is answered now, alongside the turn, and
         /dashboard is shown at once (it only reads); anything else is queued."""
@@ -558,7 +603,7 @@ class Repl:
         if not (text == "/btw" or text.startswith("/btw ")):
             return False
         question = text[len("/btw"):].strip()
-        ui.console.print(f"[{ui.ACCENT_SOFT}]  ? btw: {question[:80]} — answering "
+        ui.console.print(f"[{ui.ACCENT_SOFT}]  ? btw: {escape(question[:80])} — answering "
                          f"alongside the current work…[/]")
 
         def answer() -> None:
@@ -580,7 +625,7 @@ class Repl:
             ui.console.print(f"[{ui.MUTED}]  (ctrl+b: no task is running in the foreground)[/]")
             return
         entry.detach.set()
-        ui.console.print(f"[{ui.ACCENT_SOFT}]  ↧ {entry.id} \"{entry.label}\" moved to the "
+        ui.console.print(f"[{ui.ACCENT_SOFT}]  ↧ {entry.id} \"{escape(entry.label)}\" moved to the "
                          f"background — keep typing; its report arrives when it finishes[/]")
 
     def _toggle_edits(self) -> None:
@@ -614,7 +659,7 @@ class Repl:
 
     def _queued_note(self, text: str, waiting: int) -> None:
         short = text if len(text) <= 60 else text[:57] + "…"
-        ui.console.print(f"[{ui.ACCENT_SOFT}]  ⏎ queued ({waiting}): {short}[/]")
+        ui.console.print(f"[{ui.ACCENT_SOFT}]  ⏎ queued ({waiting}): {escape(short)}[/]")
 
     def _show_tasks_above_prompt(self) -> bool:
         """Show the task list right above the input, as the TUI docks it.
@@ -683,7 +728,8 @@ class Repl:
                                keys={CTRL_B: self._detach_task, CTRL_O: self._toggle_expand,
                                      CTRL_T: self._cmd_tasks,
                                      SHIFT_TAB: self._toggle_edits},
-                               intercept=self._intercept_midturn) as ta:
+                               intercept=self._intercept_midturn,
+                               complete=self._complete_midturn) as ta:
                     self._typeahead = ta
                     # Messages still waiting from earlier turns go back in the
                     # reader's queue, so they are shown and ↑ can edit them.
@@ -740,6 +786,8 @@ class Repl:
             self._cmd_verify()
         elif cmd == "/memory":
             self._cmd_memory(args)
+        elif cmd == "/mission":
+            self._cmd_mission(text[len(cmd):].strip())
         elif cmd == "/heal":
             self._cmd_heal(args)
         elif cmd == "/lab":
@@ -867,6 +915,8 @@ class Repl:
             prompts_main(["list", "--cwd", self.agent.cwd])
         elif cmd[1:] in self.commands:
             self._run_custom_command(cmd[1:], text[len(cmd):])
+        elif cmd[1:] in self.agent.skills:  # /<skill> [task] = /skill <skill> [task]
+            self._cmd_skill([cmd[1:]] + args)
         else:
             ui.warn(f"Unknown command: {cmd}. Try /help.")
         return False
@@ -915,7 +965,7 @@ class Repl:
                 ui.error(f"No task or shell '{args[0]}'.")
                 return
             text, status = out
-            ui.console.print(f"[bold]{args[0]}[/] [{ui.MUTED}]{status}[/]")
+            ui.console.print(f"[bold]{escape(args[0])}[/] [{ui.MUTED}]{status}[/]")
             ui.console.print(ui.tool_result_text(text or "(no new output)", max_lines=40),
                              end="")
             return
@@ -935,7 +985,7 @@ class Repl:
         table.add_column("status")
         table.add_column("command")
         for sid, cmd, status in shells:
-            table.add_row(sid, status, cmd[:80])
+            table.add_row(sid, status, escape(cmd[:80]))
         ui.console.print(table)
 
     def _cmd_agents(self) -> None:
@@ -950,7 +1000,7 @@ class Repl:
         table.add_column("command")
         table.add_column("description")
         for a in tool.agents.values():
-            table.add_row(a.name, " ".join(a.command), a.description)
+            table.add_row(escape(a.name), escape(" ".join(a.command)), escape(a.description))
         ui.console.print(table)
         ui.info("`coded agents` (in a shell) lists the others and how to install them.")
 
@@ -966,9 +1016,9 @@ class Repl:
         for col in ("plugin", "version", "scope", "status", "description"):
             table.add_column(col)
         for p in plugins:
-            table.add_row(p.name, p.version, p.scope,
+            table.add_row(escape(p.name), escape(p.version), p.scope,
                           "[green]enabled[/green]" if p.enabled else "[dim]disabled[/dim]",
-                          p.description[:60])
+                          escape(p.description[:60]))
         ui.console.print(table)
         ui.info("Install/remove/enable with `coded plugin …` in a shell, then restart coded.")
 
@@ -982,7 +1032,7 @@ class Repl:
         table.add_column("args")
         table.add_column("description")
         for n, c in self.commands.items():
-            table.add_row(f"/{n}", c.argument_hint, c.description)
+            table.add_row(escape(f"/{n}"), escape(c.argument_hint), escape(c.description))
         ui.console.print(table)
 
     def _cmd_permissions(self, args: List[str]) -> None:
@@ -1025,10 +1075,10 @@ class Repl:
         table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
         table.add_row("[cyan]mode[/cyan]", mode + ("  (yolo: everything runs)"
                                                    if perms.auto_approve else ""))
-        table.add_row("[cyan]allow[/cyan]", ", ".join(perms.allow_rules) or "[dim]none[/dim]")
-        table.add_row("[cyan]deny[/cyan]", ", ".join(perms.deny_rules) or "[dim]none[/dim]")
+        table.add_row("[cyan]allow[/cyan]", escape(", ".join(perms.allow_rules)) or "[dim]none[/dim]")
+        table.add_row("[cyan]deny[/cyan]", escape(", ".join(perms.deny_rules)) or "[dim]none[/dim]")
         table.add_row("[cyan]always (session)[/cyan]",
-                      ", ".join(perms.always_allowed) or "[dim]none[/dim]")
+                      escape(", ".join(perms.always_allowed)) or "[dim]none[/dim]")
         ui.console.print(table)
         ui.console.print(f"[{ui.MUTED}]Rules look like bash, bash(git *), edit(src/*). "
                          f"Deny always wins. Shift+Tab cycles the mode.[/]")
@@ -1044,7 +1094,7 @@ class Repl:
                           "coded's normal voice")
             for name, style in styles.items():
                 mark = "● " if name == current else "  "
-                table.add_row(f"{mark}[cyan]{name}[/cyan]", style.description)
+                table.add_row(f"{mark}[cyan]{escape(name)}[/cyan]", escape(style.description))
             ui.console.print(table)
             ui.console.print(f"[{ui.MUTED}]Add your own in .coded/styles/<name>.md.[/]")
             return
@@ -1089,7 +1139,8 @@ class Repl:
             table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
             for n, turn in enumerate(turns, 1):
                 text = " ".join(turn["text"].split())
-                table.add_row(f"[cyan]{n}[/cyan]", text[:90] + ("…" if len(text) > 90 else ""))
+                table.add_row(f"[cyan]{n}[/cyan]",
+                              escape(text[:90] + ("…" if len(text) > 90 else "")))
             ui.console.print(table)
             ui.console.print(f"[{ui.MUTED}]/rewind N goes back to just before request N and "
                              f"undoes its file changes (--keep-files leaves files alone).[/]")
@@ -1152,14 +1203,15 @@ class Repl:
     def _cmd_help(self) -> None:
         table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
         for name, desc in SLASH_COMMANDS.items():
-            table.add_row(f"[cyan]{name}[/cyan]", desc)
+            table.add_row(f"[cyan]{name}[/cyan]", escape(desc))
         for name, c in self.commands.items():
-            table.add_row(f"[cyan]/{name}[/cyan]", f"{c.description} [dim](custom)[/dim]")
+            table.add_row(f"[cyan]/{escape(name)}[/cyan]",
+                          f"{escape(c.description)} [dim](custom)[/dim]")
         ui.console.print(table)
         keys = Table(show_header=False, box=None, padding=(0, 2, 0, 0), title="Keys",
                      title_justify="left")
         for key, desc in KEYS.items():
-            keys.add_row(f"[cyan]{key}[/cyan]", desc)
+            keys.add_row(f"[cyan]{escape(key)}[/cyan]", escape(desc))
         ui.console.print()
         ui.console.print(keys)
 
@@ -1171,7 +1223,7 @@ class Repl:
         table.add_column("", style="green")
         for name, mc in self.config.models.items():
             active = "● active" if name == self.agent.model.name else ""
-            table.add_row(name, mc.model, mc.provider, active)
+            table.add_row(escape(name), escape(mc.model), escape(mc.provider or ""), active)
         ui.console.print(table)
 
     def _cmd_setup(self) -> None:
@@ -1255,7 +1307,7 @@ class Repl:
             ui.success("Verification passed.")
             return
         ui.warn("Verification found something:")
-        ui.console.print(feedback)
+        ui.console.print(feedback, markup=False)
         if self.agent.permissions.ask("Send this back to the agent to fix?", feedback[:400]) \
                 in ("y", "yes"):
             ui.user_prefix()
@@ -1280,7 +1332,7 @@ class Repl:
             table.add_column("note")
             table.add_column("by", style="dim")
             for e in entries:
-                table.add_row(e.id, e.kind, e.text, e.source)
+                table.add_row(e.id, e.kind, escape(e.text), escape(e.source))
             ui.console.print(table)
         elif action == "search":
             hits = store.search(rest)
@@ -1288,7 +1340,7 @@ class Repl:
                 ui.info(f"No notes about '{rest}'." if rest else "Usage: /memory search <words>")
                 return
             for e in hits:
-                ui.console.print(f"  [cyan]{e.id}[/cyan] ({e.kind}) {e.text}", highlight=False)
+                ui.console.print(f"  [cyan]{e.id}[/cyan] ({e.kind}) {escape(e.text)}", highlight=False)
         elif action == "add":
             if not rest:
                 ui.error("Nothing to add: /memory add <note>  (prefix with "
@@ -1364,7 +1416,7 @@ class Repl:
         for t in self.agent.registry.all():
             perm = "[yellow]asks[/yellow]" if t.requires_permission else "auto"
             desc = t.description.strip().splitlines()[0]
-            table.add_row(t.name, perm, desc[:80])
+            table.add_row(escape(t.name), perm, escape(desc[:80]))
         ui.console.print(table)
 
     def _cmd_image(self, args) -> None:
@@ -1425,7 +1477,7 @@ class Repl:
         table.add_column("label")
         table.add_column("files", justify="right")
         for g in groups:
-            table.add_row(g.get("label", ""), str(len(g.get("files", []))))
+            table.add_row(escape(g.get("label", "")), str(len(g.get("files", []))))
         ui.console.print(table)
         ui.info("Use /undo to revert the most recent one.")
 
@@ -1438,7 +1490,7 @@ class Repl:
         table.add_column("skill", style="cyan")
         table.add_column("description")
         for name, s in self.agent.skills.items():
-            table.add_row(name, s.description or "(no description)")
+            table.add_row(escape(name), escape(s.description or "(no description)"))
         ui.console.print(table)
 
     def _cmd_skill(self, args) -> None:
@@ -1456,12 +1508,10 @@ class Repl:
         except OSError as exc:
             ui.error(f"Could not read skill: {exc}")
             return
+        from coded.skills import skill_message
+
         task = " ".join(args[1:]).strip()
-        message = (
-            f"Apply the skill '{name}'. Its instructions are below; follow them"
-            + (f" for this task: {task}\n\n" if task else ".\n\n")
-            + f"---\n{body}"
-        )
+        message = skill_message(name, body, task)
         ui.user_prefix()
         self.agent.run(message, route_hint=f"/skill {name} {task}".strip())
 
@@ -1480,7 +1530,7 @@ class Repl:
         if self.config.source_paths:
             ui.info("Loaded config from:")
             for p in self.config.source_paths:
-                ui.console.print(f"  [dim]{p}[/dim]")
+                ui.console.print(f"  [dim]{escape(str(p))}[/dim]")
         else:
             ui.info("No config files loaded (using defaults / CLI flags / env).")
         if self.config.mcp_servers:

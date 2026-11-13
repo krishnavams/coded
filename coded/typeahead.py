@@ -36,7 +36,9 @@ CTRL_B, CTRL_O, CTRL_T = "\x02", "\x0f", "\x14"
 UP = "\x00up"
 # Shift+Tab: turn accept-edits on or off while the turn runs.
 SHIFT_TAB = "\x00stab"
-CONTROL_KEYS = (CTRL_B, CTRL_O, CTRL_T, UP, SHIFT_TAB)
+# Tab: complete the slash command being typed.
+TAB = "\t"
+CONTROL_KEYS = (CTRL_B, CTRL_O, CTRL_T, UP, SHIFT_TAB, TAB)
 # Key mode (`TypeAhead.keys()`, for the choice prompts): the reader returns one
 # key at a time as KEY + a name from `coded.choice` ("up", "enter", …) or the
 # typed character itself.
@@ -333,8 +335,11 @@ class TypeAhead:
                  on_queue: Optional[Callable[[str, int], None]] = None,
                  on_escape: Optional[Callable[[], None]] = None,
                  keys: Optional[Dict[str, Callable[[], None]]] = None,
-                 intercept: Optional[Callable[[str], bool]] = None):
+                 intercept: Optional[Callable[[str], bool]] = None,
+                 complete: Optional[Callable[[str], Optional[str]]] = None):
         self._poll = poll
+        # Tab: the line being typed -> its completion (None: leave it).
+        self._complete = complete
         self._on_queue = on_queue
         self._on_escape = on_escape
         self._keys = dict(keys or {})
@@ -402,6 +407,9 @@ class TypeAhead:
             if line == UP and UP not in self._keys:
                 self.edit_last()
                 continue
+            if line == TAB:
+                self.complete()
+                continue
             if line in CONTROL_KEYS:
                 fn = self._keys.get(line)
                 if fn is not None:
@@ -441,6 +449,24 @@ class TypeAhead:
             waiting = len(self._queued)
         if self._on_queue:
             self._on_queue(text, waiting)
+
+    def complete(self) -> Optional[str]:
+        """Tab: replace the line being typed with its completion, if any."""
+        buf = getattr(self._poll, "buf", None)
+        if self._complete is None or not isinstance(buf, list):
+            return None
+        old = "".join(buf)
+        try:
+            new = self._complete(old)
+        except Exception:  # noqa: BLE001 - a completer must not end type-ahead
+            return None
+        if not new or new == old:
+            return None
+        buf[:] = list(new)
+        out = getattr(self._poll, "_echo", None) or getattr(self._poll, "_out", None)
+        if out is not None and getattr(self._poll, "echo", True):
+            out("\b \b" * len(old) + new)
+        return new
 
     def edit_last(self) -> Optional[str]:
         """Up arrow: take the newest queued message back into the line being

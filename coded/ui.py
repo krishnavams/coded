@@ -10,6 +10,7 @@ from rich.box import ROUNDED
 from rich.console import Console, Group
 from rich.control import Control
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
 from rich.theme import Theme
@@ -145,6 +146,28 @@ class _DockStatus:
         return False
 
 
+# What the spinner says while the model works and nothing more specific is
+# known: coded's own words, a new one every few seconds.
+SPINNER_WORDS = (
+    "Working", "Compiling thoughts", "Tracing", "Untangling", "Refactoring ideas",
+    "Reading the room", "Connecting dots", "Sketching", "Tinkering", "Pondering",
+    "Assembling", "Weaving", "Distilling", "Mulling", "Puzzling", "Calibrating",
+    "Charting", "Crafting", "Sifting", "Noodling", "Brewing", "Wrangling",
+)
+_GENERIC_ACTIVITY = (None, "Working", "Thinking")
+_WORD_SECONDS = 4.0
+
+
+def spinner_word(elapsed: float, offset: int = 0) -> str:
+    """The rotating spinner word `elapsed` seconds into a turn."""
+    return SPINNER_WORDS[(offset + int(elapsed // _WORD_SECONDS)) % len(SPINNER_WORDS)]
+
+
+def _elapsed(seconds: float) -> str:
+    seconds = int(seconds)
+    return f"{seconds}s" if seconds < 60 else f"{seconds // 60}m {seconds % 60:02d}s"
+
+
 class TurnDock:
     """The bottom of the screen for a whole REPL turn: what the agent is doing,
     the unfinished task list and an input box showing what is being typed.
@@ -157,7 +180,10 @@ class TurnDock:
     """
 
     def __init__(self, get_input, get_tasks=None, get_queued=None, get_running=None,
-                 can_detach=None, get_queue=None, get_mode=None) -> None:
+                 can_detach=None, get_queue=None, get_mode=None,
+                 get_commands=None) -> None:
+        # (name, description) of every slash command, for suggestions as you type.
+        self._get_commands = get_commands or (lambda: [])
         self._get_mode = get_mode or (lambda: "")
         self._get_queue = get_queue or (lambda: [])
         self._get_input = get_input
@@ -170,6 +196,11 @@ class TurnDock:
         self._question = False
         self._prompt = None
         self._live = None
+        import random
+        import time
+
+        self._started = time.monotonic()
+        self._word_offset = random.randrange(len(SPINNER_WORDS))
 
     # -- lifecycle ----------------------------------------------------------
     def start(self) -> "TurnDock":
@@ -235,9 +266,14 @@ class TurnDock:
         else:
             if not hasattr(self, "_spinner"):
                 self._spinner = Spinner("dots", style=ACCENT)
+            import time
+
+            elapsed = time.monotonic() - self._started
+            label = (spinner_word(elapsed, self._word_offset)
+                     if self._activity in _GENERIC_ACTIVITY else self._activity)
             self._spinner.update(text=Text.from_markup(
-                f"[{ACCENT}]{self._activity or 'Working'}…[/] "
-                f"[{MUTED}](esc to interrupt)[/]"))
+                f"[{ACCENT}]{escape(label)}…[/] "
+                f"[{MUTED}]({_elapsed(elapsed)} · esc to interrupt)[/]"))
             parts.append(self._spinner)
         running = list(self._get_running() or [])
         if running:
@@ -249,9 +285,13 @@ class TurnDock:
         if waiting and not self._question:
             parts.append(queued_list(waiting))
         foreground = any(not t.background for t in running) and self._can_detach()
-        parts.append(input_box(self._get_input() or "", self._get_queued() or 0,
+        typed = self._get_input() or ""
+        matches = [] if self._question else slash_matches(typed, self._get_commands() or [])
+        parts.append(input_box(typed, self._get_queued() or 0,
                                self._question, foreground_task=foreground,
-                               mode=self._get_mode()))
+                               mode=self._get_mode(), suggesting=bool(matches)))
+        if matches:
+            parts.append(slash_suggestions(matches))
         return Group(*parts)
 
 
@@ -279,8 +319,47 @@ def queued_list(items: list) -> Text:
     return t
 
 
+_SUGGEST_SHOWN = 6
+
+
+def slash_matches(text: str, commands: list) -> list:
+    """The slash commands that complete `text` (a "/word" with no space yet),
+    as (name, description) pairs in the given order; [] otherwise."""
+    if not text.startswith("/") or any(c.isspace() for c in text):
+        return []
+    return [(n, d) for n, d in commands if n.startswith(text)]
+
+
+def complete_slash(text: str, commands: list) -> Optional[str]:
+    """Tab mid-turn: one match is completed with a trailing space, several to
+    their longest common prefix; None when there is nothing to add."""
+    names = [n for n, _ in slash_matches(text, commands)]
+    if not names:
+        return None
+    if len(names) == 1:
+        return names[0] + " "
+    prefix = os.path.commonprefix(names)
+    return prefix if len(prefix) > len(text) else None
+
+
+def slash_suggestions(matches: list) -> Text:
+    """The list under the mid-turn input box while a slash command is typed."""
+    t = Text()
+    width = max(len(n) for n, _ in matches[:_SUGGEST_SHOWN])
+    for i, (name, desc) in enumerate(matches[:_SUGGEST_SHOWN]):
+        if i:
+            t.append("\n")
+        t.append(f"  {name.ljust(width)}", style=f"bold {ACCENT}" if i == 0 else ACCENT_SOFT)
+        t.append(f"  {_one_line(desc, 70)}", style=MUTED)
+    hidden = len(matches) - _SUGGEST_SHOWN
+    if hidden > 0:
+        t.append(f"\n  … {hidden} more", style=MUTED)
+    return t
+
+
 def input_box(text: str, queued: int = 0, answering: bool = False,
-              foreground_task: bool = False, mode: str = "") -> Group:
+              foreground_task: bool = False, mode: str = "",
+              suggesting: bool = False) -> Group:
     """The input box drawn during a turn (the REPL's own box is not up then)."""
     line = Text()
     line.append("> ", style=f"bold {ACCENT}")
@@ -290,6 +369,8 @@ def input_box(text: str, queued: int = 0, answering: bool = False,
         hint = "  enter to answer  ·  esc for no"
     else:
         hint = "  enter queues a message  ·  esc to interrupt"
+        if suggesting:
+            hint = "  tab to complete  ·" + hint
         if foreground_task:
             hint += "  ·  ctrl+b run task in background"
         hint += f"  ·  ctrl+o {'collapse' if _expanded else 'expand'}  ·  ctrl+t tasks"
@@ -722,28 +803,29 @@ def tasks_table(entries: list, shells: list) -> None:
         table.add_column(col, style="cyan" if col == "id" else None, overflow="fold")
     for e in entries:
         status = e.status + (" · bg" if e.background and e.running else "")
-        table.add_row(e.id, "agent", status, _one_line(e.label, 40), e.summary(),
-                      _one_line(e.activity[-1], 40) if e.activity else "")
+        table.add_row(e.id, "agent", status, escape(_one_line(e.label, 40)), escape(e.summary()),
+                      escape(_one_line(e.activity[-1], 40)) if e.activity else "")
     for sid, cmd, status in shells:
-        table.add_row(sid, "shell", status, _one_line(cmd, 40), "", "")
+        table.add_row(sid, "shell", status, escape(_one_line(cmd, 40)), "", "")
     console.print(table)
     info("/tasks <id> for details · /tasks stop <id> to stop one")
 
 
 def info(msg: str) -> None:
-    _log().print(f"[{MUTED}]{msg}[/]")
+    # Messages are plain text: a path or an error may hold "[x]" or "[/x]".
+    _log().print(f"[{MUTED}]{escape(str(msg))}[/]")
 
 
 def warn(msg: str) -> None:
-    _log().print(f"[{WARN}]![/] {msg}")
+    _log().print(f"[{WARN}]![/] {escape(str(msg))}")
 
 
 def error(msg: str) -> None:
-    _log().print(f"[{ERR}]✗[/] {msg}")
+    _log().print(f"[{ERR}]✗[/] {escape(str(msg))}")
 
 
 def success(msg: str) -> None:
-    _log().print(f"[{ACCENT2}]✓[/] {msg}")
+    _log().print(f"[{ACCENT2}]✓[/] {escape(str(msg))}")
 
 
 def btw_panel(question: str, answer: str) -> Panel:

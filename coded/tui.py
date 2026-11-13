@@ -507,6 +507,11 @@ class CodedTUI(App):
         if text.split()[0] == "/dashboard":
             self.push_screen(DashboardModal(self))
             return
+        if text.split()[0] == "/mission":
+            self._mount(StatusNote("Missions ask a few questions in the terminal first: run "
+                                   "/mission in the REPL (coded without --tui) or `coded "
+                                   "mission \"<goal>\"` in a terminal."))
+            return
         if text.split()[0] == "/twin":
             from coded import twin
 
@@ -557,6 +562,16 @@ class CodedTUI(App):
         elif text.startswith("/") and text.split()[0][1:] in self.commands:
             name = text.split()[0][1:]
             text = self.commands[name].expand(text[len(name) + 1:])
+        elif text.startswith("/") and text.split()[0][1:] in self.agent.skills:
+            from coded.skills import skill_message
+
+            name = text.split()[0][1:]
+            try:
+                body = self.agent.skills[name].load_body(self.agent.model)
+            except OSError as exc:
+                self._mount(StatusNote(f"Could not read skill: {exc}"))
+                return
+            text = skill_message(name, body, text[len(name) + 1:])
         self._start_turn(text)
 
     @work(thread=True)

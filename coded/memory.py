@@ -29,9 +29,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-KINDS = ("convention", "decision", "fix", "gotcha", "fact")
-# How notes are grouped when recalled: rules first, then what was learned.
-_ORDER = {"convention": 0, "decision": 1, "fix": 2, "gotcha": 3, "fact": 4}
+KINDS = ("architecture", "convention", "decision", "fix", "gotcha", "fact")
+# How notes are grouped when recalled: the map, then rules, then what was learned.
+_ORDER = {k: i for i, k in enumerate(KINDS)}
 MAX_ENTRIES = 100
 MAX_TEXT = 500
 

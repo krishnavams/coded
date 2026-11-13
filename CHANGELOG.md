@@ -1,5 +1,53 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `coded mission "<goal>"`: an unattended run. It asks everything up front
+  (trust, the project's checks, shell commands), works in its own git worktree
+  and branch, plans with the task list, retries model outages, continues after
+  the step limit or with tasks left open (`--max-restarts`), respects
+  `--budget`, commits its changes on the branch and ends with a Markdown report
+  in `.coded/missions/` plus a desktop notification or a POST to `--notify-url`.
+- The `max_turns` event records why the run stopped (`reason`).
+- Missions plan first: the first run may only read and must write the task
+  list before any change is allowed. `coded mission --resume [id]` carries on
+  with a mission that was killed (sleep, restart, closed terminal) and still
+  writes the report; `coded mission --list` shows them.
+- `/mission <goal>` in the REPL starts a mission with the session's model
+  and folder (`/mission --resume`, `/mission --list`).
+
+### Changed
+- The REPL spinner cycles through coded's own words while the model works
+  ("Tracing…", "Untangling…", …, a new one every few seconds) and shows how
+  long the turn has run; specific labels ("Compacting…") still win.
+- Every skill is also a slash command: `/prompt-master write a mail` is
+  `/skill prompt-master write a mail` (REPL and TUI), and skills appear in
+  slash-command completion. Built-in and custom commands win a name clash.
+- Typing `/` while a turn or tool is running lists the matching slash
+  commands under the input box, and Tab completes the one being typed (the
+  prompt between turns already did this).
+- Project memory has an `architecture` kind (which module owns what, how the
+  pieces connect), recalled first: `/memory add architecture: …` or the
+  agent's `memory` tool.
+- A long request no longer stops at `max_turns` (100) while it is still making
+  progress: the limit grows by `max_turns` again, up to five times, and stops
+  early only when the agent repeats the same tool call or keeps failing. The
+  stop message says why and that `continue` picks up where it left off, and it
+  is shown even without verbose output. `"auto_extend_turns": false` or an
+  explicit `--max-turns` keeps the old hard cap.
+
+### Fixed
+- `/dashboard` crashed (`ValueError: too many values to unpack`) whenever the
+  session had a task list.
+- Text that looks like terminal markup no longer breaks the display. A request,
+  task, shell command, memory note, command description or error message
+  containing `[/x]` crashed `/help`, `/memory`, `/timeline`, `/dashboard`,
+  `/checkpoints`, `/rewind`, `/shells`, `/tasks`, `/commands` and any status
+  message; text such as `[name]` was silently dropped, so `/help` showed
+  `/model .` instead of `/model [name]` and `pip install 'coded[mcp]'` lost its
+  extra. Skill and plugin install summaries are now printed verbatim too.
+
 ## 0.3.0
 
 ### Security

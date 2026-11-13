@@ -22,6 +22,9 @@ runtime.
 
 - **Agentic tool loop** — the model reads, writes, and edits files, searches the
   codebase, and runs shell commands until your request is done.
+- **Missions** — `coded mission "<goal>"`: asks everything up front, works
+  alone on a separate branch, keeps going through outages and step limits, and
+  ends with a report and a notification.
 - **Full tool suite** — `read`, `write`, `edit`, `multi_edit`, `apply_patch`,
   `ls`, `move`, `delete`, `glob`, `grep`, `semantic_search`, `bash` (+
   `bash_output` / `kill_shell` for background jobs), `git`, `github`,
@@ -418,7 +421,7 @@ pip install -e '.[tui]'      # adds Textual
 | `/setup` | Configure models interactively (then reloads the session) |
 | `/tools` | List available tools |
 | `/skills` | List available skills |
-| `/skill <name> [task]` | Invoke a skill now |
+| `/skill <name> [task]` | Invoke a skill now (or just `/<name> [task]`) |
 | `/review [target]` | Run reviewer→qa→security sub-agents and aggregate |
 | `/image <path>... [prompt]` | Attach image(s) for a vision model |
 | `/paste` | Attach the image on the clipboard (also **Ctrl+V**) |
@@ -438,6 +441,7 @@ pip install -e '.[tui]'      # adds Textual
 | `/plan [request]` | Toggle plan mode (read-only until a plan is approved) |
 | `/todos` | Show the agent's task list |
 | `/shells [kill <id>]` | List or stop background shells |
+| `/mission <goal>` | Start an unattended [mission](#missions-work-while-youre-away) with this session's model (`/mission --resume`, `/mission --list`) |
 | `/btw <question>` | A quick side question, answered from the conversation so far (no tools). Works **while the agent is working**, without interrupting it, and neither the question nor the answer is added to the conversation |
 | `/tasks [id \| stop <id>]` | Sub-agents and background shells: list, show one's steps and report, or stop one (also **Ctrl+T**) |
 | `/agents` | List outside agents available for delegation |
@@ -519,6 +523,47 @@ rings the terminal bell when it finishes or stops to ask you something, so
 you can work in another window. `"notify": "desktop"` shows a desktop
 notification instead (osascript on macOS, `notify-send` on Linux; the bell
 elsewhere); `"notify": "off"` turns it off.
+
+### Missions: work while you're away
+
+```bash
+coded mission "add CSV export to the reports page" --budget 2.00
+coded mission "fix the flaky date tests" --notify-url https://ntfy.sh/my-topic
+```
+
+Inside coded, `/mission <goal>` (also `/mission --resume`, `/mission --list`)
+does the same with the session's model and folder.
+
+A mission asks everything up front — trust this project? run its checks
+(`npm test`, `pytest`, …) after each change? run shell commands without
+asking? — and then works alone until the goal is done:
+
+- **On a copy.** It runs in a new git worktree on a `coded/mission-…` branch;
+  your checkout is never touched (`--here` works in place instead).
+- **Plans first.** The first run may only look around: every change is
+  refused until it has written a task list (it is asked twice; without one
+  the work starts anyway and the report says so). Then it works through the
+  list, and the project's checks gate every change. Nothing waits for you: an
+  action nobody approved is refused, and a question becomes a stated
+  assumption.
+- **Keeps going.** A model outage is retried after a pause, a run that hit the
+  step limit or left tasks open is sent back to finish (up to
+  `--max-restarts`, default 3). It stops when it is clearly stuck, the
+  `--budget` runs out, or you press Ctrl-C.
+- **Survives being killed.** Every step is saved. If the computer sleeps or
+  restarts or the terminal closes, `coded mission --resume` (in the project or
+  the worktree) carries on with the same answers, branch and task list, and
+  still ends with the report. `coded mission --list` shows the missions.
+- **Ends with a report** in `.coded/missions/<time>.md`: the result, changed
+  files, checks, tasks, cost, what went wrong on the way, the agent's summary
+  and the exact commands to review, merge or discard the branch. The changes
+  are committed on the branch. You get a desktop notification, and with
+  `--notify-url` the report is POSTed there too (an ntfy.sh topic shows it on
+  your phone).
+
+Without a terminal (`-y`/`--yes`, cron, CI) nothing is asked: unapproved checks
+and shell commands stay off unless `--allow-bash` (or `--yolo`) says otherwise.
+Deny rules always win.
 
 ### Context & sessions
 
@@ -736,7 +781,8 @@ the file's text.
 ```
 
 What a session learns about a repository normally dies with `/clear`. Project
-memory keeps a few short notes — conventions, decisions, gotchas, facts — in
+memory keeps a few short notes — architecture, conventions, decisions, fixes,
+gotchas, facts — in
 `./.coded/memory.json` (gitignored), and puts them in the system prompt at the
 start of every future session in that project, labelled as recorded
 observations that may be out of date, never as instructions.
@@ -853,6 +899,7 @@ when a task matches, or you can run one directly:
 ```
 /skill planner add rate limiting to the API
 /skill reviewer            # reviews your current git diff
+/planner add rate limiting # the same: every skill is also a slash command
 ```
 
 They're written to use the `task` sub-agent tool for isolated work, so a review
@@ -984,7 +1031,9 @@ the agent works, so a long turn is never a silent one.
 
 **You can type while it works.** A question or follow-up typed mid-turn is
 queued (`⏎ queued (1): …`) and run as the next message instead of being
-swallowed by the busy terminal; several queue in order. Ctrl-C drops the queue
+swallowed by the busy terminal; several queue in order. Typing `/` lists the
+matching slash commands under the input box and Tab completes one; it runs
+after the turn. Ctrl-C drops the queue
 along with the turn. The permission prompt takes the next line you type, so the
 two never fight over the same keystrokes. This works in the REPL and the TUI;
 without a terminal (piped input, `--print`) it simply stays off.
@@ -1343,8 +1392,13 @@ knob, and the default is 128k.
 - **Per-model prompt files.** `prompts_dir` points at a folder of that model's own
   prompt files, which win over everything else. A relative path is resolved
   against the project directory.
-- **Longer runs.** `max_turns` per model raises or lowers the step limit; the CLI
-  `--max-turns` still wins.
+- **Longer runs.** `max_turns` (default 100) is the number of steps one request
+  may take; set it per model or globally. When a request reaches it while still
+  making progress, the limit grows by `max_turns` again, up to five times
+  `max_turns`, with a note each time. It stops early when the agent looks stuck:
+  the same tool call 4 times in its last 30, or 10 failing calls in a row. After a
+  stop, type `continue` to pick up where it left off. `"auto_extend_turns": false`
+  makes `max_turns` a hard cap, and so does an explicit `--max-turns N`.
 - **Repository overview** (`repo_overview`: `auto`, `true` or `false`; auto means
   on for windows ≥200k). Large-context models get a map of the repository in the
   system prompt: file paths (or directories with counts for big repos), key

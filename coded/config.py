@@ -20,7 +20,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from coded.shells import ensure_shell
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 # ---------------------------------------------------------------------------
 # Built-in provider presets.
@@ -198,6 +198,9 @@ class Config:
     # Behaviour toggles.
     auto_approve: bool = False  # skip permission prompts (a.k.a. "yolo")
     max_turns: int = 100  # safety cap on agent tool-loop iterations
+    # At max_turns, keep going (another max_turns, up to 5x) while the request is
+    # making progress; stop when it loops or keeps failing. Off = a hard cap.
+    auto_extend_turns: bool = True
     # Windows only: which shell runs bash-tool commands — "bash" (Git Bash),
     # "pwsh", "powershell", "cmd", or a full path. Default: the best available
     # (shells.resolve_shell). Ignored on Linux/macOS, which always use sh.
@@ -497,7 +500,7 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
             merged = dict(getattr(cfg, key))
             merged.update(data[key])
             setattr(cfg, key, merged)
-    for key in ("auto_approve", "max_turns", "stream", "auto_compact", "auto_fallback",
+    for key in ("auto_approve", "max_turns", "auto_extend_turns", "stream", "auto_compact", "auto_fallback",
                 "compact_ratio",
                 "show_reasoning", "parallel_tools", "injection_guard",
                 "detect_external_agents", "shell", "disabled_tools", "add_dirs",

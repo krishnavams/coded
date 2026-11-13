@@ -52,6 +52,7 @@ coded/
 ├── codehealth.py       # refactor hot spots: function metrics (ast), duplicate blocks, ranking
 ├── twin.py             # project twin: per-file parse cache (user cache dir) + /twin snapshot
 ├── lab.py              # coded lab / /lab: recurring failures in past sessions, approved proposals
+├── mission.py          # coded mission: unattended run in a worktree, restarts, report, notify
 ├── memory.py           # project memory store (./.coded/memory.json)
 ├── speed.py            # `coded models --speed`: first token, total, tok/s per model
 ├── verify.py           # post-turn gates: project checks + a second model
@@ -140,10 +141,13 @@ tests/
 ├── test_trust.py       # project trust gate: what applies untrusted, remembered fingerprint, CLI
 ├── test_events.py      # event log: tool outcomes, denials, timings, saved, bounded, thread-safe
 ├── test_dashboard.py   # /dashboard render, REPL + mid-turn, TUI modal
+├── test_slash_smoke.py # every slash command on a session full of "[x]"/"[/x]" text: no crash, shown verbatim
 ├── test_timeline.py    # timeline turns, per-turn file changes, restore preview + rewind, saved
 ├── test_adversary.py   # findings need file:line + trigger, read-only tools, model note, opt-in
 ├── test_twin.py        # same answers with/without the cache, outside the repo, /twin changes
 ├── test_lab.py         # lab heuristics, per-folder sessions, one-by-one apply, loosening flagged
+├── test_turn_limit.py  # max_turns grows with progress, stops a loop, ceiling, hard-cap switches
+├── test_mission.py     # restarts/stops, open tasks, budget, branch + report, up-front questions
 ├── test_session_autosave.py  # per-step autosave, atomic save, orphan tool calls, todos
 ├── test_memory_bounds.py  # bounded output/file reads, timeout kills the process group
 ├── test_compaction.py  # context compaction trigger + tail preservation
@@ -205,6 +209,8 @@ config.example.json     # sample configuration
    earlier one by name (so a project `planner` shadows the built-in). `create_agent`
    injects each skill's name+description into the system prompt (level 1) and
    registers the `skill` tool, which loads a skill's full body on demand (level 2).
+   `/<skill> [task]` is `/skill <skill> [task]` (`skills.skill_message`; built-in
+   and custom commands win a clash).
    Bundled files are reached with the normal read/bash tools (level 3). Sub-agents
    run without skills. Frontmatter is parsed by a tiny built-in YAML subset (no
    pyyaml dependency) — scalars, inline `[a, b]`, and block lists only. Built-in
@@ -454,6 +460,15 @@ config.example.json     # sample configuration
   bare `console.print()`. Assistant text gets a `● ` with a hanging indent
   (`ui.answer_block`) only when the REPL turns it on (`set_answer_bullets`), so
   `-p` output stays plain.
+- **Printed text is markup unless you say otherwise**: rich reads `[x]` in a
+  `str` as a style tag (dropped silently) and raises `MarkupError` on a stray
+  `[/x]`. `ui.info/warn/error/success` take **plain text** and escape it, so
+  never put markup in their message. Anywhere else, text that is not a literal
+  of ours (user messages, labels, commands, paths, descriptions, model or tool
+  output, exception text) goes through `rich.markup.escape`, a `Text`, or
+  `print(..., markup=False)` — table cells included. `tests/test_slash_smoke.py`
+  runs every slash command on a session full of such text; add new commands to
+  its `COMMANDS`.
 - **UI**: use the helpers in `coded/ui.py` and its single shared `console`.
   Displayed tool output is truncated for readability; the **model** always
   receives the full tool result (truncation is display-only). Colors come from
@@ -541,7 +556,7 @@ config.example.json     # sample configuration
   gate), and not at all while `permissions.tainted`. Every write re-reads first,
   so a concurrent session's note is not clobbered. Sub-agents get no memory
   tool. An empty store must leave the system prompt byte-identical. Kinds:
-  convention, decision, fix, gotcha, fact; recall is grouped in that order
+  architecture, convention, decision, fix, gotcha, fact; recall is grouped in that order
   (newest first within a kind) and `search` (tool + `/memory search`) ranks by
   matched words. Automatic capture is one nudge, not a model call per turn:
   when the checks failed earlier in a turn and then pass, `_fix_note_nudge`
@@ -647,6 +662,32 @@ config.example.json     # sample configuration
   project memory (gitignored) or `.coded/config.json` (via `config_wizard`),
   never to committed instruction files. Denials count only with
   `reason == "user"`.
+- **Step limit** (`Agent._loop`, `_extend_turns`, `stuck_reason`): at
+  `max_turns` the limit grows by `max_turns` while the request makes progress,
+  up to `_TURN_CEILING_FACTOR` × `max_turns`; `_recent_calls` (name, raw args,
+  is_error) decides "stuck" (an identical call `_LOOP_REPEATS` times in
+  `_LOOP_WINDOW`, or `_ERROR_RUN` failures in a row). `auto_extend_turns: false`
+  or `--max-turns` (`max_turns_override`) is a hard cap. Events:
+  `turns_extended`, then `max_turns` on the stop.
+- **Missions** (`mission.py`, `coded mission`): every question is asked before
+  the run (project trust, `trust.approve_check` for the detected checks, a
+  `bash` allow rule); during it `permissions` has no prompt, so anything
+  unapproved is refused and `ask_user` returns None. Edits run under
+  `accept_edits`; the checks go in as `verify.command`. `run_mission` drives
+  `Agent.run`; the first run is planning (`permissions.plan_mode` set by the
+  mission, not `set_mode`, so no model swap or plan prompt) until a todo list
+  exists (`PLAN_NUDGE` once, then `no_plan`). Then it decides from the run's
+  events: an exception → backoff +
+  continue, `max_turns` → continue unless its `reason` says not progressing,
+  open todos → continue, `over_budget()` → stop; all bounded by
+  `max_restarts`. It works in `worktree.create_worktree` (the project's
+  `.coded/memory.json` is copied in), commits there at the end, and writes the
+  report to `<repo>/.coded/missions/<id>.md`. `<id>.json` is the mission state
+  (the up-front answers, session id, branch, worktree, status), saved at each
+  run; `--resume` reloads it (`main_root` finds the main checkout from inside
+  a worktree) and the session's todos, so it skips planning. Never pushes or
+  merges. The REPL's `/mission …` calls `mission_main` with `--cwd` and the
+  session's model; the TUI only points to it (the questions need a terminal).
 - **Sessions survive a crash**: `Agent.on_step` (main agent only; the CLI sets
   it to autosave) runs after the user message, each tool step and the final
   answer, so a kill loses at most one step; the REPL also saves after Ctrl-C.
@@ -716,6 +757,9 @@ config.example.json     # sample configuration
   keys) are dropped, and `TypeAhead.stop()` must restore the terminal (`close()`).
   Esc stops the turn by sending this process SIGINT, so it behaves exactly as
   Ctrl-C.
+  The dock's spinner shows `ui.spinner_word` (coded's own `SPINNER_WORDS`,
+  rotating every few seconds from a random start) for a generic label and the
+  turn's elapsed time; a specific `thinking(text)` label is shown as is.
 - **Tasks** (`tasks.py`, `Agent.tasks`, `ctx.extra["tasks"]`): every sub-agent
   run is a `TaskEntry`; the sub-agent's `on_activity` (fired in
   `_show_tool_call`) records its steps. `task` with `run_in_background` runs
@@ -742,6 +786,11 @@ config.example.json     # sample configuration
   under its tool call. Folded output is 3 lines (`_MAX_RESULT_LINES`), blank runs squeezed and
   long lines cut to one terminal row; the TUI's `ToolResult` folds the same way
   and a click (or Ctrl+O, `action_toggle_output`, for all) expands it.
+- **Slash commands mid-turn**: the dock lists matching commands under the
+  input box while a `/word` is typed (`ui.slash_matches`/`slash_suggestions`,
+  `TurnDock(get_commands=…)`, from `Repl._slash_entries`); Tab (`typeahead.TAB`)
+  calls `TypeAhead(complete=…)` → `ui.complete_slash`. The line is still queued
+  and run as a command after the turn (except the intercepted `/btw`, `/dashboard`).
 - **Queued messages** (`TypeAhead._queued`, a deque): **↑** mid-turn
   (`typeahead.UP`, from `ESC [A`/`ESC OA` or Windows `\xe0H`) runs
   `edit_last`, moving the newest one into the line being typed; Enter queues it
@@ -824,7 +873,7 @@ one (e.g. `ruff`, `black`), record the commands here.
 
 - **argparse + free-form prompt**: the top-level parser has a `nargs="*"`
   positional `prompt`, which conflicts with argparse subparsers. Subcommands
-  (`config`, `models`, `agents`, `doctor`, `index`, `review`, `sessions`, `commit`, `import`, `skill`,
+  (`config`, `models`, `agents`, `doctor`, `index`, `review`, `sessions`, `commit`, `mission`, `import`, `skill`,
   `plugin`, `prompts`, `acp`, `mcp-serve`) are therefore dispatched manually by the first token in
   `cli.main()` — keep new subcommands on that path, not on `add_subparsers`.
 - **ACP / MCP server modes keep stdout clean** (`ui.set_quiet(True)`): stdout
