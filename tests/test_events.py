@@ -83,3 +83,81 @@ def test_log_is_bounded_and_thread_safe():
     for t in threads:
         t.join()
     assert len(log.items) == 500 and len(log.items[-1]["text"]) == 200
+
+
+def test_events_follow_a_resumed_session(tmp_path, fake_server):
+    """--resume swaps agent.session after the agent is built: new events must
+    land in the resumed session (which is the one saved), not the old one."""
+    def script(body):
+        return {"role": "assistant", "content": "ok"}, _U
+
+    with fake_server(script) as server:
+        cfg = Config()
+        m = ModelConfig(name="fake", model="fake", base_url=server.base_url, api_key="k")
+        cfg.add_model(m, make_default=True)
+        agent = create_agent(model=m, config=cfg, cwd=str(tmp_path),
+                             permissions=PermissionManager(), stream=False, verbose=False)
+        agent.events.add("note", text="before resume")  # into the original session
+        loaded = Session(system_prompt="sys")
+        loaded.events = [{"t": 1, "kind": "turn", "prompt": "from last time"}]
+        agent.session = loaded
+        agent.run("and now")
+    kinds = [e["kind"] for e in loaded.events]
+    assert kinds[0] == "turn" and loaded.events[0]["prompt"] == "from last time"
+    assert "answer" in kinds and kinds.count("turn") == 2
+
+
+def test_a_refusal_records_who_refused(tmp_path, fake_server):
+    """Only the user's own "no" is reason=user: plan mode, hooks, deny rules
+    and runs with nobody to ask are recorded as such (the lab relies on it)."""
+    call = _call("bash", {"command": "rm -rf build"}, "c1")
+
+    def script(body):
+        if body["messages"][-1]["role"] == "tool":
+            return {"role": "assistant", "content": "ok"}, _U
+        return call, _U
+
+    def reason(perms, **cfg_extra):
+        with fake_server(script) as server:
+            cfg = Config()
+            m = ModelConfig(name="fake", model="fake", base_url=server.base_url, api_key="k")
+            cfg.add_model(m, make_default=True)
+            for k, v in cfg_extra.items():
+                setattr(cfg, k, v)
+            agent = create_agent(model=m, config=cfg, cwd=str(tmp_path), permissions=perms,
+                                 stream=False, verbose=False)
+            if cfg_extra.get("_plan"):
+                agent.set_mode("plan", announce=False)
+            agent.run("clean up")
+        return next(e for e in agent.session.events if e["kind"] == "tool")["reason"]
+
+    asking = PermissionManager()
+    asking.set_prompt(lambda t, d: "no")
+    assert reason(asking) == "user"
+    assert reason(PermissionManager(rules={"deny": ["bash(rm *)"]})) == "rule"
+    assert reason(PermissionManager()) == "unattended"
+    import sys
+    hook = {"PreToolUse": [{"matcher": "bash", "command":
+                            f'"{sys.executable}" -c "import sys; sys.exit(2)"'}]}
+    assert reason(PermissionManager(auto_approve=True), hooks=hook) == "hook"
+
+
+def test_plan_mode_refusals_are_not_the_users(tmp_path, fake_server):
+    call = _call("bash", {"command": "rm -rf build"}, "c1")
+
+    def script(body):
+        if body["messages"][-1]["role"] == "tool":
+            return {"role": "assistant", "content": "ok"}, _U
+        return call, _U
+
+    with fake_server(script) as server:
+        cfg = Config()
+        m = ModelConfig(name="fake", model="fake", base_url=server.base_url, api_key="k")
+        cfg.add_model(m, make_default=True)
+        agent = create_agent(model=m, config=cfg, cwd=str(tmp_path),
+                             permissions=PermissionManager(auto_approve=True),
+                             stream=False, verbose=False)
+        agent.set_mode("plan", announce=False)
+        agent.run("clean up")
+    tool = next(e for e in agent.session.events if e["kind"] == "tool")
+    assert tool["denied"] and tool["reason"] == "plan"

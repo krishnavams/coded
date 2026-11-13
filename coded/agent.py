@@ -143,16 +143,31 @@ class Agent:
         # checks after a change even when verify.command is not configured.
         self.self_heal = False
         self._heal_declined = False
-        from coded.events import EventLog
-
-        # A sub-agent's run_subagent replaces this with the parent's log.
-        self.events = EventLog(self.session.events)
+        # The event log follows whatever session the agent has now (--resume
+        # swaps it after construction); a sub-agent's run_subagent points it at
+        # the parent's log instead.
+        self._event_log = None
+        self._events_override = None
         self.event_task: Optional[str] = None  # the task id, in a sub-agent
         self._last_request = ""
         self._interrupted = False
         self._session_started = False
         self._instruction_dirs: set = set()
         self._plan_intro_sent = False
+
+    @property
+    def events(self):
+        if self._events_override is not None:
+            return self._events_override
+        from coded.events import EventLog
+
+        if self._event_log is None or self._event_log.items is not self.session.events:
+            self._event_log = EventLog(self.session.events)
+        return self._event_log
+
+    @events.setter
+    def events(self, log) -> None:
+        self._events_override = log
 
     def _emit(self, kind: str, **data) -> bool:
         if self.on_event is not None:
@@ -1065,8 +1080,16 @@ class Agent:
         from coded.events import classify
 
         start = _time.monotonic()
+        self.permissions.take_deny_reason()  # start clean
         content, is_error, args = self._run_tool_inner(tc, display)
         flags = classify(content) if is_error else {"denied": False, "outside": False}
+        if flags["denied"]:
+            if content.startswith("Plan mode is on"):
+                flags["reason"] = "plan"
+            elif content.startswith("This tool call was blocked"):
+                flags["reason"] = "hook"
+            else:
+                flags["reason"] = self.permissions.take_deny_reason() or "user"
         event = {"name": tc.name, "id": tc.id, "ms": round((_time.monotonic() - start) * 1000),
                  "error": bool(is_error), **flags}
         if is_error:
@@ -1348,11 +1371,19 @@ class Agent:
             sub_system = build_subagent_prompt(sub_cwd, sub_model)
             sub_session = Session(system_prompt=sub_system)
             sub_registry = build_registry(include_task=False)
+            sub_perms = self.permissions
             if read_only:
                 from coded.permissions import EDIT_KEYS
 
-                for name in set(EDIT_KEYS) | {"delete", "move"}:
+                for name in set(EDIT_KEYS) | {"delete", "move", "github"}:
                     sub_registry.unregister(name)
+                if self.permissions.auto_approve:
+                    # --yolo would approve bash and git writes: a read-only
+                    # agent gets a gate with nobody to ask, so they are refused.
+                    sub_perms = PermissionManager(
+                        rules={"allow": list(self.permissions.allow_rules),
+                               "deny": list(self.permissions.deny_rules)},
+                        injection_guard=self.permissions.injection_guard)
             if self.config.lsp:
                 from coded.tools.lsp import LspTool
 
@@ -1362,7 +1393,7 @@ class Agent:
                 config=self.config,
                 registry=sub_registry,
                 session=sub_session,
-                permissions=self.permissions,
+                permissions=sub_perms,
                 cwd=sub_cwd,
                 stream=False,
                 verbose=False,

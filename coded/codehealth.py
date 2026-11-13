@@ -117,7 +117,8 @@ def _windows(text: str) -> List[Tuple[int, str]]:
     out = []
     for i in range(len(keep) - DUP_WINDOW + 1):
         chunk = "\n".join(ln for _, ln in keep[i:i + DUP_WINDOW])
-        out.append((keep[i][0], hashlib.sha1(chunk.encode("utf-8")).hexdigest()))
+        # 12 hex digits: plenty to tell blocks apart, and keeps the twin small.
+        out.append((keep[i][0], hashlib.sha1(chunk.encode("utf-8")).hexdigest()[:12]))
     return out
 
 

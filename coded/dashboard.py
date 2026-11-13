@@ -151,7 +151,10 @@ def render(agent: Any, *, busy: bool = False, width: int = 100) -> Group:
                     root + "\\", "")
                 if e.get("denied"):
                     said = detail.split("said what to do instead:", 1)
-                    why = "denied by you" + (f": {said[1].strip()}" if len(said) > 1 else "")
+                    who = {"user": "denied by you", "rule": "refused by a deny rule",
+                           "plan": "not run: plan mode", "hook": "blocked by a hook",
+                           "unattended": "refused: nobody to ask"}.get(e.get("reason"), "denied")
+                    why = who + (f": {said[1].strip()}" if len(said) > 1 else "")
                 else:
                     why = detail
             elif kind == "verify":

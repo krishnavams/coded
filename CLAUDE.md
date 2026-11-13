@@ -591,12 +591,16 @@ config.example.json     # sample configuration
   until the OS SIGKILLed it.
 - **Event log** (`events.py`, `Session.events`, `Agent.events`): structured
   facts the conversation has no room for — each tool call (name, ms, error,
-  denied, outside, sub-agent `task`), turns, verify pass/fail/stall, status
+  denied with a `reason`: user | rule | plan | hook | unattended, from
+  `PermissionManager.take_deny_reason` — only `user` is the person's choice —
+  outside, sub-agent `task`), turns, verify pass/fail/stall, status
   notes (fallbacks, retries), overflow retries, max_turns, interrupts, answer
   length. Recorded by the `_run_tool` wrapper (the work is in
   `_run_tool_inner`) and the loop; sub-agents write into the parent's log.
   Bounded, locked, saved with the session (old sessions load without it) and
-  **never** put in `session.messages`. `/dashboard`, `/timeline` and
+  **never** put in `session.messages`. `Agent.events` is a property that
+  follows the agent's *current* session (`--resume` swaps it after
+  construction); a sub-agent's is set to the parent's log. `/dashboard`, `/timeline` and
   `coded lab` read it.
 - **Command Center** (`dashboard.render`, `/dashboard`): one plain render (no
   Textual import) from the session, its event log (`llm` events give the
@@ -616,16 +620,18 @@ config.example.json     # sample configuration
 - **Adversarial review** (`adversary.py`, `/redteam [target]`, `/review
   --adversarial`, `coded review --adversarial`): the built-in `adversary`
   skill in `run_subagent(read_only=True)` — the registry is built without
-  `EDIT_KEYS` + delete/move (never by toggling the shared `plan_mode`); bash
-  stays behind the normal prompt. Fresh context with only the target; runs on
+  `EDIT_KEYS` + delete/move/github (never by toggling the shared
+  `plan_mode`); bash stays behind the normal prompt, and when the parent
+  auto-approves (--yolo) the sub-agent gets its own gate with nobody to ask,
+  so bash and git writes are refused. Fresh context with only the target; runs on
   `model_roles.review` and says when that is the main model. `parse` keeps a
   finding only with a known severity, a `file:line` that exists and a concrete
   trigger, and reports how many it dropped. Opt-in: `REVIEW_PHASES` and the CI
   exit codes are unchanged without the flag.
 - **Project twin** (`twin.py`, `/twin`): per-file facts — raw imports
   (`depgraph.py_raw_imports`/`js_raw_imports`, resolved per build) and
-  code-health findings + duplicate windows — keyed by `[size, mtime_ns]` and
-  `PARSER_VERSION` (bump it when a parser changes). Stored in
+  code-health findings + duplicate windows — keyed by `[size, mtime_ns]`;
+  the whole file is versioned by `PARSER_VERSION` + coded's version. Stored in
   `$XDG_CACHE_HOME/coded/twin/<sha of realpath>.json`, never in the repo;
   atomic, corrupt = rebuilt, refreshed lazily (no watcher). `repo_map`'s
   dependency/health operations use it. Answers must be identical with and
@@ -638,7 +644,9 @@ config.example.json     # sample configuration
   repeated calls, fallback churn. A `Proposal` is shown as its exact change and
   applied only interactively, one at a time (no `--yes`; `--apply` refuses
   without a TTY); `loosens=True` ones get a warning. Writes go only to the
-  project's CODED.md, memory or `.coded/config.json` (via `config_wizard`).
+  project memory (gitignored) or `.coded/config.json` (via `config_wizard`),
+  never to committed instruction files. Denials count only with
+  `reason == "user"`.
 - **Sessions survive a crash**: `Agent.on_step` (main agent only; the CLI sets
   it to autosave) runs after the user message, each tool step and the final
   answer, so a kill loses at most one step; the REPL also saves after Ctrl-C.

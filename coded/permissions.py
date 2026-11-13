@@ -152,6 +152,14 @@ class PermissionManager:
         with self._lock:
             return fn(text, list(options or []))
 
+    def take_deny_reason(self) -> Optional[str]:
+        """Why this thread's last request was denied (once): "user" (they said
+        no), "rule" (a deny rule), "plan" (plan mode) or "unattended" (nobody
+        could be asked)."""
+        reason = getattr(self._local, "deny_reason", None)
+        self._local.deny_reason = None
+        return reason
+
     def take_feedback(self) -> str:
         """What the user said with their last "no" on this thread (once)."""
         text = getattr(self._local, "feedback", "") or ""
@@ -206,10 +214,13 @@ class PermissionManager:
         """
         target = target if target is not None else detail
         self._local.feedback = ""
+        self._local.deny_reason = None
         # Deny rules win over everything, including --yolo.
         if self._matches(self.deny_rules, key, target):
+            self._local.deny_reason = "rule"
             return Decision.DENY
         if self.plan_mode:
+            self._local.deny_reason = "plan"
             return Decision.DENY
         strict = self.tainted and self.injection_guard == "strict"
         if not strict:
@@ -222,12 +233,14 @@ class PermissionManager:
         if self._prompt is None or self.in_background():
             # Non-interactive (or a background task) and not auto-approved:
             # deny by default (safe).
+            self._local.deny_reason = "unattended"
             return Decision.DENY
         if self.tainted and self.injection_guard != "off":
             title = f"⚠ untrusted content is in context — {title}"
         with self._lock:
             raw = (self._prompt(title, detail) or "no").strip()
         answer = raw.lower()
+        self._local.deny_reason = "user"
         if answer.startswith("no:"):
             self._local.feedback = raw[3:].strip()
             return Decision.DENY

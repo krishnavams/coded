@@ -12,7 +12,8 @@ sub-agents write concurrently), and a sub-agent writes into its parent's log
 with its task id. Every entry has `t` (epoch seconds) and `kind`:
 
     turn        prompt (first 200 chars)
-    tool        name, ms, error, denied, outside, task, detail (first line on error)
+    tool        name, id, ms, error, denied, reason (user | rule | plan | hook |
+                unattended, when denied), outside, task, detail (first line on error)
     verify      result: fail | pass | stall | skipped, command
     note        text (status notes: fallbacks, retries, hooks)
     overflow    a context-window retry

@@ -40,15 +40,24 @@ def _sessions(tmp_path):
         {"t": 1, "kind": "turn", "prompt": "fix"},
         _fail("[exit 127] /usr/bin/env: 'node': No such file"),
         _fail("[exit 127] /opt/x/env: 'node': No such file"),
-        {"t": 2, "kind": "tool", "name": "delete", "error": True, "denied": True},
+        {"t": 2, "kind": "tool", "name": "delete", "error": True, "denied": True,
+         "reason": "user"},
+        {"t": 2, "kind": "tool", "name": "write", "error": True, "denied": True,
+         "reason": "plan"},
+        {"t": 2, "kind": "tool", "name": "write", "error": True, "denied": True,
+         "reason": "plan"},
+        {"t": 2, "kind": "tool", "name": "write", "error": True, "denied": True,
+         "reason": "plan"},
         {"t": 3, "kind": "verify", "result": "stall", "command": "pytest -q"},
         {"t": 4, "kind": "max_turns", "limit": 50},
     ], messages=[call] * 5)
     _save(store, "s2", proj, [
         {"t": 5, "kind": "turn", "prompt": "again"},
         _fail("[exit 127] /usr/local/env: 'node': No such file"),
-        {"t": 6, "kind": "tool", "name": "delete", "error": True, "denied": True},
-        {"t": 6, "kind": "tool", "name": "delete", "error": True, "denied": True},
+        {"t": 6, "kind": "tool", "name": "delete", "error": True, "denied": True,
+         "reason": "user"},
+        {"t": 6, "kind": "tool", "name": "delete", "error": True, "denied": True,
+         "reason": "user"},
         {"t": 7, "kind": "verify", "result": "stall", "command": "pytest -q"},
     ])
     other = tmp_path / "other"
@@ -65,6 +74,7 @@ def test_finds_what_keeps_going_wrong(tmp_path):
     titles = [f.title for f in report.findings]
     assert "`bash` keeps failing the same way" in titles
     assert "You denied `delete` 3 times" in titles
+    assert not any("`write`" in t for t in titles)  # plan-mode refusals are not "you"
     assert "The checks fail the same way after a fix" in titles
     assert "Turns hit max_turns" in titles
     assert any("repeated the same `grep` call 5 times" in t for t in titles)
@@ -93,8 +103,11 @@ def test_applies_only_what_is_approved_one_by_one(tmp_path):
     proposals = [f for f in report.findings if f.proposal]
     assert len(asked) == len(proposals) and n == 2
     assert any("lets the agent do more" in s for s in said)
-    assert (proj / "CODED.md").exists() and "Learned from past sessions" in \
-        (proj / "CODED.md").read_text()
+    from coded.memory import MemoryStore
+
+    assert not (proj / "CODED.md").exists()  # committed files are never touched
+    notes = MemoryStore.for_project(str(proj)).load()
+    assert notes and notes[0].kind == "gotcha" and notes[0].source == "user"
     cfg = proj / ".coded" / "config.json"
     assert not cfg.exists() or "max_turns" not in json.loads(cfg.read_text())
 

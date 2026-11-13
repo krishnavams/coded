@@ -103,3 +103,30 @@ def test_adversarial_phase_is_opt_in(tmp_path, monkeypatch):
     cli._handle_review_command(base + ["--adversarial"])
     assert phases_seen[0] == review.REVIEW_PHASES
     assert phases_seen[1] == review.REVIEW_PHASES + ["adversary"]
+
+
+def test_read_only_holds_under_yolo(tmp_path, fake_server):
+    """With --yolo the parent approves everything; the adversary must still not
+    be able to change anything through bash, git or github."""
+    import json
+
+    (tmp_path / "app.py").write_text("x = 1\n")
+
+    def script(body):
+        if body["messages"][-1]["role"] == "tool":
+            return {"role": "assistant", "content": "NO FINDINGS — checked app.py."}, _U
+        return {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "b1", "type": "function", "function": {"name": "bash", "arguments":
+             json.dumps({"command": "echo pwned > pwned.txt"})}}]}, _U
+
+    with fake_server(script) as server:
+        cfg = Config()
+        main = ModelConfig(name="main", model="main", base_url=server.base_url, api_key="k")
+        cfg.add_model(main, make_default=True)
+        agent = create_agent(model=main, config=cfg, cwd=str(tmp_path),
+                             permissions=PermissionManager(auto_approve=True), stream=False,
+                             verbose=False, skills=discover_skills(str(tmp_path)))
+        out = adversary.run(agent, "app.py")
+    assert not (tmp_path / "pwned.txt").exists()
+    assert "No findings" in out
+    assert agent.permissions.auto_approve  # the parent's own gate is untouched

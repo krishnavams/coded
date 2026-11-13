@@ -29,6 +29,14 @@ from typing import Any, Dict, List, Optional
 PARSER_VERSION = 1
 
 
+def _version() -> str:
+    """Cached facts depend on the parsers and on thresholds that can change in
+    any release, so a new coded version starts a fresh twin."""
+    from coded import __version__
+
+    return f"{PARSER_VERSION}:{__version__}"
+
+
 def cache_dir() -> Path:
     base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
     return Path(base) / "coded" / "twin"
@@ -51,7 +59,7 @@ class Twin:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return
-        if not isinstance(data, dict) or data.get("version") != PARSER_VERSION \
+        if not isinstance(data, dict) or data.get("version") != _version() \
                 or data.get("root") != self.root:
             return
         files = data.get("files")
@@ -64,7 +72,7 @@ class Twin:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
-            tmp.write_text(json.dumps({"version": PARSER_VERSION, "root": self.root,
+            tmp.write_text(json.dumps({"version": _version(), "root": self.root,
                                        "files": self.files, "snapshot": self.snapshot,
                                        "taken": self.taken}), encoding="utf-8")
             os.replace(tmp, self.path)

@@ -6,13 +6,14 @@ keeps going wrong: the same tool error again and again, actions the user keeps
 denying, checks that stall, turns that hit max_turns, the agent repeating the
 identical call, model fallbacks churning. Plain heuristics, no model call.
 
-Each finding can carry a proposal — a deny rule, a project-instructions line,
-a memory note, a setting — shown as the exact change. Nothing is applied
+Each finding can carry a proposal — a project memory note or a setting —
+shown as the exact change. Nothing is applied
 without the user: `coded lab --apply` (or `/lab apply`) asks about each one
 separately, only at a terminal (there is no --yes), and a proposal that would
 loosen what the agent may do is flagged and never batched with the others.
-Changes go only to this project's config, instructions or memory, never to
-coded's own files.
+Changes go only to this project's memory (`.coded/memory.json`, not shared
+through git) or its `.coded/config.json`, never to coded's own files or to
+committed instruction files.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ _MIN_REPEATS = 3
 
 @dataclass
 class Proposal:
-    kind: str            # "deny_rule" | "instruction" | "memory" | "setting"
+    kind: str            # "memory" | "setting"
     value: Any
     preview: str         # the exact change, as shown before applying
     loosens: bool = False
@@ -115,10 +116,13 @@ def analyze(sessions: List[Dict[str, Any]]) -> Report:
         report.findings.append(Finding(
             f"`{tool}` keeps failing the same way", f"{len(hits)} times in "
             f"{len(set(hits))} session(s), e.g. “{example}”", len(hits),
-            Proposal("instruction", line, f"+ {line}   (in CODED.md)")))
+            Proposal("memory", line, f"+ (gotcha) {line}   (project memory, .coded/memory.json)")))
 
     # 2. Actions the user keeps saying no to.
-    denied = Counter(str(e.get("name")) for _, e in tools if e.get("denied"))
+    # Only what the user turned down: plan mode, hooks, deny rules and "nobody
+    # to ask" refusals say nothing about the user's preferences.
+    denied = Counter(str(e.get("name")) for _, e in tools
+                     if e.get("denied") and e.get("reason") == "user")
     for tool, n in denied.most_common():
         if n < _MIN_REPEATS:
             continue
@@ -126,7 +130,8 @@ def analyze(sessions: List[Dict[str, Any]]) -> Report:
                 "before planning around it.")
         report.findings.append(Finding(
             f"You denied `{tool}` {n} times", "the agent keeps proposing an action you "
-            "turn down", n, Proposal("instruction", line, f"+ {line}   (in CODED.md)")))
+            "turn down", n, Proposal("memory", line,
+                                     f"+ (gotcha) {line}   (project memory, .coded/memory.json)")))
 
     # 3. Checks that stall.
     stalls = [e for _, e in events if e.get("kind") == "verify" and e.get("result") == "stall"]
@@ -137,7 +142,8 @@ def analyze(sessions: List[Dict[str, Any]]) -> Report:
             f"(`{cmd}`): often a test that was already failing", len(stalls),
             Proposal("memory", f"`{cmd}` has failures that predate recent changes; check "
                      "which tests fail before starting a fix.",
-                     f"+ (gotcha) `{cmd}` has failures that predate recent changes…")))
+                     f"+ (gotcha) `{cmd}` has failures that predate recent changes…   "
+                     "(project memory, .coded/memory.json)")))
 
     # 4. Turns that ran out of steps.
     caps = [e for _, e in events if e.get("kind") == "max_turns"]
@@ -211,34 +217,18 @@ def render(report: Report):
 
 def apply_proposal(cwd: str, p: Proposal) -> str:
     """Make one approved change. Only this project's files are touched."""
-    if p.kind == "instruction":
-        path = Path(cwd) / "CODED.md"
-        text = path.read_text(encoding="utf-8") if path.is_file() else ""
-        if p.value in text:
-            return "already in CODED.md"
-        sep = "" if not text or text.endswith("\n") else "\n"
-        head = "" if "## Learned from past sessions" in text else "\n## Learned from past sessions\n"
-        path.write_text(text + sep + head + f"- {p.value}\n", encoding="utf-8")
-        return "added to CODED.md"
     if p.kind == "memory":
         from coded.memory import MemoryStore
 
         entry = MemoryStore.for_project(cwd).add(p.value, "gotcha", source="user")
         return "saved as a project note" if entry else "already a project note"
-    if p.kind in ("setting", "deny_rule"):
+    if p.kind == "setting":
         from coded.config import project_config_path
         from coded.config_wizard import read_file, write_file
 
         path = project_config_path(cwd)
         data = read_file(path)
-        if p.kind == "setting":
-            data.update(p.value)
-        else:
-            perms = data.setdefault("permissions", {})
-            rules = list(perms.get("deny") or [])
-            if p.value not in rules:
-                rules.append(p.value)
-            perms["deny"] = rules
+        data.update(p.value)
         write_file(path, data)
         return f"written to {path}"
     return "unknown proposal kind; nothing changed"
