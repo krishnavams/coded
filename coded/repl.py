@@ -120,7 +120,7 @@ SLASH_COMMANDS = {
     "/route": "Difficulty routing: /route [on|off] (shows the current state).",
     "/tools": "List available tools.",
     "/skills": "List available skills.",
-    "/skill": "Invoke a skill now: /skill <name> [task].",
+    "/skill": "Invoke a skill now: /skill <name> [task], or just /<name> [task].",
     "/review": "Run reviewer→qa→security sub-agents on the changes: /review [target].",
     "/plan": "Toggle plan mode (read-only research, then approve a plan). Also Shift+Tab.",
     "/permissions": "Show or change what may run without asking: "
@@ -237,6 +237,9 @@ class Repl:
         meta.update({f"/{n}": f"command · {c.description}"[:60] for n, c in self.commands.items()})
         meta.update({name: f"model · {mc.model}" for name, mc in config.models.items()})
         meta.update({name: "skill" for name in agent.skills})
+        skill_cmds = [f"/{n}" for n in agent.skills if f"/{n}" not in meta]
+        words += skill_cmds
+        meta.update({c: f"skill · {agent.skills[c[1:]].description}"[:60] for c in skill_cmds})
         from coded.mentions import MentionCompleter
 
         self.mentions = MentionCompleter(agent.cwd)
@@ -553,6 +556,9 @@ class Repl:
         """(name, description) of the built-in and custom slash commands."""
         entries = list(SLASH_COMMANDS.items())
         entries += [(f"/{n}", f"command · {c.description}") for n, c in self.commands.items()]
+        taken = {n for n, _ in entries}
+        entries += [(f"/{n}", f"skill · {getattr(s, 'description', '')}")
+                    for n, s in self.agent.skills.items() if f"/{n}" not in taken]
         return entries
 
     def _complete_midturn(self, text: str) -> Optional[str]:
@@ -879,6 +885,8 @@ class Repl:
             prompts_main(["list", "--cwd", self.agent.cwd])
         elif cmd[1:] in self.commands:
             self._run_custom_command(cmd[1:], text[len(cmd):])
+        elif cmd[1:] in self.agent.skills:  # /<skill> [task] = /skill <skill> [task]
+            self._cmd_skill([cmd[1:]] + args)
         else:
             ui.warn(f"Unknown command: {cmd}. Try /help.")
         return False
@@ -1470,12 +1478,10 @@ class Repl:
         except OSError as exc:
             ui.error(f"Could not read skill: {exc}")
             return
+        from coded.skills import skill_message
+
         task = " ".join(args[1:]).strip()
-        message = (
-            f"Apply the skill '{name}'. Its instructions are below; follow them"
-            + (f" for this task: {task}\n\n" if task else ".\n\n")
-            + f"---\n{body}"
-        )
+        message = skill_message(name, body, task)
         ui.user_prefix()
         self.agent.run(message, route_hint=f"/skill {name} {task}".strip())
 

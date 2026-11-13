@@ -28,6 +28,7 @@ COMMANDS = [
     "/model fake", "/model nope", "/tools", "/image", "/image nope.png", "/image pic.png",
     "/image pic.png describe it", "/image pic.png -- describe it", "/paste", "/checkpoints",
     "/skills", "/skill", "/skill planner", "/skill planner plan a thing", "/skill nope",
+    "/planner", "/planner plan a [/x] thing",
     "/review", "/review a.py", "/review --adversarial a.py", "/cost", "/rewind", "/rewind x",
     "/rewind 99", "/style", "/style concise", "/style nope", "/style off", "/style default",
     "/add-dir", "/add-dir .", "/add-dir nope", "/add-dir sub", "/context", "/export",
@@ -139,3 +140,13 @@ def test_mid_turn_slash_suggestions_cover_every_command(repl):
     assert set(SLASH_COMMANDS) <= set(names)
     assert repl._complete_midturn("/dashb") == "/dashboard "
     assert repl._complete_midturn("hello") is None
+
+
+def test_a_skill_runs_as_its_own_slash_command(repl, monkeypatch):
+    sent = []
+    monkeypatch.setattr(repl.agent, "run", lambda msg, **kw: sent.append(msg) or "ok")
+    repl._handle_slash("/planner write a mail")
+    assert sent and sent[0].startswith("Apply the skill 'planner'")
+    assert "for this task: write a mail" in sent[0]
+    assert ("/planner", ) == tuple(n for n, _ in repl._slash_entries() if n == "/planner")
+    assert repl._complete_midturn("/plann") == "/planner "

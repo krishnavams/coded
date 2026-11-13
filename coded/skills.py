@@ -227,3 +227,11 @@ def _shorten(text: str, limit: int = 200) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+
+
+def skill_message(name: str, body: str, task: str = "") -> str:
+    """The user message that applies a skill now (`/skill <name>` or `/<name>`)."""
+    task = task.strip()
+    return (f"Apply the skill '{name}'. Its instructions are below; follow them"
+            + (f" for this task: {task}\n\n" if task else ".\n\n")
+            + f"---\n{body}")

@@ -418,7 +418,7 @@ pip install -e '.[tui]'      # adds Textual
 | `/setup` | Configure models interactively (then reloads the session) |
 | `/tools` | List available tools |
 | `/skills` | List available skills |
-| `/skill <name> [task]` | Invoke a skill now |
+| `/skill <name> [task]` | Invoke a skill now (or just `/<name> [task]`) |
 | `/review [target]` | Run reviewer→qa→security sub-agents and aggregate |
 | `/image <path>... [prompt]` | Attach image(s) for a vision model |
 | `/paste` | Attach the image on the clipboard (also **Ctrl+V**) |
@@ -854,6 +854,7 @@ when a task matches, or you can run one directly:
 ```
 /skill planner add rate limiting to the API
 /skill reviewer            # reviews your current git diff
+/planner add rate limiting # the same: every skill is also a slash command
 ```
 
 They're written to use the `task` sub-agent tool for isolated work, so a review

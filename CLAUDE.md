@@ -207,6 +207,8 @@ config.example.json     # sample configuration
    earlier one by name (so a project `planner` shadows the built-in). `create_agent`
    injects each skill's name+description into the system prompt (level 1) and
    registers the `skill` tool, which loads a skill's full body on demand (level 2).
+   `/<skill> [task]` is `/skill <skill> [task]` (`skills.skill_message`; built-in
+   and custom commands win a clash).
    Bundled files are reached with the normal read/bash tools (level 3). Sub-agents
    run without skills. Frontmatter is parsed by a tiny built-in YAML subset (no
    pyyaml dependency) — scalars, inline `[a, b]`, and block lists only. Built-in

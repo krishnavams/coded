@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Changed
+- Every skill is also a slash command: `/prompt-master write a mail` is
+  `/skill prompt-master write a mail` (REPL and TUI), and skills appear in
+  slash-command completion. Built-in and custom commands win a name clash.
 - Typing `/` while a turn or tool is running lists the matching slash
   commands under the input box, and Tab completes the one being typed (the
   prompt between turns already did this).
