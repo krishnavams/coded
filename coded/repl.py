@@ -153,6 +153,8 @@ SLASH_COMMANDS = {
     "/setup": "Configure models interactively (adds, tests, roles, pools, routing).",
     "/verify": "Run the project's checks (and the verify model) over the last change.",
     "/memory": "Project memory: /memory [list|search <words>|add <note>|forget <id>|clear].",
+    "/twin": "Project twin: languages, modules, what the code depends on most, cycles, "
+             "hot spots, and what changed since you last looked.",
     "/redteam": "Adversarial review: a read-only agent hunts for security holes, wrong "
                 "assumptions and hidden bugs: /redteam [target].",
     "/timeline": "Time-travel: list requests, replay one step by step (/timeline N), or go "
@@ -738,6 +740,10 @@ class Repl:
             self._cmd_memory(args)
         elif cmd == "/heal":
             self._cmd_heal(args)
+        elif cmd == "/twin":
+            from coded import twin
+
+            ui.console.print(twin.render(twin.refresh(self.agent.cwd)))
         elif cmd == "/redteam":
             from coded import adversary
 

@@ -50,6 +50,7 @@ coded/
 ├── repomap.py          # ranked symbol map (ast + regex, PageRank over references)
 ├── depgraph.py         # import graph (Python ast, JS/TS regex): dependents, impact, cycles
 ├── codehealth.py       # refactor hot spots: function metrics (ast), duplicate blocks, ranking
+├── twin.py             # project twin: per-file parse cache (user cache dir) + /twin snapshot
 ├── memory.py           # project memory store (./.coded/memory.json)
 ├── speed.py            # `coded models --speed`: first token, total, tok/s per model
 ├── verify.py           # post-turn gates: project checks + a second model
@@ -140,6 +141,7 @@ tests/
 ├── test_dashboard.py   # /dashboard render, REPL + mid-turn, TUI modal
 ├── test_timeline.py    # timeline turns, per-turn file changes, restore preview + rewind, saved
 ├── test_adversary.py   # findings need file:line + trigger, read-only tools, model note, opt-in
+├── test_twin.py        # same answers with/without the cache, outside the repo, /twin changes
 ├── test_session_autosave.py  # per-step autosave, atomic save, orphan tool calls, todos
 ├── test_memory_bounds.py  # bounded output/file reads, timeout kills the process group
 ├── test_compaction.py  # context compaction trigger + tail preservation
@@ -618,6 +620,15 @@ config.example.json     # sample configuration
   finding only with a known severity, a `file:line` that exists and a concrete
   trigger, and reports how many it dropped. Opt-in: `REVIEW_PHASES` and the CI
   exit codes are unchanged without the flag.
+- **Project twin** (`twin.py`, `/twin`): per-file facts — raw imports
+  (`depgraph.py_raw_imports`/`js_raw_imports`, resolved per build) and
+  code-health findings + duplicate windows — keyed by `[size, mtime_ns]` and
+  `PARSER_VERSION` (bump it when a parser changes). Stored in
+  `$XDG_CACHE_HOME/coded/twin/<sha of realpath>.json`, never in the repo;
+  atomic, corrupt = rebuilt, refreshed lazily (no watcher). `repo_map`'s
+  dependency/health operations use it. Answers must be identical with and
+  without it (tested); cached findings are stored as copies because ranking
+  rescales scores. Tests get a private `XDG_CACHE_HOME` (autouse fixture).
 - **Sessions survive a crash**: `Agent.on_step` (main agent only; the CLI sets
   it to autosave) runs after the user message, each tool step and the final
   answer, so a kill loses at most one step; the REPL also saves after Ctrl-C.

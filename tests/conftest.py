@@ -119,6 +119,12 @@ def _trust_store(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _twin_cache(tmp_path_factory, monkeypatch):
+    """The project twin caches in the user's cache dir; keep tests out of it."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("cache")))
+
+
+@pytest.fixture(autouse=True)
 def _no_update_check(monkeypatch):
     """Tests run from a git checkout of coded: never let the REPL start a real
     `git ls-remote` in the background."""

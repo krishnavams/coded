@@ -108,54 +108,70 @@ def _eager_import_nodes(tree: ast.AST) -> Set[int]:
     return eager
 
 
-def _py_imports(rel: str, text: str, index: Dict[str, str]) -> Tuple[Set[str], Set[str], Set[str]]:
+def py_raw_imports(rel: str, text: str) -> List[list]:
+    """The file's imports before resolution (cacheable): [kind, name, names,
+    eager] with relative imports already made absolute. kind is "import" or
+    "from"; eager is False for an import inside a function."""
     try:
         tree = ast.parse(text)
     except (SyntaxError, ValueError):
-        return set(), set(), set()
+        return []
     eager_nodes = _eager_import_nodes(tree)
-    eager: Set[str] = set()
     pkg = list(Path(rel).with_suffix("").parts)[:-1]  # the file's package
-    local: Set[str] = set()
-    outside: Set[str] = set()
-    now = [False]
-
-    def found(path: str) -> None:
-        local.add(path)
-        if now[0]:
-            eager.add(path)
-
-    def add(name: str) -> None:
-        hit = _resolve_py(name, index)
-        if hit and hit != rel:
-            found(hit)
-        elif not hit:
-            outside.add(name.split(".")[0])
-
+    out: List[list] = []
     for node in ast.walk(tree):
-        now[0] = id(node) in eager_nodes
+        eager = id(node) in eager_nodes
         if isinstance(node, ast.Import):
             for alias in node.names:
-                add(alias.name)
+                out.append(["import", alias.name, [], eager])
         elif isinstance(node, ast.ImportFrom):
             if node.level:
-                base = pkg[:len(pkg) - (node.level - 1)] if node.level > 1 else pkg
                 if node.level - 1 > len(pkg):
                     continue
+                base = pkg[:len(pkg) - (node.level - 1)] if node.level > 1 else pkg
                 prefix = ".".join(base + ([node.module] if node.module else []))
             else:
                 prefix = node.module or ""
-            if not prefix:
+            if prefix:
+                out.append(["from", prefix, [a.name for a in node.names], eager])
+    return out
+
+
+def _py_resolve(rel: str, raw: List[list], index: Dict[str, str]) -> Tuple[Set[str], Set[str], Set[str]]:
+    """(local files, outside packages, lazy-only local files) for raw imports."""
+    local: Set[str] = set()
+    outside: Set[str] = set()
+    eager: Set[str] = set()
+
+    def found(path: str, now: bool) -> None:
+        local.add(path)
+        if now:
+            eager.add(path)
+
+    def add(name: str, now: bool) -> None:
+        hit = _resolve_py(name, index)
+        if hit and hit != rel:
+            found(hit, now)
+        elif not hit:
+            outside.add(name.split(".")[0])
+
+    for kind, name, names, now in raw:
+        if kind == "import":
+            add(name, now)
+            continue
+        # `from pkg import mod` may name a submodule rather than a symbol.
+        for alias in names:
+            sub = f"{name}.{alias}"
+            if alias != "*" and sub in index:
+                if index[sub] != rel:
+                    found(index[sub], now)
                 continue
-            # `from pkg import mod` may name a submodule rather than a symbol.
-            for alias in node.names:
-                sub = f"{prefix}.{alias.name}"
-                if alias.name != "*" and sub in index:
-                    if index[sub] != rel:
-                        found(index[sub])
-                    continue
-                add(prefix)
+            add(name, now)
     return local, outside, local - eager
+
+
+def _py_imports(rel: str, text: str, index: Dict[str, str]) -> Tuple[Set[str], Set[str], Set[str]]:
+    return _py_resolve(rel, py_raw_imports(rel, text), index)
 
 
 def _resolve_js(rel: str, spec: str, known: Set[str]) -> Optional[str]:
@@ -184,11 +200,18 @@ def _resolve_js(rel: str, spec: str, known: Set[str]) -> Optional[str]:
     return None
 
 
+def js_raw_imports(text: str) -> List[str]:
+    return [m.group(1).strip() for m in _JS_IMPORT.finditer(text)]
+
+
 def _js_imports(rel: str, text: str, known: Set[str]) -> Tuple[Set[str], Set[str]]:
+    return _js_resolve(rel, js_raw_imports(text), known)
+
+
+def _js_resolve(rel: str, specs: List[str], known: Set[str]) -> Tuple[Set[str], Set[str]]:
     local: Set[str] = set()
     outside: Set[str] = set()
-    for m in _JS_IMPORT.finditer(text):
-        spec = m.group(1).strip()
+    for spec in specs:
         if spec.startswith("."):
             hit = _resolve_js(rel, spec, known)
             if hit and hit != rel:
@@ -200,9 +223,10 @@ def _js_imports(rel: str, text: str, known: Set[str]) -> Tuple[Set[str], Set[str
 
 
 def build(cwd: str, files: Sequence[str], *, max_files: int = MAX_FILES,
-          deadline: Optional[float] = None, ignored=None) -> DepGraph:
+          deadline: Optional[float] = None, ignored=None, twin=None) -> DepGraph:
     """The import graph of `files` (repo-relative). `ignored(path)` drops
-    files the user excluded (.codedignore)."""
+    files the user excluded (.codedignore). With a `twin` (twin.py), a file
+    whose size and mtime are unchanged is not read or parsed again."""
     from coded.repomap import _readable
 
     stop = deadline if deadline is not None else time.monotonic() + MAX_SECONDS
@@ -218,14 +242,20 @@ def build(cwd: str, files: Sequence[str], *, max_files: int = MAX_FILES,
         if time.monotonic() > stop:
             graph.truncated = True
             break
-        text = _readable(root / rel)
-        if text is None:
-            continue
+        entry = twin.entry(rel) if twin is not None else None
+        raw = entry.get("imports") if entry is not None else None
+        if raw is None:
+            text = _readable(root / rel)
+            if text is None:
+                continue
+            raw = py_raw_imports(rel, text) if rel.endswith(_PY) else js_raw_imports(text)
+            if entry is not None:
+                entry["imports"] = raw
         lazy: Set[str] = set()
         if rel.endswith(_PY):
-            local, outside, lazy = _py_imports(rel, text, index)
+            local, outside, lazy = _py_resolve(rel, raw, index)
         else:
-            local, outside = _js_imports(rel, text, known)
+            local, outside = _js_resolve(rel, raw, known)
         graph.imports[rel] = local
         if lazy:
             graph.lazy[rel] = lazy
@@ -234,7 +264,7 @@ def build(cwd: str, files: Sequence[str], *, max_files: int = MAX_FILES,
     return graph
 
 
-def build_for(cwd: str) -> DepGraph:
+def build_for(cwd: str, twin=None) -> DepGraph:
     """The graph of the whole repository, honouring .codedignore."""
     from coded.repo_overview import list_files
 
@@ -249,7 +279,7 @@ def build_for(cwd: str) -> DepGraph:
         ignored = rules.ignored if rules else None
     except Exception:  # noqa: BLE001
         ignored = None
-    return build(cwd, files, ignored=ignored)
+    return build(cwd, files, ignored=ignored, twin=twin)
 
 
 # ---------------------------------------------------------------------------

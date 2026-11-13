@@ -507,6 +507,11 @@ class CodedTUI(App):
         if text.split()[0] == "/dashboard":
             self.push_screen(DashboardModal(self))
             return
+        if text.split()[0] == "/twin":
+            from coded import twin
+
+            self._mount(Static(twin.render(twin.refresh(self.agent.cwd)), classes="statusnote"))
+            return
         if text.split()[0] == "/redteam":
             self._mount(StatusNote("Adversarial review (read-only sub-agent)…"))
             self._run_redteam(text[len("/redteam"):].strip() or None)

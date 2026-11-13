@@ -123,9 +123,13 @@ def _windows(text: str) -> List[Tuple[int, str]]:
 
 def duplicate_findings(texts: Dict[str, str], limit: int = 40) -> List[Finding]:
     """Blocks of DUP_WINDOW+ identical lines in two or more places."""
+    return _duplicates_from({rel: _windows(text) for rel, text in texts.items()}, limit)
+
+
+def _duplicates_from(windows: Dict[str, List[Tuple[int, str]]], limit: int = 40) -> List[Finding]:
     seen: Dict[str, List[Tuple[str, int]]] = defaultdict(list)
-    for rel, text in texts.items():
-        for line, digest in _windows(text):
+    for rel, items in windows.items():
+        for line, digest in items:
             seen[digest].append((rel, line))
     # One finding per pair of places; consecutive windows of the same copy merge.
     reported: Dict[Tuple[str, str], Tuple[int, int, int]] = {}
@@ -152,8 +156,9 @@ def duplicate_findings(texts: Dict[str, str], limit: int = 40) -> List[Finding]:
 
 
 def scan(cwd: str, files: Sequence[str], *, ignored=None, max_files: int = MAX_FILES,
-         deadline: Optional[float] = None) -> Tuple[List[Finding], bool]:
-    """(findings ranked most worthwhile first, truncated)."""
+         deadline: Optional[float] = None, twin=None) -> Tuple[List[Finding], bool]:
+    """(findings ranked most worthwhile first, truncated). With a `twin`,
+    unchanged files reuse their cached findings and duplicate windows."""
     from coded.repomap import CODE_SUFFIXES, _readable
 
     stop = deadline if deadline is not None else time.monotonic() + MAX_SECONDS
@@ -163,23 +168,31 @@ def scan(cwd: str, files: Sequence[str], *, ignored=None, max_files: int = MAX_F
         code = [f for f in code if not ignored(root / f)]
     truncated = len(code) > max_files
     code = code[:max_files]
-    texts: Dict[str, str] = {}
+    windows: Dict[str, List[Tuple[int, str]]] = {}
     findings: List[Finding] = []
     for rel in code:
         if time.monotonic() > stop:
             truncated = True
             break
+        entry = twin.entry(rel) if twin is not None else None
+        if entry is not None and "health" in entry:
+            findings += [Finding(**f) for f in entry["health"]]
+            windows[rel] = [tuple(w) for w in entry["windows"]]
+            continue
         text = _readable(root / rel)
         if text is None:
             continue
-        texts[rel] = text
-        if rel.endswith(".py"):
-            findings += python_findings(rel, text)
-    findings += duplicate_findings(texts)
+        mine = python_findings(rel, text) if rel.endswith(".py") else []
+        windows[rel] = _windows(text)
+        findings += mine
+        if entry is not None:
+            entry["health"] = [dict(f.__dict__) for f in mine]  # copies: ranking rescales
+            entry["windows"] = [list(w) for w in windows[rel]]
+    findings += _duplicates_from(windows)
     try:
         from coded.depgraph import build
 
-        rev = build(cwd, list(texts), deadline=stop + 2).dependents
+        rev = build(cwd, list(windows), deadline=stop + 2, twin=twin).dependents
     except Exception:  # noqa: BLE001 - ranking still works without fan-in
         rev = {}
     for f in findings:

@@ -92,7 +92,11 @@ spots (long, branchy or deeply nested functions, copy-pasted blocks) under `path
                                     "dependents, impact, cycles or health.")
         if op != "cycles" and not path:
             return ToolResult.error(f"'{op}' needs `path`: a repo-relative file or folder.")
-        graph = depgraph.build_for(ctx.cwd)
+        from coded.twin import Twin
+
+        twin = Twin(ctx.cwd)  # unchanged files are not re-read
+        graph = depgraph.build_for(ctx.cwd, twin=twin)
+        twin.save()
         if not graph.imports:
             return ToolResult.error(
                 "No Python or JavaScript/TypeScript imports found here. Use grep to follow "
@@ -134,7 +138,11 @@ spots (long, branchy or deeply nested functions, copy-pasted blocks) under `path
             ignored = rules.ignored if rules else None
         except Exception:  # noqa: BLE001
             ignored = None
-        findings, truncated = codehealth.scan(ctx.cwd, files, ignored=ignored)
+        from coded.twin import Twin
+
+        twin = Twin(ctx.cwd)
+        findings, truncated = codehealth.scan(ctx.cwd, files, ignored=ignored, twin=twin)
+        twin.save()
         text = codehealth.render(findings, budget)
         if truncated:
             text += "(The scan was capped; narrow it with `path` for a complete picture.)\n"
