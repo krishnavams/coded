@@ -736,7 +736,8 @@ the file's text.
 ```
 
 What a session learns about a repository normally dies with `/clear`. Project
-memory keeps a few short notes — conventions, decisions, gotchas, facts — in
+memory keeps a few short notes — architecture, conventions, decisions, fixes,
+gotchas, facts — in
 `./.coded/memory.json` (gitignored), and puts them in the system prompt at the
 start of every future session in that project, labelled as recorded
 observations that may be out of date, never as instructions.

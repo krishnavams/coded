@@ -9,9 +9,9 @@ from coded.tools.base import Tool, ToolContext, ToolResult
 
 class MemoryTool(Tool):
     name = "memory"
-    brief = 'Save a short, durable note about THIS repository for future sessions (a convention, decision, fix, gotcha, or how to build/test). Not for task state. The user approves each note. actions: "remember" (text, kind), "search" (query), "forget" (id), "list".'
+    brief = 'Save a short, durable note about THIS repository for future sessions (architecture, a convention, decision, fix, gotcha, or how to build/test). Not for task state. The user approves each note. actions: "remember" (text, kind), "search" (query), "forget" (id), "list".'
     description = """Remember something about THIS repository that the next session would \
-otherwise have to rediscover: a convention the code follows, a decision and its reason, a \
+otherwise have to rediscover: how the code is laid out, a convention the code follows, a decision and its reason, a \
 gotcha that cost you time, a fact about how to build or test it. Notes are shown to you at \
 the start of every future session in this project.
 
@@ -20,7 +20,7 @@ todo_write), not for what is already written in the README or AGENTS.md, and not
 anything a file would say better. One short sentence per note. Saving asks the user for \
 approval, so write the note as you would want to read it in a month.
 
-Kinds: `convention` (how code here is written), `decision` (what was chosen and why — record \
+Kinds: `architecture` (which module owns what, how the pieces connect), `convention` (how code here is written), `decision` (what was chosen and why — record \
 one when the user settles a design question), `fix` (a bug you fixed whose cause would bite \
 again: "symptom → cause → fix", e.g. after the project's checks failed and you fixed them), \
 `gotcha`, `fact`. Before working in an area, `search` for earlier notes about it.
@@ -32,7 +32,7 @@ actions: "remember" (needs `text`), "search" (needs `query`), "forget" (needs `i
             "action": {"type": "string", "enum": ["remember", "search", "forget", "list"]},
             "text": {"type": "string", "description": "The note, one sentence."},
             "kind": {"type": "string",
-                     "enum": ["convention", "decision", "fix", "gotcha", "fact"]},
+                     "enum": ["architecture", "convention", "decision", "fix", "gotcha", "fact"]},
             "query": {"type": "string", "description": "Words to search the notes for."},
             "id": {"type": "string", "description": "Which note to forget, e.g. 'm3'."},
         },

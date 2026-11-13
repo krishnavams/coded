@@ -19,13 +19,14 @@ def test_fix_kind_search_and_grouped_recall(tmp_path):
     store.add("Use tabs only in the Makefile.", "convention")
     store.add("Chose SQLite over Postgres for the CLI cache.", "decision")
     store.add("The CI runner has no network.", "fact")
+    store.add("cli.py wires config into agent.py; tools never import the REPL.", "architecture")
     hits = store.search("date tests")
     assert hits and hits[0].kind == "fix"
     assert [e.kind for e in store.search("fix")] == ["fix"]
     assert store.search("") == []
     text = store.render(4000)
-    order = [k for k in ("convention", "decision", "fix", "fact") if f"({k})" in text]
-    assert order == ["convention", "decision", "fix", "fact"]
+    order = [k for k in ("architecture", "convention", "decision", "fix", "fact") if f"({k})" in text]
+    assert order == ["architecture", "convention", "decision", "fix", "fact"]
     assert [text.index(f"({k})") for k in order] == sorted(text.index(f"({k})") for k in order)
 
 

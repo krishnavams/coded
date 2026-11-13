@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Changed
+- Project memory has an `architecture` kind (which module owns what, how the
+  pieces connect), recalled first: `/memory add architecture: …` or the
+  agent's `memory` tool.
 - A long request no longer stops at `max_turns` (100) while it is still making
   progress: the limit grows by `max_turns` again, up to five times, and stops
   early only when the agent repeats the same tool call or keeps failing. The

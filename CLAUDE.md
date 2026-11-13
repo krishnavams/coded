@@ -552,7 +552,7 @@ config.example.json     # sample configuration
   gate), and not at all while `permissions.tainted`. Every write re-reads first,
   so a concurrent session's note is not clobbered. Sub-agents get no memory
   tool. An empty store must leave the system prompt byte-identical. Kinds:
-  convention, decision, fix, gotcha, fact; recall is grouped in that order
+  architecture, convention, decision, fix, gotcha, fact; recall is grouped in that order
   (newest first within a kind) and `search` (tool + `/memory search`) ranks by
   matched words. Automatic capture is one nudge, not a model call per turn:
   when the checks failed earlier in a turn and then pass, `_fix_note_nudge`
