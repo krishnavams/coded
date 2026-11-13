@@ -97,3 +97,11 @@ async def test_tui_dashboard_modal(tmp_path, fake_server):
         await pilot.press("escape")
         await pilot.pause()
         assert not isinstance(app.screen, DashboardModal)
+
+
+def test_dashboard_with_a_task_list(tmp_path, fake_server):
+    agent = _ran_agent(tmp_path, fake_server)
+    agent.todos.items = [{"content": "scan the tests", "status": "in_progress"},
+                         {"content": "fix them", "status": "pending"}]
+    text = _plain(render(agent))
+    assert "0/2" in text and "now: scan the tests" in text

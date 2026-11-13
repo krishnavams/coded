@@ -116,7 +116,7 @@ def render(agent: Any, *, busy: bool = False, width: int = 100) -> Group:
     todos = list(getattr(agent.todos, "items", []) or [])
     status = Text()
     if todos:
-        done, total = ui.todo_progress(todos)
+        done, total, _ = ui.todo_progress(todos)
         status.append("tasks  ", style=ui.MUTED)
         status.append(f"{ui.todo_bar(todos, 16)} {done}/{total}")
         current = ui.current_todo(todos)
