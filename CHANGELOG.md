@@ -26,6 +26,9 @@
 - `/heal` self-healing loop, `/refactor`, `repo_map` operations `imports`,
   `dependents`, `impact`, `cycles` and `health`, `fix` memory notes and
   `/memory search`.
+- `/dashboard` Command Center, `/timeline` time-travel (and `coded sessions show`),
+  `/redteam` and `review --adversarial`, `/twin` project twin, `coded lab` /
+  `/lab` self-improvement lab, all fed by a per-session event log.
 - Claude Code-style prompts: arrow-key permission prompt with "No, and tell
   coded what to do differently", `ask_user` with up to four questions and a
   review page; folded tool output (ctrl+o / click to expand); new wordmark.

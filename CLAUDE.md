@@ -51,6 +51,7 @@ coded/
 ├── depgraph.py         # import graph (Python ast, JS/TS regex): dependents, impact, cycles
 ├── codehealth.py       # refactor hot spots: function metrics (ast), duplicate blocks, ranking
 ├── twin.py             # project twin: per-file parse cache (user cache dir) + /twin snapshot
+├── lab.py              # coded lab / /lab: recurring failures in past sessions, approved proposals
 ├── memory.py           # project memory store (./.coded/memory.json)
 ├── speed.py            # `coded models --speed`: first token, total, tok/s per model
 ├── verify.py           # post-turn gates: project checks + a second model
@@ -142,6 +143,7 @@ tests/
 ├── test_timeline.py    # timeline turns, per-turn file changes, restore preview + rewind, saved
 ├── test_adversary.py   # findings need file:line + trigger, read-only tools, model note, opt-in
 ├── test_twin.py        # same answers with/without the cache, outside the repo, /twin changes
+├── test_lab.py         # lab heuristics, per-folder sessions, one-by-one apply, loosening flagged
 ├── test_session_autosave.py  # per-step autosave, atomic save, orphan tool calls, todos
 ├── test_memory_bounds.py  # bounded output/file reads, timeout kills the process group
 ├── test_compaction.py  # context compaction trigger + tail preservation
@@ -629,6 +631,14 @@ config.example.json     # sample configuration
   dependency/health operations use it. Answers must be identical with and
   without it (tested); cached findings are stored as copies because ranking
   rescales scores. Tests get a private `XDG_CACHE_HOME` (autouse fixture).
+- **Self-improvement lab** (`lab.py`, `coded lab [--apply]`, `/lab [apply]`):
+  reads this folder's saved sessions (newest `MAX_SESSIONS`, size-capped) and
+  their event logs; heuristics only, no model call — recurring tool errors
+  (normalized), repeated denials, verify stalls, max_turns hits, identical
+  repeated calls, fallback churn. A `Proposal` is shown as its exact change and
+  applied only interactively, one at a time (no `--yes`; `--apply` refuses
+  without a TTY); `loosens=True` ones get a warning. Writes go only to the
+  project's CODED.md, memory or `.coded/config.json` (via `config_wizard`).
 - **Sessions survive a crash**: `Agent.on_step` (main agent only; the CLI sets
   it to autosave) runs after the user message, each tool step and the final
   answer, so a kill loses at most one step; the REPL also saves after Ctrl-C.

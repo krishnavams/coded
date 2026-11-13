@@ -39,7 +39,8 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Subcommands: `coded config setup|init|path|show`, `coded models [--check]`, "
                "`coded skill install|list|remove|update|info`, `coded prompts list|show|init`, "
                "`coded plugin install|list|remove|update|enable|disable|info|search|marketplace`, "
-               "`coded review`, `coded commit`, `coded index`, `coded sessions`, `coded doctor`, "
+               "`coded review`, `coded commit`, `coded lab`, `coded index`, `coded sessions`, "
+               "`coded doctor`, "
                "`coded import` (MCP servers from other agents), "
                "`coded acp` (Agent Client Protocol server), `coded mcp-serve` (MCP server).",
     )
@@ -601,6 +602,29 @@ def _handle_sessions_command(argv: List[str]) -> int:
     return 0
 
 
+def _handle_lab_command(argv: List[str]) -> int:
+    """coded lab [--apply]: recurring failures in this folder's past sessions."""
+    from coded import lab
+
+    p = argparse.ArgumentParser(prog="coded lab", description="Look through this folder's "
+                                "saved sessions for recurring failures and propose fixes.")
+    p.add_argument("--cwd", help="Project directory.")
+    p.add_argument("--apply", action="store_true",
+                   help="Ask about each proposal and apply the ones you approve (needs a "
+                        "terminal; there is deliberately no --yes).")
+    args = p.parse_args(argv)
+    cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
+    report = lab.analyze(lab.load_sessions(cwd))
+    ui.console.print(lab.render(report))
+    if args.apply:
+        if not _stdin_is_tty():
+            ui.error("--apply asks about each change, so it needs a terminal.")
+            return 2
+        n = lab.apply_interactive(cwd, report, input, lambda m: ui.console.print(m, markup=False))
+        ui.info(f"Applied {n} change(s).")
+    return 0
+
+
 def _sessions_show(argv: List[str]) -> int:
     """coded sessions show <id> [N]: a saved session's timeline (view only)."""
     from coded import timeline
@@ -790,6 +814,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _handle_sessions_command(argv[1:])
     if argv and argv[0] == "commit":
         return _handle_commit_command(argv[1:])
+    if argv and argv[0] == "lab":
+        return _handle_lab_command(argv[1:])
     if argv and argv[0] == "skill":
         from coded.manage_cli import skill_main
 

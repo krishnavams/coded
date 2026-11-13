@@ -153,6 +153,8 @@ SLASH_COMMANDS = {
     "/setup": "Configure models interactively (adds, tests, roles, pools, routing).",
     "/verify": "Run the project's checks (and the verify model) over the last change.",
     "/memory": "Project memory: /memory [list|search <words>|add <note>|forget <id>|clear].",
+    "/lab": "Self-improvement lab: recurring failures in this project's past sessions, with "
+            "proposals you approve one by one (/lab apply).",
     "/twin": "Project twin: languages, modules, what the code depends on most, cycles, "
              "hot spots, and what changed since you last looked.",
     "/redteam": "Adversarial review: a read-only agent hunts for security holes, wrong "
@@ -740,6 +742,21 @@ class Repl:
             self._cmd_memory(args)
         elif cmd == "/heal":
             self._cmd_heal(args)
+        elif cmd == "/lab":
+            from coded import lab
+
+            report = lab.analyze(lab.load_sessions(self.agent.cwd))
+            ui.console.print(lab.render(report))
+            if args[:1] == ["apply"]:
+                def ask(question: str) -> str:
+                    try:
+                        return self.prompt.prompt(question, bottom_toolbar=None)
+                    except (EOFError, KeyboardInterrupt):
+                        return ""
+
+                n = lab.apply_interactive(self.agent.cwd, report, ask,
+                                          lambda m: ui.console.print(m, markup=False))
+                ui.info(f"Applied {n} change(s).")
         elif cmd == "/twin":
             from coded import twin
 

@@ -74,6 +74,16 @@ runtime.
 - **Dependency map** — `repo_map` answers `imports`, `dependents`, `impact`
   (what a change can affect, and which tests to run) and `cycles` for Python
   and JS/TS.
+- **Command Center** — `/dashboard` (also mid-turn): agents and sub-agents,
+  per-model cost, per-tool calls/failures/denials/time, checks and recent problems.
+- **Time-travel** — `/timeline` replays each request step by step with outcomes
+  and the files it changed; `/timeline restore N` previews, then goes back.
+- **Adversarial reviewer** — `/redteam` or `coded review --adversarial`: a
+  read-only agent tries to break the change; findings need a file:line and a trigger.
+- **Project twin** — `/twin`: languages, modules, central files, cycles, hot
+  spots and what changed since you last looked, from a per-file cache.
+- **Self-improvement lab** — `coded lab`: recurring failures across past
+  sessions, with proposals you approve one by one (`--apply`).
 - **Refactor finder** — `/refactor [path]`: a scan for long, branchy or deeply
   nested functions and copy-pasted blocks (`repo_map` `health`), then small,
   tested, behavior-preserving fixes by the built-in `refactor` skill.
