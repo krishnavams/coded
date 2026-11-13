@@ -4,6 +4,7 @@ the REPL dock and the TUI modal."""
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import threading
@@ -32,7 +33,9 @@ def _keys(chooser, *keys):
 def _plain(chooser, **kw) -> str:
     from rich.console import Console
 
-    con = Console(width=100, record=True, file=open(os.devnull, "w"))
+    # In memory: a real file would be opened in the platform encoding (cp1252
+    # on Windows), which cannot hold the prompt's arrows.
+    con = Console(width=100, record=True, file=io.StringIO())
     con.print(chooser.render(**kw))
     return con.export_text()
 
@@ -198,9 +201,11 @@ def test_ask_user_title_for_several_questions():
 
 
 # -- key reading ------------------------------------------------------------------
+@pytest.mark.skipif(os.name == "nt", reason="POSIX reader: select() on a pipe; "
+                    "Windows reads keys through msvcrt instead")
 def test_posix_reader_hands_over_single_keys_in_key_mode():
     r, w = os.pipe()
-    keys = _PosixKeys(fd=r, out=open(os.devnull, "w"))
+    keys = _PosixKeys(fd=r, out=io.StringIO())
     keys._saved = object()  # a pipe has no terminal modes to set
     keys.keys_mode = True
     os.write(w, b"\x1b[B\x1b[Ax\r\x7f\t")
