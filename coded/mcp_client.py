@@ -8,6 +8,7 @@ package is not installed, MCPManager degrades gracefully to a no-op.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import os
 import re
 import threading
@@ -143,7 +144,16 @@ class MCPManager:
         if not self.loop:
             raise RuntimeError("MCP is not running.")
         fut = asyncio.run_coroutine_threadsafe(self._call(server, tool, args), self.loop)
-        return fut.result(timeout=timeout)
+        try:
+            return fut.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            # Stop the call rather than leave it running behind our back; the
+            # server may still have done part of it.
+            fut.cancel()
+            raise TimeoutError(
+                f"MCP tool '{tool}' on '{server}' did not answer within {timeout:.0f}s and was "
+                "cancelled. It may have partly run: check its effect before calling it again."
+            ) from None
 
     async def _call(self, server: str, tool: str, args: Dict[str, Any]) -> str:
         session = self.sessions.get(server)

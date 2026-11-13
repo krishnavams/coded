@@ -24,8 +24,12 @@ class Decision(Enum):
     DENY = "deny"
 
 
-# A prompt callback returns one of: "yes", "no", "always".
+# A prompt callback returns one of: "yes", "no", "always", or "no: <feedback>"
+# (the user said no and what to do instead).
 PromptFn = Callable[[str, str], str]
+# The front-end's multi-question prompt (ask_user): the answers, one string per
+# question ('' = not answered), or None when the user cancelled.
+QuestionsFn = Callable[[list], Optional[List[str]]]
 
 
 def _parse_rule(pattern: str):
@@ -54,6 +58,7 @@ class PermissionManager:
         self._prompt = prompt
         self._prompt_threadsafe = False
         self._question: Optional[Callable[[str, List[str]], Optional[str]]] = None
+        self._questions: Optional[QuestionsFn] = None
         self._lock = threading.Lock()
         self._always: Set[str] = set()
         rules = rules or {}
@@ -107,13 +112,59 @@ class PermissionManager:
         """The front-end's way to ask the user a free-form question (ask_user)."""
         self._question = fn
 
+    def set_questions(self, fn: Optional[QuestionsFn]) -> None:
+        """The front-end's interactive prompt for one or more `choice.Question`s."""
+        self._questions = fn
+
+    @property
+    def can_question(self) -> bool:
+        return (self._questions is not None or self._question is not None) \
+            and not self.in_background()
+
+    def questions(self, items: list) -> Optional[List[str]]:
+        """Ask several questions (`choice.Question`s) at once. One answer per
+        question ('' = skipped); [] when the user cancelled; None when nobody
+        can answer (no front-end, or a background task)."""
+        if not self.can_question:
+            return None
+        with self._lock:
+            if self._questions is not None:
+                answers = self._questions(list(items))
+                return [] if answers is None else list(answers)
+            out = []
+            for q in items:
+                answer = self._question(q.text, [o.label for o in q.options])
+                out.append(answer or "")
+            return out
+
     def question(self, text: str, options: Optional[List[str]] = None) -> Optional[str]:
         """Ask the user a question; their answer, or None when nobody can answer."""
-        fn = getattr(self, "_question", None)
+        if self._questions is not None and not self.in_background():
+            from coded.choice import Question
+
+            answers = self.questions([Question.make(text, list(options or []))])
+            if answers is None:
+                return None
+            return answers[0] if answers else ""
+        fn = self._question
         if fn is None or self.in_background():
             return None
         with self._lock:
             return fn(text, list(options or []))
+
+    def take_deny_reason(self) -> Optional[str]:
+        """Why this thread's last request was denied (once): "user" (they said
+        no), "rule" (a deny rule), "plan" (plan mode) or "unattended" (nobody
+        could be asked)."""
+        reason = getattr(self._local, "deny_reason", None)
+        self._local.deny_reason = None
+        return reason
+
+    def take_feedback(self) -> str:
+        """What the user said with their last "no" on this thread (once)."""
+        text = getattr(self._local, "feedback", "") or ""
+        self._local.feedback = ""
+        return text
 
     def allow_always(self, key: str) -> None:
         self._always.add(key)
@@ -149,7 +200,7 @@ class PermissionManager:
         return any(_rule_matches(p, key, target) for p in patterns)
 
     def request(self, *, key: str, title: str, detail: str, target: Optional[str] = None,
-                auto_allowed: bool = False) -> Decision:
+                auto_allowed: bool = False, always_ask: bool = False) -> Decision:
         """Ask whether an action is permitted.
 
         key          — a stable identifier (usually the tool name), matched by rules.
@@ -157,29 +208,42 @@ class PermissionManager:
         detail       — the specifics shown in the prompt (command or file path).
         target       — the matchable string for allow/deny rules (defaults to detail).
         auto_allowed — the tool vouches the call is safe (e.g. it runs sandboxed).
+        always_ask   — accept-edits mode and auto_allowed do not skip the prompt
+                       (a path outside the project); --yolo, "always" and allow
+                       rules still answer it.
         """
         target = target if target is not None else detail
+        self._local.feedback = ""
+        self._local.deny_reason = None
         # Deny rules win over everything, including --yolo.
         if self._matches(self.deny_rules, key, target):
+            self._local.deny_reason = "rule"
             return Decision.DENY
         if self.plan_mode:
+            self._local.deny_reason = "plan"
             return Decision.DENY
         strict = self.tainted and self.injection_guard == "strict"
         if not strict:
-            if auto_allowed or self.auto_approve or key in self._always:
+            if (auto_allowed and not always_ask) or self.auto_approve or key in self._always:
                 return Decision.ALLOW
-            if self.accept_edits and key in EDIT_KEYS:
+            if self.accept_edits and key in EDIT_KEYS and not always_ask:
                 return Decision.ALLOW
             if self._matches(self.allow_rules, key, target):
                 return Decision.ALLOW
         if self._prompt is None or self.in_background():
             # Non-interactive (or a background task) and not auto-approved:
             # deny by default (safe).
+            self._local.deny_reason = "unattended"
             return Decision.DENY
         if self.tainted and self.injection_guard != "off":
             title = f"⚠ untrusted content is in context — {title}"
         with self._lock:
-            answer = self._prompt(title, detail).strip().lower()
+            raw = (self._prompt(title, detail) or "no").strip()
+        answer = raw.lower()
+        self._local.deny_reason = "user"
+        if answer.startswith("no:"):
+            self._local.feedback = raw[3:].strip()
+            return Decision.DENY
         if answer in ("a", "always"):
             self._always.add(key)
             return Decision.ALLOW

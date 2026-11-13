@@ -39,6 +39,9 @@ class Session:
     # The agent's task list (todo_write) as of the last save, so a resumed
     # session picks up where the work stood.
     todos: List[Dict[str, Any]] = field(default_factory=list)
+    # Structured facts about the session (tool timings, errors, denials,
+    # checks): see events.py. Saved with the session, never sent to a model.
+    events: List[Dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.messages:

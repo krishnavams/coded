@@ -95,6 +95,11 @@ the user first."""
             if step.get("action") not in ACTIONS:
                 return ToolResult.error(f"Unknown step action {step.get('action')!r}; "
                                         f"use one of {', '.join(ACTIONS)}.")
+        allow_url = _url_guard(ctx)
+        if not allow_url(url):
+            return ToolResult.error(
+                f"The user did not allow opening {url} (a local file outside the project, or "
+                "an address on this machine or the local network). Ask the user first.")
         acting = [s for s in steps if s.get("action") in _ACTING]
         if acting and ctx.permissions is not None:
             from coded.permissions import Decision
@@ -121,6 +126,7 @@ the user first."""
         console: List[str] = []
         failed: List[str] = []
         done: List[str] = []
+        blocked: List[str] = []
         shot = ""
         try:
             with sync_playwright() as pw:
@@ -130,6 +136,19 @@ the user first."""
                 browser = pw.chromium.launch(**launch)
                 try:
                     page = browser.new_page(viewport={"width": width, "height": height})
+                    blocked: List[str] = []
+
+                    def route(r) -> None:
+                        # Every request after the first one too: a redirect or the
+                        # page's own scripts must not reach an internal address the
+                        # user did not allow.
+                        if allow_url(r.request.url):
+                            r.continue_()
+                        else:
+                            blocked.append(r.request.url)
+                            r.abort("blockedbyclient")
+
+                    page.route("**/*", route)
                     page.on("console", lambda m: console.append(f"{m.type}: {m.text}")
                             if m.type in ("error", "warning") else None)
                     page.on("pageerror", lambda e: console.append(f"uncaught: {e}"))
@@ -191,8 +210,30 @@ the user first."""
             lines.append(f"Screenshot: {shot}")
         lines.append("Console errors: " + ("none" if not console else ""))
         lines += [f"  {c}" for c in console[:30]]
+        if blocked:
+            lines.append("Blocked (internal address or local file, not allowed):")
+            lines += [f"  {b}" for b in blocked[:30]]
         if failed:
             lines.append("Failed requests:")
             lines += [f"  {f}" for f in failed[:30]]
         lines += ["", "Visible text:", body or "(none)"]
         return ToolResult.ok("\n".join(lines))
+
+
+def _url_guard(ctx: ToolContext):
+    """file:// inside the project passes; any other local file, localhost, the
+    LAN or a metadata endpoint asks once per host (see netguard)."""
+    from coded.netguard import file_url_inside
+    from coded.tools.web import url_permission
+
+    roots = [ctx.cwd] + list(getattr(ctx.config, "add_dirs", None) or [])
+    ask = url_permission(ctx, "browser", "Open")
+
+    def allow(url: str) -> bool:
+        if url.startswith(("data:", "about:", "blob:")):
+            return True
+        if url.startswith("file:") and file_url_inside(url, roots):
+            return True
+        return ask(url)
+
+    return allow

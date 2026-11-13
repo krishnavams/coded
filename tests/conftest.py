@@ -57,6 +57,8 @@ class _Handler(BaseHTTPRequestHandler):
                 sse({**base, "choices": [{"index": 0, "delta": {"reasoning_content": piece},
                                           "finish_reason": None}]})
         if message.get("tool_calls"):
+            for piece in _chunks(message.get("content") or ""):
+                sse({**base, "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}]})
             for idx, tc in enumerate(message["tool_calls"]):
                 sse({**base, "choices": [{"index": 0, "delta": {"tool_calls": [
                     {"index": idx, "id": tc["id"], "type": "function",
@@ -105,6 +107,21 @@ def _loud_ui():
 
     yield
     ui.set_quiet(False)
+    ui.set_answer_bullets(False)
+
+
+@pytest.fixture(autouse=True)
+def _trust_store(tmp_path_factory, monkeypatch):
+    """Project trust is remembered per user; keep each test's own (empty)."""
+    monkeypatch.setenv("CODED_TRUST_STORE",
+                       str(tmp_path_factory.mktemp("trust") / "trusted.json"))
+    monkeypatch.delenv("CODED_TRUST_PROJECT", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _twin_cache(tmp_path_factory, monkeypatch):
+    """The project twin caches in the user's cache dir; keep tests out of it."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("cache")))
 
 
 @pytest.fixture(autouse=True)

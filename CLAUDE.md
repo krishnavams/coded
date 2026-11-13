@@ -36,7 +36,10 @@ coded/
 ├── llm.py              # LLMClient: OpenAI-compatible streaming + tool calls
 ├── agent.py            # Agent: the agentic loop; sub-agent spawning
 ├── session.py          # Session: message history + usage/cost tracking
+├── events.py           # EventLog: per-session structured facts (tool timings/errors, checks, …)
 ├── permissions.py      # PermissionManager: approve/deny/always gate, accept-edits mode
+├── trust.py            # project trust: which .coded/config.json keys need it, fingerprint store
+├── choice.py           # Chooser: arrow-key selector for permission prompts + ask_user (review page)
 ├── notify.py           # Notifier: bell/desktop notification when a long turn ends or asks
 ├── tasks.py            # TaskManager: running sub-agents (progress, background, stop)
 ├── btw.py              # /btw: side question over a copy of the conversation (no tools)
@@ -45,6 +48,10 @@ coded/
 ├── limits.py           # per-model limits scaled by context_window; result/step caps
 ├── repo_overview.py    # repository overview for large-context models
 ├── repomap.py          # ranked symbol map (ast + regex, PageRank over references)
+├── depgraph.py         # import graph (Python ast, JS/TS regex): dependents, impact, cycles
+├── codehealth.py       # refactor hot spots: function metrics (ast), duplicate blocks, ranking
+├── twin.py             # project twin: per-file parse cache (user cache dir) + /twin snapshot
+├── lab.py              # coded lab / /lab: recurring failures in past sessions, approved proposals
 ├── memory.py           # project memory store (./.coded/memory.json)
 ├── speed.py            # `coded models --speed`: first token, total, tok/s per model
 ├── verify.py           # post-turn gates: project checks + a second model
@@ -54,10 +61,14 @@ coded/
 ├── repl.py             # interactive REPL and slash commands
 ├── tui.py              # full-screen Textual app (coded --tui), optional
 ├── sidebar.py          # the TUI's right panel: session, changed files, queue, sub-agents, shells
+├── dashboard.py        # /dashboard Command Center: agents, models, tools, checks, problems
+├── timeline.py         # /timeline time-travel: turns, steps + outcomes, file states, restore preview
 ├── ui.py               # rich-based rendering helpers (single Console)
 ├── skills.py           # skill discovery, frontmatter parsing, prompt section
 ├── review.py           # /review pipeline: reviewer→qa→security sub-agents
-├── builtin_skills/     # bundled roles: planner, reviewer, debugger (bodies from prompt files), qa, security
+├── adversary.py        # /redteam, review --adversarial: read-only critic, evidence-checked findings
+├── builtin_skills/     # bundled roles: planner, reviewer, debugger (bodies from prompt files), qa,
+│                       # security, refactor, adversary
 ├── compaction.py       # context auto-compaction (summarize old messages)
 ├── sessions_store.py   # persist/restore sessions (--continue/--resume)
 ├── checkpoints.py      # CheckpointManager: per-turn file snapshots for /undo and /rewind
@@ -72,6 +83,7 @@ coded/
 ├── embeddings.py       # EmbeddingClient + embedding-model resolution
 ├── index.py            # CodeIndex: chunk/embed/store + cosine search
 ├── websearch.py        # web-search backends + HTML→text fetch
+├── netguard.py         # which URLs are internal (loopback/LAN/metadata/file) for web_fetch/browser
 ├── images.py           # image → base64 data URL for vision models; clipboard image grab
 ├── mentions.py         # `@path` mentions: expansion (Agent.run) + the REPL path completer
 ├── documents.py        # PDF/DOCX/XLSX/PPTX → text sections for the read tool
@@ -124,6 +136,14 @@ tests/
 ├── test_tasks.py       # sub-agent tasks: activity, background, Ctrl+B, /tasks, Ctrl+O
 ├── test_queue_edit.py  # ↑ edits the newest queued message (REPL reader, dock, TUI)
 ├── test_btw.py         # /btw: session untouched, answered mid-turn, REPL + TUI
+├── test_choice.py      # selector keys/lines, review page, permission feedback, REPL dock, TUI
+├── test_trust.py       # project trust gate: what applies untrusted, remembered fingerprint, CLI
+├── test_events.py      # event log: tool outcomes, denials, timings, saved, bounded, thread-safe
+├── test_dashboard.py   # /dashboard render, REPL + mid-turn, TUI modal
+├── test_timeline.py    # timeline turns, per-turn file changes, restore preview + rewind, saved
+├── test_adversary.py   # findings need file:line + trigger, read-only tools, model note, opt-in
+├── test_twin.py        # same answers with/without the cache, outside the repo, /twin changes
+├── test_lab.py         # lab heuristics, per-folder sessions, one-by-one apply, loosening flagged
 ├── test_session_autosave.py  # per-step autosave, atomic save, orphan tool calls, todos
 ├── test_memory_bounds.py  # bounded output/file reads, timeout kills the process group
 ├── test_compaction.py  # context compaction trigger + tail preservation
@@ -137,10 +157,14 @@ tests/
 ├── test_tools.py       # tool + config unit tests
 ├── test_routing.py     # difficulty routing, pools, endpoint reuse, per-model cost
 ├── test_repomap.py     # symbol extraction, ranking, budgets, the repo_map tool
+├── test_depgraph.py    # import resolution, impact + tests to run, cycles, repo_map operations
+├── test_codehealth.py  # function metrics, elif-not-nesting, duplicates, ranking, /refactor
 ├── test_memory.py      # memory store, the permission gate, prompt injection
 ├── test_documents.py   # reading PDF/Word/Excel/PowerPoint, refusals, no-extra path
 ├── test_speed.py       # lazy SDK import, disabled_tools, compact tool schema, --speed
 ├── test_verify.py      # the verification loop: checks, second opinion, rounds
+├── test_self_heal.py   # detected checks, ask-once approval, affected tests first, stall stop
+├── test_auto_memory.py # fix notes, search, grouped recall, the fix-note offer after a healed turn
 ├── test_model_chain.py # failover cooldown, sizing for a smaller fallback, stream retry,
 │                       # per-model timeout, unknown-alias warnings
 ├── test_big_models.py  # scaled limits, caps, overflow retry, max_turns, profiles, repo overview
@@ -262,13 +286,29 @@ config.example.json     # sample configuration
 - **Shared agent state reaches tools via `ToolContext.extra`**: `todos`,
   `shells`, `get_mode`/`set_mode`. Sub-agents share the parent's
   `PermissionManager`, tracer and shells, but not todos/skills/Stop hooks.
-- **Asking the user** (`ask_user`): `PermissionManager.question(text, options)`
-  goes to the front-end's `set_question` callback (REPL: `ui.question_panel`
-  + `TypeAhead.ask()`; TUI: `QuestionModal`); None (no front-end: `--print`,
-  ACP) tells the model to state an assumption and go on. `ui.pick_answer`
-  maps a typed number to the choice. Main agent only, like `enter_plan_mode`,
-  which refuses when `permissions.interactive` is false: nobody could approve
-  the plan, so a `--print`/CI run would stay read-only.
+- **Asking the user** (`ask_user`, 1-4 questions with headers, option
+  descriptions, `multi_select`): `PermissionManager.questions(list[choice.Question])`
+  goes to the front-end's `set_questions` callback (one answer string per
+  question; `[]` = cancelled; None = nobody can answer: `--print`, ACP, which
+  tells the model to state an assumption and go on). A front-end that only set
+  the older `set_question(text, options)` is asked each question in turn.
+  Main agent only, like `enter_plan_mode`, which refuses when
+  `permissions.interactive` is false: nobody could approve the plan, so a
+  `--print`/CI run would stay read-only.
+- **Choice prompts** (`choice.py`): permission prompts ("Do you want to
+  proceed?" → Yes / Yes, don't ask again / No, and tell coded what to do
+  differently) and `ask_user` are one pure state machine, `Chooser`, fed key
+  names (`key()`) or typed lines (`line()`) and drawn by `render()` — the same
+  panel in the REPL and the TUI. Several questions get tabs and a "Review your
+  answers → Submit" page. REPL: when the type-ahead reader can hand over keys
+  (`TypeAhead.supports_keys`/`begin_keys`/`next_key`, the reader's
+  `keys_mode`) and a `TurnDock` is up, the prompt replaces the dock's spinner
+  and input box (`TurnDock.set_prompt`); otherwise it is printed with numbers
+  and answered by a line (a follow-up typed at a permission prompt is
+  requeued, never an answer). TUI: `PermissionModal`/`QuestionModal`
+  (`ChoiceModal`). A "no" with text reaches the prompt callback as
+  `"no: <text>"`; `request()` keeps it per thread and `Agent._run_tool` puts it
+  in the denial (`take_feedback`).
 - **`view_image`** queues a path through `ctx.extra["attach_image"]`; after the
   step's tool results the agent adds one user message with the images (a
   `tool` message cannot carry one). `Config.disabled_tools_for` drops it for a
@@ -344,6 +384,17 @@ config.example.json     # sample configuration
   text and the checkpoint group id); `turn_history()` drops marks whose message
   compaction or `/clear` removed, and `CheckpointManager.undo_since(id)` undoes
   that group and every later one, newest first.
+- **Paths outside the project ask first** (`Agent._outside_paths`,
+  `_SCOPED_TOOLS`): a path that resolves (symlinks included) outside the cwd,
+  `add_dirs` and the skill folders needs a yes — read-only tools get their own
+  prompt ("Read file outside the project"), mutating tools reuse theirs with
+  `request(always_ask=True)`, so accept-edits mode and sandbox auto-allow do
+  not skip it. `--yolo`, "always" and allow rules (`read(/path/*)`) answer it.
+- **Internal addresses ask first** (`netguard.py`, `tools.web.url_permission`):
+  `web_fetch` and `browser` ask (once per host, `always_ask`) before a local
+  file, localhost, a private/link-local/metadata address, and re-check every
+  redirect (`fetch_url(allow=…)`) or browser request (`page.route`); a
+  `file://` inside the project passes. Non-interactive runs refuse them.
 - **`.codedignore`** is enforced in `Agent._run_tool` for path tools
   (`_PATH_TOOLS`, plus apply_patch's file headers via `_tool_paths`), in
   `search._walk` (grep/glob), `ls`, and `@mentions`/their completion. bash is
@@ -389,11 +440,20 @@ config.example.json     # sample configuration
   `--ca-bundle`/`--insecure` CLI flags override the selected model; disabling
   verification warns. Route new endpoint clients through this helper.
 - **Look**: purple theme (`ui.ACCENT`/`ACCENT_DEEP`/`ACCENT_SOFT`) and coded's own
-  logo (`ui.LOGO`: code brackets around a diamond). Never hard-code colors or
+  logo (`ui.LOGO`: a block-letter "coded" wordmark shaded light → deep purple by
+  `logo_text`). Never hard-code colors or
   reuse another product's logo/branding. Tool calls display as `● Edit(app.py)`
   with results under `⎿` (`ui.tool_call_text` / `tool_result_text` / `diff_text`
   / `welcome`); the REPL and the TUI both render through these so they match.
   A new tool gets a readable title by adding it to `ui._TOOL_TITLES`.
+- **Transcript spacing** (REPL): every block (tool call, assistant text,
+  line-mode prompt) starts with `ui.gap()`, which prints a blank line only if
+  the last row was not blank — `ui.console` is a `TranscriptConsole` that
+  tracks this for every `print` (a Live's `Control` redraw does not count), so
+  there is exactly one empty line between blocks. Never start a block with a
+  bare `console.print()`. Assistant text gets a `● ` with a hanging indent
+  (`ui.answer_block`) only when the REPL turns it on (`set_answer_bullets`), so
+  `-p` output stays plain.
 - **UI**: use the helpers in `coded/ui.py` and its single shared `console`.
   Displayed tool output is truncated for readability; the **model** always
   receives the full tool result (truncation is display-only). Colors come from
@@ -457,6 +517,22 @@ config.example.json     # sample configuration
   bounded (files, bytes, seconds, output) and nothing raises. It is a **tool**,
   not a prompt section: the system prompt stays names-only, and a 128k model
   must behave exactly as before.
+- **Dependency map** (`depgraph.py`, `repo_map` with `operation`): `imports`,
+  `dependents`, `impact` (reverse-transitive with depth, plus the test files
+  among them: `affected_tests`) and `cycles`. Python imports via `ast`
+  (absolute, relative, `src/`/`lib/` layouts, `from pkg import submodule`);
+  imports inside a function are recorded in `DepGraph.lazy` — they count for
+  impact but not for import-time cycles. JS/TS: relative specifiers only,
+  resolved like a bundler (extensions, `index.*`, `.js`→`.ts`). Bounded,
+  honours `.codedignore`, never raises. Same tool, not a new one: an omitted
+  `operation` is the old outline.
+- **Refactor finder** (`codehealth.py`, `repo_map` `operation: health`, the
+  built-in `refactor` skill, REPL/TUI `/refactor [path]` → `refactor_prompt`):
+  a plain scan, no model call — Python functions over the thresholds (length,
+  decision points, nesting where an `elif` is not a level, parameters without
+  self/cls) and `DUP_WINDOW`-line copies in any code file (normalized, short
+  and import lines skipped), ranked by excess × fan-in from `depgraph`. The
+  edits go through the normal permission prompt, checkpoints and verify loop.
 - **Project memory** (`memory.py`, the `memory` tool, `/memory`): short notes in
   `./.coded/memory.json`, injected by `build_system_prompt` as labelled data
   within `limits.memory_chars`. The model writes only the **project** store and
@@ -464,7 +540,14 @@ config.example.json     # sample configuration
   `requires_permission`, which would also drag the turn through the verify
   gate), and not at all while `permissions.tainted`. Every write re-reads first,
   so a concurrent session's note is not clobbered. Sub-agents get no memory
-  tool. An empty store must leave the system prompt byte-identical.
+  tool. An empty store must leave the system prompt byte-identical. Kinds:
+  convention, decision, fix, gotcha, fact; recall is grouped in that order
+  (newest first within a kind) and `search` (tool + `/memory search`) ranks by
+  matched words. Automatic capture is one nudge, not a model call per turn:
+  when the checks failed earlier in a turn and then pass, `_fix_note_nudge`
+  asks the agent once to propose a `fix` note (approved like any note; never
+  while tainted). Checks run with `PYTHONDONTWRITEBYTECODE=1` so a same-size
+  fix within a second is not hidden by a stale .pyc.
 - **Verification** (`verify.py`, `Agent._verify_turn`): after a turn that
   changed something, the project's `verify.command` and/or the `verify` role
   model gate the answer; a complaint goes back as a `[verify]` user message,
@@ -474,6 +557,15 @@ config.example.json     # sample configuration
   Never runs for sub-agents, plan mode or an unchanged turn; an unparseable
   verdict and a reviewer outage both release the turn. The second opinion needs
   `model_roles.verify` set explicitly: never auto-assign a critic.
+- **Self-healing** (`verify.auto` or REPL/TUI `/heal`, `Agent.self_heal`):
+  with no `verify.command`, `verify.detect_checks` finds the project's runner
+  (npm test, cargo, go, pytest, make test). It runs repository code, so
+  `Agent.auto_check_command` asks once per project + command
+  (`trust.check_approved`/`approve_check`) and never runs it unapproved where
+  nobody can answer. A detected pytest runs the affected tests first
+  (`narrow_checks`, from `depgraph.affected_tests`); a failure identical to the
+  previous round's (`same_failure`, timings/addresses normalized) stops the
+  loop early with `stalled_note`.
 - **Last-resort fallback** (`Config.auto_fallback`, on): when a model's own
   chain is exhausted, `Config.last_resort_models` offers the other configured
   models (same endpoint first, then the widest window) and `LLMClient._chain`
@@ -497,6 +589,64 @@ config.example.json     # sample configuration
   background reads return at most `BG_READ_MAX_BYTES` of the newest output
   (`tests/test_memory_bounds.py`). Unbounded reads let a sub-agent grow coded
   until the OS SIGKILLed it.
+- **Event log** (`events.py`, `Session.events`, `Agent.events`): structured
+  facts the conversation has no room for — each tool call (name, ms, error,
+  denied with a `reason`: user | rule | plan | hook | unattended, from
+  `PermissionManager.take_deny_reason` — only `user` is the person's choice —
+  outside, sub-agent `task`), turns, verify pass/fail/stall, status
+  notes (fallbacks, retries), overflow retries, max_turns, interrupts, answer
+  length. Recorded by the `_run_tool` wrapper (the work is in
+  `_run_tool_inner`) and the loop; sub-agents write into the parent's log.
+  Bounded, locked, saved with the session (old sessions load without it) and
+  **never** put in `session.messages`. `Agent.events` is a property that
+  follows the agent's *current* session (`--resume` swaps it after
+  construction); a sub-agent's is set to the parent's log. `/dashboard`, `/timeline` and
+  `coded lab` read it.
+- **Command Center** (`dashboard.render`, `/dashboard`): one plain render (no
+  Textual import) from the session, its event log (`llm` events give the
+  per-model cost), the task manager, shells, todos and verify state. REPL: a
+  snapshot, also mid-turn via `TypeAhead(intercept=…)` (read-only); TUI:
+  `DashboardModal`, refreshed every second, opened even while busy. Don't name
+  a Screen method `_render` — it shadows Textual's own.
+- **Time-travel** (`timeline.py`, `/timeline [N | restore N]`, `coded sessions
+  show <id> [N]`): turns from `turn_history()` marks (live) or typed user
+  messages (saved; coded's own `[verify]`/`[memory]` feedback is skipped);
+  each step joins its tool result and its event (by tool-call `id`) for
+  outcome and timing. A file's state *after* turn k = the backup of the next
+  later checkpoint group that touched it, else the file on disk. Restore only
+  previews (`restore_preview`), confirms and then calls `/rewind` — never a
+  second undo path. Always say bash edits are not snapshotted and hidden
+  reasoning is not stored.
+- **Adversarial review** (`adversary.py`, `/redteam [target]`, `/review
+  --adversarial`, `coded review --adversarial`): the built-in `adversary`
+  skill in `run_subagent(read_only=True)` — the registry is built without
+  `EDIT_KEYS` + delete/move/github (never by toggling the shared
+  `plan_mode`); bash stays behind the normal prompt, and when the parent
+  auto-approves (--yolo) the sub-agent gets its own gate with nobody to ask,
+  so bash and git writes are refused. Fresh context with only the target; runs on
+  `model_roles.review` and says when that is the main model. `parse` keeps a
+  finding only with a known severity, a `file:line` that exists and a concrete
+  trigger, and reports how many it dropped. Opt-in: `REVIEW_PHASES` and the CI
+  exit codes are unchanged without the flag.
+- **Project twin** (`twin.py`, `/twin`): per-file facts — raw imports
+  (`depgraph.py_raw_imports`/`js_raw_imports`, resolved per build) and
+  code-health findings + duplicate windows — keyed by `[size, mtime_ns]`;
+  the whole file is versioned by `PARSER_VERSION` + coded's version. Stored in
+  `$XDG_CACHE_HOME/coded/twin/<sha of realpath>.json`, never in the repo;
+  atomic, corrupt = rebuilt, refreshed lazily (no watcher). `repo_map`'s
+  dependency/health operations use it. Answers must be identical with and
+  without it (tested); cached findings are stored as copies because ranking
+  rescales scores. Tests get a private `XDG_CACHE_HOME` (autouse fixture).
+- **Self-improvement lab** (`lab.py`, `coded lab [--apply]`, `/lab [apply]`):
+  reads this folder's saved sessions (newest `MAX_SESSIONS`, size-capped) and
+  their event logs; heuristics only, no model call — recurring tool errors
+  (normalized), repeated denials, verify stalls, max_turns hits, identical
+  repeated calls, fallback churn. A `Proposal` is shown as its exact change and
+  applied only interactively, one at a time (no `--yes`; `--apply` refuses
+  without a TTY); `loosens=True` ones get a warning. Writes go only to the
+  project memory (gitignored) or `.coded/config.json` (via `config_wizard`),
+  never to committed instruction files. Denials count only with
+  `reason == "user"`.
 - **Sessions survive a crash**: `Agent.on_step` (main agent only; the CLI sets
   it to autosave) runs after the user message, each tool step and the final
   answer, so a kill loses at most one step; the REPL also saves after Ctrl-C.
@@ -587,8 +737,11 @@ config.example.json     # sample configuration
   transcript. ("Tasks" in the sidebar is the todo list.) Control keys mid-turn
   (`typeahead.CTRL_B/O/T`) go to `TypeAhead(keys=…)`; the POSIX reader clears
   IEXTEN so ^O/^T reach it. **Ctrl+O** flips `ui.set_expanded`: `ui.tool_result`
-  then prints whole results and `show_last_cut` re-prints the newest shortened
-  one; `tool_result_text`'s defaults are unchanged (the TUI shares it).
+  then prints whole results and `show_last_cut` re-prints every result
+  shortened this turn (`_cuts`, cleared by `reset_cuts` at each turn), each
+  under its tool call. Folded output is 3 lines (`_MAX_RESULT_LINES`), blank runs squeezed and
+  long lines cut to one terminal row; the TUI's `ToolResult` folds the same way
+  and a click (or Ctrl+O, `action_toggle_output`, for all) expands it.
 - **Queued messages** (`TypeAhead._queued`, a deque): **↑** mid-turn
   (`typeahead.UP`, from `ESC [A`/`ESC OA` or Windows `\xe0H`) runs
   `edit_last`, moving the newest one into the line being typed; Enter queues it
@@ -607,6 +760,20 @@ config.example.json     # sample configuration
   whitespace and must name something that exists (cwd or `add_dirs`), so emails
   and decorators are left alone. The original text is kept; the files follow in
   a `<mentioned-files>` block, images go to the image list for vision models.
+- **Project trust** (`trust.py`, `config._merge_project`): a repository's
+  `./.coded/config.json` is written by whoever wrote the repository. Only
+  `trust.SAFE_KEYS` (output/model-choice settings), deny rules, a stricter
+  `injection_guard` and models that just name a known provider apply at once;
+  everything else (hooks, MCP servers, outside agents, endpoints/keys/headers,
+  allow rules, auto-approve, sandbox, shell, statusline, verify, lsp, …) and
+  project-scope plugins apply only to a trusted project. Trust is stored per
+  realpath with a fingerprint of those settings (`~/.config/coded/trusted.json`,
+  `$CODED_TRUST_STORE` in tests), so a changed hook asks again. The REPL/TUI
+  start asks once (`cli._ask_project_trust`, every command verbatim); `-p`,
+  `review`, `commit`, ACP and `mcp-serve` stay untrusted with a stderr note
+  unless `--trust-project` / `CODED_TRUST_PROJECT=1`. A new config key is
+  sensitive unless added to `SAFE_KEYS` on purpose. Permission rule lists add
+  up across layers (a later file can never drop a deny rule).
 - **Config is layered**: presets → user file → project file → CLI flags. Don't
   hard-code paths or keys; go through `config.py`. Dict-valued settings
   (`hooks`, `sandbox`, `telemetry`, `external_agents`, `model_roles`) merge

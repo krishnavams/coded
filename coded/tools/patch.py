@@ -3,6 +3,7 @@ apply_patch (a multi-file patch in the Codex "*** Begin Patch" format)."""
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -234,8 +235,25 @@ def apply_update(text: str, body: List[str], path: str) -> str:
 def plan_patch(patch: str, ctx: ToolContext) -> List[Tuple[FileOp, Path, Optional[str], Optional[str]]]:
     """Validate the whole patch; returns (op, path, old_text, new_text) per file."""
     planned = []
+    claimed: Dict[str, str] = {}  # resolved path -> the op that writes or removes it
+
+    def claim(path, what: str) -> None:
+        key = os.path.realpath(str(path))
+        if key in claimed:
+            raise PatchError(f"{what} and {claimed[key]} both change {path}; "
+                             "split them into separate patches.")
+        claimed[key] = what
+
     for op in parse_patch(patch):
         p = _resolve(ctx, op.path)
+        claim(p, f"'{op.kind} {op.path}'")
+        if op.move_to:
+            dest = _resolve(ctx, op.move_to)
+            if os.path.realpath(dest) != os.path.realpath(p):
+                if dest.exists():
+                    raise PatchError(f"Cannot move {op.path} to {op.move_to}: it already "
+                                     "exists. Delete or update it first, or pick a new name.")
+                claim(dest, f"'move to {op.move_to}'")
         if op.kind == "add":
             if p.exists():
                 raise PatchError(f"{op.path} already exists; use '*** Update File:' instead.")

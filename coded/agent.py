@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -35,6 +36,9 @@ _FILE_TOOLS = ("read", "edit", "multi_edit", "write")
 _PATH_TOOLS = ("read", "write", "edit", "multi_edit", "notebook_edit", "move", "delete", "ls",
                "view_image", "lsp")
 _CHECKED_TOOLS = ("write", "edit", "multi_edit", "apply_patch", "notebook_edit")
+# Tools whose paths must stay inside the project (cwd, add_dirs, skill folders)
+# unless the user agrees: reading ~/.ssh or ~/.aws needs a yes like an edit does.
+_SCOPED_TOOLS = _PATH_TOOLS + ("apply_patch", "grep", "glob")
 
 
 def _tool_paths(name: str, args: Dict[str, Any]) -> List[str]:
@@ -134,11 +138,36 @@ class Agent:
         self._turn_ran_shell = False
         self._verify_rounds = 0
         self._verify_last = ""
+        self._verify_prev_output = ""
+        # Self-healing for this session (/heal): run the project's detected
+        # checks after a change even when verify.command is not configured.
+        self.self_heal = False
+        self._heal_declined = False
+        # The event log follows whatever session the agent has now (--resume
+        # swaps it after construction); a sub-agent's run_subagent points it at
+        # the parent's log instead.
+        self._event_log = None
+        self._events_override = None
+        self.event_task: Optional[str] = None  # the task id, in a sub-agent
         self._last_request = ""
         self._interrupted = False
         self._session_started = False
         self._instruction_dirs: set = set()
         self._plan_intro_sent = False
+
+    @property
+    def events(self):
+        if self._events_override is not None:
+            return self._events_override
+        from coded.events import EventLog
+
+        if self._event_log is None or self._event_log.items is not self.session.events:
+            self._event_log = EventLog(self.session.events)
+        return self._event_log
+
+    @events.setter
+    def events(self, log) -> None:
+        self._events_override = log
 
     def _emit(self, kind: str, **data) -> bool:
         if self.on_event is not None:
@@ -153,6 +182,7 @@ class Agent:
                          last_resort=self.config.last_resort_models(model, pool))
 
     def _status_note(self, text: str) -> None:
+        self.events.add("note", text=text, **({"task": self.event_task} if self.event_task else {}))
         if not self._emit("status", text=text) and self.verbose:
             ui.warn(text)
 
@@ -209,7 +239,10 @@ class Agent:
         self._turn_changed_things = False
         self._turn_ran_shell = False
         self._verify_rounds = 0
+        self._fix_nudged = False
         self._last_request = str(user_message)
+        if not self.is_subagent:
+            self.events.add("turn", prompt=" ".join(self._last_request.split()))
         if self.checkpoints is not None:
             self.checkpoints.begin(str(user_message)[:60])
         # A turn interrupted mid-tool left calls without results; endpoints
@@ -244,6 +277,7 @@ class Agent:
     def interrupt(self) -> None:
         """Ask the running turn to stop at the next checkpoint (between steps)."""
         self._interrupted = True
+        self.events.add("interrupt")
 
     def switch_model(self, model: ModelConfig, pool: Optional[str] = None,
                      pin: bool = True) -> None:
@@ -448,6 +482,7 @@ class Agent:
                 # The request no longer fits the window: shrink this turn's tool
                 # results, summarize older history, and retry once.
                 context_retry = True
+                self.events.add("overflow")
                 self._status_note("Request exceeded the model's context window; "
                                   "shrinking tool results and compacting, then retrying.")
                 refused_by = getattr(exc, "coded_model", None)  # may be a smaller fallback
@@ -461,6 +496,12 @@ class Agent:
                 context_retry = False
             answered = self.config.models.get(completion.model) or self.model
             self.session.record_usage(completion.usage, answered)
+            from coded.session import usage_cost
+
+            self.events.add("llm", model=answered.name, input=completion.usage.prompt_tokens,
+                            output=completion.usage.completion_tokens,
+                            cost=round(usage_cost(completion.usage, answered), 6),
+                            **({"task": self.event_task} if self.event_task else {}))
             if completion.usage.prompt_tokens:
                 self.session.last_prompt_tokens = completion.usage.prompt_tokens
 
@@ -504,9 +545,12 @@ class Agent:
                     _TOOL_IMAGES + ", ".join(ui._rel(p, self.cwd) for p in paths), paths)
             self._step_done()
         else:
+            self.events.add("max_turns", limit=self.max_turns)
             if not self._emit("status", text=f"Reached max turns ({self.max_turns})."):
                 if self.verbose:
                     ui.warn(f"Reached max turns ({self.max_turns}); stopping.")
+        if final_text and not self.is_subagent:
+            self.events.add("answer", chars=len(final_text))
         return final_text
 
     def _verify_turn(self, final_text: Optional[str]) -> Optional[str]:
@@ -523,6 +567,10 @@ class Agent:
         if self.is_subagent or self.mode == "plan" or not self._turn_changed_things:
             return None
         settings = VerifySettings.from_config(self.config.verify)
+        auto = False
+        if not settings.command and (settings.auto or self.self_heal):
+            settings.command = self.auto_check_command(ask=True)
+            auto = bool(settings.command)
         has_reviewer = bool(self.config.model_roles.get("verify"))
         if not (settings.runs_checks() or settings.runs_review(has_reviewer)):
             return None
@@ -542,11 +590,37 @@ class Agent:
 
         checks = None
         if settings.runs_checks():
-            self._status_note(f"Verifying: {settings.command}")
-            checks = run_checks(settings.command, self.cwd, settings.timeout,
+            command = settings.command
+            if auto:
+                from coded.verify import narrow_checks
+
+                command = narrow_checks(command, self.cwd,
+                                        turn_diff(self.checkpoints, self.cwd)[1])
+            self._status_note(f"Verifying: {command}")
+            checks = run_checks(command, self.cwd, settings.timeout,
                                 limit=self.limits.tool_result_chars)
+            if checks.ok and command != settings.command:
+                # The import graph cannot see fixtures, plugins or data files:
+                # the affected tests passing is a fast first answer, not a pass.
+                self._status_note(f"Affected tests passed; running all: {settings.command}")
+                command = settings.command
+                checks = run_checks(command, self.cwd, settings.timeout,
+                                    limit=self.limits.tool_result_chars)
             if not checks.ok:
-                self._verify_last = f"`{settings.command}` failed"
+                from coded.verify import same_failure, stalled_note
+
+                if self._verify_rounds > 1 and same_failure(self._verify_prev_output,
+                                                            checks.output):
+                    self.events.add("verify", result="stall", command=command)
+                    self._status_note(stalled_note(command))
+                    self._verify_rounds = 0
+                    self._verify_prev_output = ""
+                    return None
+                self._verify_prev_output = checks.output
+                self.events.add("verify", result="fail", command=command,
+                                detail=(checks.error or checks.output.strip().splitlines()[-1]
+                                        if (checks.error or checks.output.strip()) else ""))
+                self._verify_last = f"`{command}` failed"
                 self._status_note(f"Checks failed; sending the turn back "
                                   f"(round {self._verify_rounds}/{settings.max_rounds}).")
                 return checks_feedback(checks)
@@ -563,7 +637,59 @@ class Agent:
                                   f"(round {self._verify_rounds}/{settings.max_rounds}).")
                 return review_feedback(notes)
             self._status_note(f"Second opinion: {verdict.lower()}.")
+        if checks is not None and checks.ok:
+            self.events.add("verify", result="pass", command=checks.command)
+        healed = checks is not None and checks.ok and self._verify_rounds > 1
         self._verify_rounds = 0  # this turn is clean; a later one starts fresh
+        self._verify_prev_output = ""
+        # Verified: only a new change from here on needs checking again.
+        self._turn_changed_things = False
+        if healed:
+            return self._fix_note_nudge()
+        return None
+
+    def _fix_note_nudge(self) -> Optional[str]:
+        """The checks failed earlier this turn and now pass: once, offer to keep
+        what was learned as a `fix` note (the user approves it, as any note).
+        Not while untrusted content is in context, which could plant one."""
+        from coded.tools.base import tool_disabled
+
+        if (self.registry.get("memory") is None or self.permissions.tainted
+                or getattr(self, "_fix_nudged", False)
+                or tool_disabled("memory", self.config.disabled_tools_for(self.model))
+                # Nobody could approve the note: don't spend a call on a denial.
+                or not (self.permissions.interactive or self.permissions.auto_approve)):
+            return None
+        self._fix_nudged = True
+        return ("[memory] The project's checks failed earlier in this turn and your change "
+                "fixed them. If the cause is likely to bite again in this repository, propose "
+                "one `fix` note with the memory tool (symptom → cause → fix, one sentence); "
+                "otherwise just give your answer. Do not change any more code for this.")
+
+    def auto_check_command(self, ask: bool = False) -> Optional[str]:
+        """The project's detected test command, once the user has approved it
+        for this project (it runs the repository's own code). With `ask`, an
+        interactive session asks once; otherwise an unapproved command is None."""
+        from coded import trust
+        from coded.verify import detect_checks
+
+        command = detect_checks(self.cwd)
+        if not command:
+            return None
+        if trust.check_approved(self.cwd, command):
+            return command
+        if not ask or self._heal_declined or not self.permissions.interactive \
+                or self.permissions.in_background():
+            return None
+        answer = (self.permissions.ask(
+            "Run the project's checks after each change?",
+            f"{command}\n\nThis runs the repository's own code (its tests, conftest.py or "
+            "package scripts) after every change coded makes, and sends failures back "
+            "to fix. Remembered for this project.") or "").strip().lower()
+        if answer in ("y", "yes", "a", "always"):
+            trust.approve_check(self.cwd, command)
+            return command
+        self._heal_declined = True
         return None
 
     def _run_tool_calls(self, tool_calls) -> List[Tuple[Any, str]]:
@@ -849,16 +975,17 @@ class Agent:
             parts = [md]
             if show_reasoning and thoughts:
                 parts.insert(0, Text("".join(thoughts), style=f"{ui.MUTED} italic"))
+            body = ui.answer_block(parts[0] if len(parts) == 1 else Group(*parts))
             if dock is not None and not final:
-                parts.append(Text(""))
-                parts.append(dock)
-            return parts[0] if len(parts) == 1 else Group(*parts)
+                return Group(body, Text(""), dock)
+            return body
 
         def begin():
             nonlocal started
             if not started:
                 status.stop()
                 if live is not None:
+                    ui.answer_gap()
                     live.start()
                 started = True
 
@@ -889,8 +1016,10 @@ class Agent:
             if started and live is not None:
                 live.update(render(final=True))
                 live.stop()
+                ui.mark_printed()
             elif started:
                 turn_dock.set_body(None)
+                ui.answer_gap()
                 ui.console.print(render(final=True))
             else:
                 status.stop()
@@ -945,6 +1074,32 @@ class Agent:
         )
 
     def _run_tool(self, tc, display: bool = True) -> Tuple[str, bool, Optional[dict]]:
+        """Run one tool call and record it in the event log (timing, outcome)."""
+        import time as _time
+
+        from coded.events import classify
+
+        start = _time.monotonic()
+        self.permissions.take_deny_reason()  # start clean
+        content, is_error, args = self._run_tool_inner(tc, display)
+        flags = classify(content) if is_error else {"denied": False, "outside": False}
+        if flags["denied"]:
+            if content.startswith("Plan mode is on"):
+                flags["reason"] = "plan"
+            elif content.startswith("This tool call was blocked"):
+                flags["reason"] = "hook"
+            else:
+                flags["reason"] = self.permissions.take_deny_reason() or "user"
+        event = {"name": tc.name, "id": tc.id, "ms": round((_time.monotonic() - start) * 1000),
+                 "error": bool(is_error), **flags}
+        if is_error:
+            event["detail"] = (content or "").strip().splitlines()[0] if content else ""
+        if self.event_task:
+            event["task"] = self.event_task
+        self.events.add("tool", **event)
+        return content, is_error, args
+
+    def _run_tool_inner(self, tc, display: bool = True) -> Tuple[str, bool, Optional[dict]]:
         """Run one tool call. Returns (content for the model, is_error, parsed args).
 
         With display=False nothing is shown (the parallel path shows calls and
@@ -993,6 +1148,21 @@ class Agent:
                                                tc.id, tc.name)
                     return f"Error: {refusal(p)}", True, args
 
+        outside = self._outside_paths(tc.name, args) if tc.name in _SCOPED_TOOLS else []
+        if outside and not tool.requires_permission:
+            decision = self.permissions.request(
+                key=tc.name, title=f"{self._perm_title(tc.name)} outside the project",
+                detail="\n".join(outside), target=outside[0], always_ask=True)
+            if decision is Decision.DENY:
+                feedback = self.permissions.take_feedback()
+                if display:
+                    self._show_tool_result(f"Denied: {feedback}" if feedback else "Denied.",
+                                           True, tc.id, tc.name)
+                msg = (f"The user did not allow access outside the project ({outside[0]}). "
+                       "Stay inside the working directory, or ask the user to add the folder "
+                       "with --add-dir.")
+                return (msg + (f" They said: {feedback}" if feedback else ""), True, args)
+
         ctx = self._ctx()
 
         pre = self.hooks.run("PreToolUse", {"tool_input": args}, tool_name=tc.name)
@@ -1020,20 +1190,31 @@ class Agent:
                 auto = bool(tool.auto_allowed(args, ctx)) or pre.allow
             except Exception:  # noqa: BLE001
                 auto = pre.allow
+            title = self._perm_title(tc.name)
+            if outside:
+                title += " outside the project"
+                auto = False  # a sandbox or hook vouches for the project, not ~/.ssh
             decision = self.permissions.request(
                 key=tc.name,
-                title=self._perm_title(tc.name),
+                title=title,
                 detail=tool.permission_detail(args),
                 target=tool.permission_target(args),
                 auto_allowed=auto,
+                always_ask=bool(outside),
             )
             if decision is Decision.DENY:
+                feedback = self.permissions.take_feedback()
                 if display:
-                    self._show_tool_result("Denied.", True, tc.id, tc.name)
+                    self._show_tool_result(f"Denied: {feedback}" if feedback else "Denied.",
+                                           True, tc.id, tc.name)
                 if self.permissions.in_background():
                     return ("Refused: this task runs in the background, so it cannot ask the "
                             "user for approval. Do not retry it; finish what you can without "
                             "it and say in your report what still needs to be done.", True, args)
+                if feedback:
+                    return ("The user denied permission to run this action and said what to do "
+                            f"instead: {feedback}\nDo not retry it as it was; follow their "
+                            "instruction.", True, args)
                 return ("The user denied permission to run this action. Do not retry it; ask "
                         "how to proceed or try another approach.", True, args)
 
@@ -1113,6 +1294,42 @@ class Agent:
         return ("\n\n<system-reminder>Directory instructions that apply to files here "
                 f"(follow them):\n{text}</system-reminder>")
 
+    def _allowed_roots(self) -> List[str]:
+        roots = [self.cwd] + list(self.config.add_dirs or [])
+        try:
+            from coded.skills import skill_search_dirs
+
+            roots += [str(d) for d in skill_search_dirs(self.cwd)]
+        except Exception:  # noqa: BLE001 - skills are optional
+            pass
+        out = []
+        for r in roots:
+            try:
+                out.append(os.path.realpath(os.path.expanduser(str(r))))
+            except (OSError, ValueError):
+                continue
+        return out
+
+    def _outside_paths(self, name: str, args: Dict[str, Any]) -> List[str]:
+        """The paths of a tool call that resolve (symlinks too) outside the
+        project, its --add-dir folders and the skill folders."""
+        paths = _tool_paths(name, args)
+        if name in ("grep", "glob", "ls") and not paths:
+            return []
+        roots = self._allowed_roots()
+        out = []
+        for raw in paths:
+            full = os.path.expanduser(raw)
+            if not os.path.isabs(full):
+                full = os.path.join(self.cwd, full)
+            try:
+                real = os.path.realpath(full)
+            except (OSError, ValueError):
+                real = full
+            if not any(real == r or real.startswith(r.rstrip(os.sep) + os.sep) for r in roots):
+                out.append(real)
+        return out
+
     @staticmethod
     def _perm_title(tool_name: str) -> str:
         return {
@@ -1123,15 +1340,20 @@ class Agent:
             "apply_patch": "Apply patch",
             "notebook_edit": "Edit notebook",
             "external_agent": "Delegate to outside agent",
+            "read": "Read file", "ls": "List folder", "grep": "Search", "glob": "Find files",
+            "view_image": "View image", "lsp": "Code lookup",
         }.get(tool_name, f"Run {tool_name}")
 
     # -- sub-agents ---------------------------------------------------------
     def run_subagent(self, prompt: str, *, role: str = "subagent", cwd: Optional[str] = None,
-                     model: Optional[str] = None) -> str:
-        """Run a one-shot sub-agent (isolated context) and return its report."""
-        return self._make_subagent_runner(role)(prompt, cwd=cwd, model=model)
+                     model: Optional[str] = None, read_only: bool = False) -> str:
+        """Run a one-shot sub-agent (isolated context) and return its report.
+        `read_only` builds it without any file-changing tool (not just told not
+        to edit); bash stays, behind the normal permission prompt."""
+        return self._make_subagent_runner(role, read_only=read_only)(prompt, cwd=cwd, model=model)
 
-    def _make_subagent_runner(self, role: str = "subagent") -> Callable[..., str]:
+    def _make_subagent_runner(self, role: str = "subagent",
+                              read_only: bool = False) -> Callable[..., str]:
         def runner(prompt: str, cwd: Optional[str] = None, model: Optional[str] = None,
                    task: Optional[TaskEntry] = None) -> str:
             if model:
@@ -1149,6 +1371,19 @@ class Agent:
             sub_system = build_subagent_prompt(sub_cwd, sub_model)
             sub_session = Session(system_prompt=sub_system)
             sub_registry = build_registry(include_task=False)
+            sub_perms = self.permissions
+            if read_only:
+                from coded.permissions import EDIT_KEYS
+
+                for name in set(EDIT_KEYS) | {"delete", "move", "github"}:
+                    sub_registry.unregister(name)
+                if self.permissions.auto_approve:
+                    # --yolo would approve bash and git writes: a read-only
+                    # agent gets a gate with nobody to ask, so they are refused.
+                    sub_perms = PermissionManager(
+                        rules={"allow": list(self.permissions.allow_rules),
+                               "deny": list(self.permissions.deny_rules)},
+                        injection_guard=self.permissions.injection_guard)
             if self.config.lsp:
                 from coded.tools.lsp import LspTool
 
@@ -1158,7 +1393,7 @@ class Agent:
                 config=self.config,
                 registry=sub_registry,
                 session=sub_session,
-                permissions=self.permissions,
+                permissions=sub_perms,
                 cwd=sub_cwd,
                 stream=False,
                 verbose=False,
@@ -1170,6 +1405,8 @@ class Agent:
             entry = task or self.tasks.start(role, sub_model.name)
             entry.model = sub_model.name
             entry.agent = sub_agent
+            sub_agent.events = self.events
+            sub_agent.event_task = entry.id
 
             def activity(name: str, args: dict) -> None:
                 label, summary = ui.tool_title(name, args, sub_cwd)

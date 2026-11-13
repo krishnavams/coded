@@ -39,7 +39,8 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Subcommands: `coded config setup|init|path|show`, `coded models [--check]`, "
                "`coded skill install|list|remove|update|info`, `coded prompts list|show|init`, "
                "`coded plugin install|list|remove|update|enable|disable|info|search|marketplace`, "
-               "`coded review`, `coded commit`, `coded index`, `coded sessions`, `coded doctor`, "
+               "`coded review`, `coded commit`, `coded lab`, `coded index`, `coded sessions`, "
+               "`coded doctor`, "
                "`coded import` (MCP servers from other agents), "
                "`coded acp` (Agent Client Protocol server), `coded mcp-serve` (MCP server).",
     )
@@ -49,6 +50,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Non-interactive: run the prompt once, print the result, and exit.")
     p.add_argument("--yolo", "--auto-approve", action="store_true", dest="auto_approve",
                    help="Auto-approve all tool actions (no permission prompts). Use with care.")
+    p.add_argument("--trust-project", action="store_true",
+                   help="Apply this folder's .coded/config.json hooks, MCP servers, endpoints "
+                        "and permission settings without asking (also CODED_TRUST_PROJECT=1).")
     p.add_argument("--add-dir", action="append", metavar="DIR", dest="add_dirs",
                    help="Another folder the agent may work in (repeatable).")
     p.add_argument("--accept-edits", action="store_true",
@@ -492,7 +496,7 @@ def _handle_index_command(argv: List[str]) -> int:
     args = p.parse_args(argv)
     cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
     try:
-        cfg = load_config(cwd=cwd, config_path=args.config)
+        cfg = _load_noting(cwd, args.config)
         from coded.embeddings import EmbeddingClient, resolve_embedding_model
         from coded.index import CodeIndex
 
@@ -539,7 +543,7 @@ def _handle_commit_command(argv: List[str]) -> int:
 
     cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
     try:
-        cfg = load_config(cwd=cwd, config_path=args.config)
+        cfg = _load_noting(cwd, args.config)
         if any([args.base_url, args.api_key, args.model_name, args.provider]):
             cfg.add_model(model_from_overrides(
                 model_name=args.model_name, provider=args.provider,
@@ -553,8 +557,13 @@ def _handle_commit_command(argv: List[str]) -> int:
 
     from coded.skills import discover_skills
 
-    # Allow git so the agent can read the diff (and commit if requested).
-    permissions = PermissionManager(auto_approve=True)
+    # Reading the diff needs no approval (read-only git); creating the commit
+    # is allowed only with --commit, and only for git. The user's deny rules
+    # still win over that allow rule.
+    rules = {k: list(v) for k, v in (cfg.permissions or {}).items() if isinstance(v, list)}
+    if args.commit:
+        rules["allow"] = list(rules.get("allow") or []) + ["git"]
+    permissions = PermissionManager(rules=rules, injection_guard=cfg.injection_guard)
     agent = create_agent(model=model, config=cfg, cwd=cwd, permissions=permissions,
                          skills=discover_skills(cwd), stream=False, verbose=False)
     action = ("Then create the commit using the git tool."
@@ -571,7 +580,10 @@ def _handle_commit_command(argv: List[str]) -> int:
 
 
 def _handle_sessions_command(argv: List[str]) -> int:
-    p = argparse.ArgumentParser(prog="coded sessions", description="List saved sessions.")
+    if argv[:1] == ["show"]:
+        return _sessions_show(argv[1:])
+    p = argparse.ArgumentParser(prog="coded sessions", description="List saved sessions "
+                                "(coded sessions show <id> [N] replays one).")
     p.add_argument("--cwd", help="Only sessions for this directory.")
     args = p.parse_args(argv)
     from coded.sessions_store import SessionStore
@@ -587,6 +599,59 @@ def _handle_sessions_command(argv: List[str]) -> int:
         when = _dt.datetime.fromtimestamp(m.updated).strftime("%Y-%m-%d %H:%M")
         print(f"{m.id}  {when}  {m.model:<14} {m.messages:>3} msgs  {m.cwd}")
     ui.info("Resume with: coded --resume <id>  (or --continue for the latest here)")
+    return 0
+
+
+def _handle_lab_command(argv: List[str]) -> int:
+    """coded lab [--apply]: recurring failures in this folder's past sessions."""
+    from coded import lab
+
+    p = argparse.ArgumentParser(prog="coded lab", description="Look through this folder's "
+                                "saved sessions for recurring failures and propose fixes.")
+    p.add_argument("--cwd", help="Project directory.")
+    p.add_argument("--apply", action="store_true",
+                   help="Ask about each proposal and apply the ones you approve (needs a "
+                        "terminal; there is deliberately no --yes).")
+    args = p.parse_args(argv)
+    cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
+    report = lab.analyze(lab.load_sessions(cwd))
+    ui.console.print(lab.render(report))
+    if args.apply:
+        if not _stdin_is_tty():
+            ui.error("--apply asks about each change, so it needs a terminal.")
+            return 2
+        n = lab.apply_interactive(cwd, report, input, lambda m: ui.console.print(m, markup=False))
+        ui.info(f"Applied {n} change(s).")
+    return 0
+
+
+def _sessions_show(argv: List[str]) -> int:
+    """coded sessions show <id> [N]: a saved session's timeline (view only)."""
+    from coded import timeline
+    from coded.sessions_store import SessionStore
+
+    if not argv:
+        ui.error("Usage: coded sessions show <id> [request number]")
+        return 2
+    store = SessionStore()
+    data = store._read(store.dir / f"{argv[0]}.json")
+    session = store.load(argv[0])
+    if session is None or data is None:
+        ui.error(f"No saved session '{argv[0]}'. List them with: coded sessions")
+        return 1
+    turns = timeline.build(session.messages, session.events)
+    cwd = data.get("cwd") or os.getcwd()
+    if len(argv) > 1:
+        try:
+            turn = turns[int(argv[1]) - 1]
+        except (ValueError, IndexError):
+            ui.error(f"Choose a request between 1 and {len(turns)}.")
+            return 2
+        ui.console.print(timeline.render_turn(turn, None, cwd))
+        ui.info("(A saved session keeps the conversation; its file states are only in "
+                "that project's checkpoints, so files are not shown here.)")
+        return 0
+    ui.console.print(timeline.render_list(turns))
     return 0
 
 
@@ -606,6 +671,9 @@ def _handle_review_command(argv: List[str]) -> int:
     p.add_argument("--fail-on", choices=["needs-changes", "never"], default="needs-changes",
                    help="Exit non-zero when the verdict is NEEDS_CHANGES (default) or never.")
     p.add_argument("--no-verdict", action="store_true", help="Skip the pass/fail verdict step.")
+    p.add_argument("--adversarial", action="store_true",
+                   help="Add a read-only adversarial phase that hunts for security holes, wrong "
+                        "assumptions and hidden bugs (findings need a file:line and a trigger).")
     p.add_argument("--base-url", help="Ad-hoc OpenAI-compatible base URL.")
     p.add_argument("--api-key", help="Ad-hoc API key.")
     p.add_argument("--model-name", help="Ad-hoc concrete model id.")
@@ -616,7 +684,7 @@ def _handle_review_command(argv: List[str]) -> int:
 
     cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
     try:
-        cfg = load_config(cwd=cwd, config_path=args.config)
+        cfg = _load_noting(cwd, args.config)
         if any([args.base_url, args.api_key, args.model_name, args.provider]):
             cfg.add_model(model_from_overrides(
                 model_name=args.model_name, provider=args.provider,
@@ -631,7 +699,8 @@ def _handle_review_command(argv: List[str]) -> int:
     from coded.review import NEEDS_CHANGES, UNKNOWN, run_review, synthesize_verdict
     from coded.skills import discover_skills
 
-    permissions = PermissionManager(auto_approve=args.auto_approve, rules=cfg.permissions)
+    permissions = PermissionManager(auto_approve=args.auto_approve, rules=cfg.permissions,
+                                    injection_guard=cfg.injection_guard)
     skills = discover_skills(cwd)
     agent = create_agent(
         model=model, config=cfg, cwd=cwd, permissions=permissions,
@@ -640,7 +709,10 @@ def _handle_review_command(argv: List[str]) -> int:
 
     target = " ".join(args.target).strip() or None
     ui.info("Running review pipeline (reviewer → qa → security)…")
-    report = run_review(agent, target, verbose=False)
+    from coded.review import REVIEW_PHASES
+
+    phases = REVIEW_PHASES + (["adversary"] if args.adversarial else [])
+    report = run_review(agent, target, phases=phases, verbose=False)
 
     verdict = None
     if not args.no_verdict:
@@ -662,6 +734,58 @@ def _handle_review_command(argv: List[str]) -> int:
         if verdict == UNKNOWN:
             ui.warn("Verdict indeterminate; not failing the build.")
     return 0
+
+
+def _stdin_is_tty() -> bool:
+    try:
+        return bool(sys.stdin and sys.stdin.isatty())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _ask_project_trust(info: dict, read=input) -> bool:
+    """Show what this folder's .coded/ settings would run or change, and ask
+    once. A yes is remembered until those settings change."""
+    from rich.panel import Panel
+    from rich.text import Text
+
+    from coded import trust
+
+    body = Text()
+    body.append(f"{info['root']}\n\n", style="bold")
+    body.append("This folder's .coded/ settings would:\n", style=ui.MUTED)
+    for line in info["lines"]:
+        body.append(f"  • {line}\n")
+    body.append("\nOnly trust a project whose files you have read or wrote yourself.",
+                style=ui.WARN)
+    ui.console.print(Panel(body, title=f"[{ui.WARN}]Trust this project?[/]",
+                           title_align="left", border_style=ui.WARN))
+    try:
+        answer = read("  Apply these settings? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer in ("y", "yes"):
+        trust.remember(info["root"], info["fingerprint"])
+        return True
+    return False
+
+
+def _load_noting(cwd: str, config_path: Optional[str]):
+    """load_config for a non-interactive subcommand: an untrusted project's
+    sensitive settings stay off, with a note on stderr."""
+    cfg = load_config(cwd=cwd, config_path=config_path)
+    if cfg.untrusted_project:
+        _note_untrusted(cfg.untrusted_project)
+    return cfg
+
+
+def _note_untrusted(info: dict, asked: bool = False) -> None:
+    """Say (on stderr, so piped output stays clean) what was not applied."""
+    head = ("Not applying" if asked else "Untrusted project: not applying")
+    print(f"coded: {head} {len(info['lines'])} setting(s) from "
+          f"{os.path.join(info['root'], '.coded')} (hooks, MCP servers, endpoints or "
+          "permissions). Run coded in this folder interactively to review them, or pass "
+          "--trust-project / set CODED_TRUST_PROJECT=1.", file=sys.stderr)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -690,6 +814,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _handle_sessions_command(argv[1:])
     if argv and argv[0] == "commit":
         return _handle_commit_command(argv[1:])
+    if argv and argv[0] == "lab":
+        return _handle_lab_command(argv[1:])
     if argv and argv[0] == "skill":
         from coded.manage_cli import skill_main
 
@@ -733,7 +859,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
 
     try:
-        cfg = load_config(cwd=cwd, config_path=args.config)
+        cfg = load_config(cwd=cwd, config_path=args.config,
+                          trust_project=True if args.trust_project else None)
+        if cfg.untrusted_project:
+            interactive = not args.print_mode and _stdin_is_tty()
+            if interactive and _ask_project_trust(cfg.untrusted_project):
+                cfg = load_config(cwd=cwd, config_path=args.config, trust_project=True)
+            else:
+                _note_untrusted(cfg.untrusted_project, asked=interactive)
         _apply_overrides(cfg, args)
     except ConfigError as exc:
         ui.error(str(exc))

@@ -144,7 +144,7 @@ def test_tool_result_display_is_short_and_project_relative():
     out = ui.tool_result_text("Edited /proj/app.py (1 replacement(s)).", cwd="/proj").plain
     assert "Edited app.py" in out and "/proj" not in out
     long = ui.tool_result_text("\n".join(map(str, range(40)))).plain
-    assert "… +28 lines" in long
+    assert "… +37 lines" in long
 
 
 def test_diff_display_has_line_numbers_and_no_file_headers():
@@ -156,7 +156,22 @@ def test_diff_display_has_line_numbers_and_no_file_headers():
 
 def test_logo_is_coded_own_mark():
     assert len(ui.LOGO) == 3 and len({len(r) for r in ui.LOGO}) == 1
-    assert "◆" in ui.logo_text().plain
+    t = ui.logo_text()
+    assert t.plain.splitlines() == list(ui.LOGO)
+    shades = {str(span.style) for span in t.spans}
+    assert ui.ACCENT_SOFT in shades and ui.ACCENT_DEEP in shades  # light → deep
+
+
+def test_welcome_banner_fits_the_wordmark_and_details():
+    import io
+
+    from rich.console import Console
+
+    con = Console(width=100, record=True, file=io.StringIO(), color_system=None)
+    con.print(ui.welcome("gpt-4o", "/home/me/shop"))
+    rows = con.export_text().splitlines()
+    assert len(rows) == 5  # border, three logo rows, border: nothing wraps
+    assert "gpt-4o" in rows[1] and "/help" in rows[2] and "interrupt" in rows[2]
 
 
 def test_repl_shift_tab_is_bound_to_plan_mode(headless):
@@ -192,3 +207,62 @@ def test_todo_write_result_does_not_repeat_the_list():
     assert "one\n" not in shown.replace("Note: keep only one", "") and "two" not in shown
     # Errors are shown in full.
     assert "two" in ui.tool_result_text(content, is_error=True, name="todo_write").plain
+
+
+def test_folded_output_drops_blank_lines_and_cuts_long_ones():
+    out = ui.tool_result_text("\n\nfirst\n\n\n\nsecond\n\n", expand_hint=True).plain
+    assert [ln.rstrip() for ln in out.splitlines()] == ["  ⎿  first", "", "     second"]
+    long = ui.tool_result_text("x" * 500, expand_hint=True).plain
+    assert "x" * 200 not in long and "(ctrl+o to expand)" in long
+    assert "x" * 500 in ui.tool_result_text("x" * 500, full=True).plain
+    # Expanded output is verbatim: blank lines and spacing are kept.
+    assert "a\n     \n     \n     b" in ui.tool_result_text("a\n\n\nb", full=True).plain
+
+
+def test_folded_bash_output_hides_a_successful_exit_line():
+    out = ui.tool_result_text("[exit 0]\n1\n2\n3\n4", name="bash", expand_hint=True).plain
+    assert "[exit 0]" not in out and "1" in out and "+1 lines" in out
+    assert "[exit 2]" in ui.tool_result_text("[exit 2]\nboom", name="bash").plain
+    assert "[exit 0]" in ui.tool_result_text("[exit 0]\nok", name="bash", full=True).plain
+
+
+def test_transcript_blocks_have_exactly_one_blank_line_between_them(monkeypatch):
+    import io
+    import time
+
+    con = ui.make_console(force_terminal=True, width=80, record=True, file=io.StringIO(),
+                          color_system=None)
+    monkeypatch.setattr(ui, "console", con)
+    monkeypatch.setattr(ui, "_cuts", [])
+    ui.set_answer_bullets(True)
+    # A turn's dock redraws ~12 times a second; that is not content.
+    dock = ui.TurnDock(lambda: "").start()
+    ui.user_prefix()
+    time.sleep(0.3)
+    assert con.last_blank
+    dock.stop()
+    con.export_text()  # drop the dock's frames
+    ui.user_prefix()
+    ui.tool_call("bash", {"command": "ls"})
+    ui.tool_result("[exit 0]\na\nb", name="bash")
+    ui.console.print()   # a stray separator elsewhere must not double the gap
+    ui.tool_call("read", {"path": "a.py"})
+    ui.tool_result("1\tx\n2\ty", name="read")
+    ui.assistant_markdown("All done.\n\nSecond paragraph that is long enough to wrap "
+                          "onto another line of the eighty column terminal here.")
+    lines = [ln.rstrip() for ln in con.export_text().splitlines()]
+    assert lines[:8] == ["", "● Bash(ls)", "  ⎿  a", "     b", "", "● Read(a.py)",
+                         "  ⎿  Read 2 lines", ""]
+    assert lines[8] == "● All done."
+    # One bullet per answer; later paragraphs and wrapped lines hang under it.
+    assert lines[10].startswith("  Second paragraph") and lines[11].startswith("  ")
+    assert "" not in [lines[i] for i in (1, 5, 8)]
+
+
+def test_answers_have_no_bullet_outside_the_repl(monkeypatch):
+    import io
+
+    con = ui.make_console(width=80, record=True, file=io.StringIO(), color_system=None)
+    monkeypatch.setattr(ui, "console", con)
+    ui.assistant_markdown("plain answer")
+    assert con.export_text().strip() == "plain answer"

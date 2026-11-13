@@ -97,6 +97,7 @@ class SessionStore:
                 "cost": session.cost,
             },
             "todos": [dict(t) for t in session.todos],
+            "events": list(getattr(session, "events", None) or [])[-3000:],
             "system_prompt": session.system_prompt,
             "messages": session.messages,
         }
@@ -131,6 +132,7 @@ class SessionStore:
         s.compactions = data.get("compactions", 0)
         s.todos = [dict(t) for t in data.get("todos") or []
                    if isinstance(t, dict) and t.get("content")]
+        s.events = [e for e in data.get("events") or [] if isinstance(e, dict) and e.get("kind")]
         return s
 
     def latest(self, cwd: Optional[str] = None) -> Optional[str]:

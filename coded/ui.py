@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from rich.box import ROUNDED
 from rich.console import Console, Group
+from rich.control import Control
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
@@ -31,8 +32,71 @@ _THEME = Theme({
     "markdown.link_url": ACCENT, "markdown.item.bullet": ACCENT,
     "markdown.item.number": ACCENT, "markdown.block_quote": MUTED,
 })
-console = Console(theme=_THEME)
+class TranscriptConsole(Console):
+    """A Console that remembers whether the last row it printed was blank, so
+    `gap()` can keep exactly one empty line between blocks however many
+    `console.print()` calls (notes, panels, prompts) happen in between. A
+    Live's redraw (`print(Control())`) is not content and does not count."""
+
+    last_blank = True
+
+    def print(self, *objects, **kwargs):  # noqa: A003 - Console API
+        super().print(*objects, **kwargs)
+        if objects and all(isinstance(o, Control) for o in objects):
+            return
+        self.last_blank = all(
+            (isinstance(o, str) and not o.strip()) or (isinstance(o, Text) and not o.plain.strip())
+            for o in objects)
+
+
+def make_console(**kwargs) -> TranscriptConsole:
+    return TranscriptConsole(theme=_THEME, **kwargs)
+
+
+console = make_console()
 _err_console = Console(stderr=True, theme=_THEME)
+
+# The REPL's transcript layout: assistant text gets a `● ` bullet with a
+# hanging indent and its own gap. Off elsewhere (`-p` output stays plain).
+_answer_bullets = False
+
+
+def set_answer_bullets(on: bool) -> None:
+    global _answer_bullets
+    _answer_bullets = bool(on)
+
+
+def gap() -> None:
+    """One blank line before a new block, never two. A console that does not
+    track its last row (a plain Console in a test) always gets the line."""
+    if getattr(console, "last_blank", False):
+        return
+    console.print()
+
+
+def mark_printed() -> None:
+    """Something was drawn outside `console.print` (a Live's final frame)."""
+    if hasattr(console, "last_blank"):
+        console.last_blank = False
+
+
+def answer_block(renderable):
+    """The assistant's text, as the REPL shows it: `● ` then the text, with
+    wrapped lines indented under it."""
+    if not _answer_bullets:
+        return renderable
+    from rich.table import Table
+
+    grid = Table.grid(padding=0, expand=True)
+    grid.add_column(width=2, no_wrap=True)
+    grid.add_column(ratio=1)
+    grid.add_row(Text("● ", style="bold white"), renderable)
+    return grid
+
+
+def answer_gap() -> None:
+    if _answer_bullets:
+        gap()
 
 
 def set_quiet(enabled: bool) -> None:
@@ -104,6 +168,7 @@ class TurnDock:
         self._activity: Optional[str] = None
         self._body = None
         self._question = False
+        self._prompt = None
         self._live = None
 
     # -- lifecycle ----------------------------------------------------------
@@ -150,12 +215,21 @@ class TurnDock:
         """A prompt is waiting for a typed answer: the box says so."""
         self._question = on
 
+    def set_prompt(self, renderable) -> None:
+        """A choice prompt (permission, questions) in place of the spinner and
+        input box while it waits for keys; None puts them back."""
+        self._prompt = renderable
+        if self._live is not None:
+            self._live.refresh()
+
     def render(self):
         from rich.spinner import Spinner
 
         parts = []
         if self._body is not None:
             parts += [self._body, Text("")]
+        if self._prompt is not None:
+            return Group(*parts, self._prompt)
         if self._question:
             parts.append(Text.from_markup(f"[{WARN}]● Waiting for your answer…[/]"))
         else:
@@ -259,8 +333,12 @@ def thinking(text: str = "Thinking", tasks: Optional[list] = None):
 
 # Truncation limits for displaying tool activity (the model still sees full output).
 _MAX_ARG_LEN = 300
-_MAX_RESULT_LINES = 12
-_MAX_RESULT_CHARS = 1600
+# Folded tool output (as Claude Code shows it): a few lines, then
+# "… +N lines (ctrl+o to expand)". Long lines are cut so they cannot wrap
+# into many rows. The model always gets the whole result.
+_MAX_RESULT_LINES = 3
+_MAX_RESULT_CHARS = 600
+_MAX_LINE_CHARS = 160
 
 
 def _short_path(cwd: str, width: int = 48) -> str:
@@ -270,40 +348,47 @@ def _short_path(cwd: str, width: int = 48) -> str:
 
 
 # coded's own mark: a pair of code brackets around a diamond.
-LOGO = (" ▟▀▀ ▀▀▙ ",
-        " █  ◆  █ ",
-        " ▜▄▄ ▄▄▛ ")
+# coded's own wordmark: block letters shaded light → deep purple.
+LOGO = ("█▀▀ █▀█ █▀▄ █▀▀ █▀▄",
+        "█   █ █ █ █ █▀▀ █ █",
+        "▀▀▀ ▀▀▀ ▀▀  ▀▀▀ ▀▀ ")
+_LOGO_SHADES = (ACCENT_SOFT, "#b9a2fc", ACCENT, "#9a74f8", "#8b5cf6", ACCENT_DEEP)
 
 
 def logo_text() -> Text:
+    width = max(len(r) for r in LOGO)
     t = Text()
     for i, row in enumerate(LOGO):
-        for ch in row:
-            t.append(ch, style=f"bold {ACCENT_SOFT}" if ch == "◆" else ACCENT)
+        for x, ch in enumerate(row):
+            t.append(ch, style=_LOGO_SHADES[min(len(_LOGO_SHADES) - 1,
+                                                x * len(_LOGO_SHADES) // width)])
         if i < len(LOGO) - 1:
             t.append("\n")
     return t
 
 
 def welcome(model_name: str, cwd: str) -> Panel:
-    """The start-of-session card (shared by the REPL and the TUI)."""
+    """The start-of-session card (shared by the REPL and the TUI). The
+    wordmark already says "coded", so the text beside it is the version, the
+    model, the folder and the keys."""
     from rich.table import Table
 
     from coded import __version__
 
     right = Text()
-    right.append("coded", style=f"bold {ACCENT}")
-    right.append(f"  v{__version__}\n", style=MUTED)
+    right.append(f"v{__version__}", style=MUTED)
+    right.append("  ·  ", style=MUTED)
     right.append(model_name, style="bold")
     right.append("  ·  ", style=MUTED)
     right.append(_short_path(_home_short(cwd)) + "\n", style=MUTED)
     right.append("/help", style=ACCENT)
-    right.append(" for commands  ·  ", style=MUTED)
+    right.append(" commands  ·  ", style=MUTED)
     right.append("/model", style=ACCENT)
-    right.append(" to switch  ·  ", style=MUTED)
+    right.append(" switch  ·  ", style=MUTED)
     right.append("Ctrl-C", style=ACCENT)
-    right.append(" to interrupt", style=MUTED)
+    right.append(" interrupt", style=MUTED)
     grid = Table.grid(padding=(0, 2))
+    grid.add_column(no_wrap=True)
     grid.add_row(logo_text(), right)
     # Full width, like the input box, so the boxes line up at any terminal size.
     return Panel(grid, box=ROUNDED, border_style=ACCENT, padding=(0, 1), expand=True)
@@ -327,7 +412,8 @@ def echo_user(text: str) -> None:
 
 def assistant_markdown(text: str) -> None:
     if text.strip():
-        console.print(Markdown(text))
+        answer_gap()
+        console.print(answer_block(Markdown(text)))
 
 
 def _home_short(path: str) -> str:
@@ -387,6 +473,9 @@ def tool_title(name: str, args: dict, cwd: str = "") -> tuple:
             val = args.get("prompt")
         if name == "git":
             val = args.get("command") or args.get("args")
+        if name == "ask_user" and not val and isinstance(args.get("questions"), list):
+            qs = [q.get("question") for q in args["questions"] if isinstance(q, dict)]
+            val = qs[0] if len(qs) == 1 else (f"{len(qs)} questions" if qs else None)
         if val is None or val == "":
             return label, ""
         return label, _rel(val, cwd) if key in _PATH_KEYS else _one_line(val)
@@ -431,16 +520,19 @@ def tool_call_text(name: str, args: dict, cwd: str = "") -> Text:
 
 
 def tool_call(name: str, args: dict, cwd: str = "") -> None:
-    console.print()
-    console.print(tool_call_text(name, args, cwd))
+    global _last_call
+    _last_call = tool_call_text(name, args, cwd)
+    gap()
+    console.print(_last_call)
 
 
 def tool_result_text(content: str, is_error: bool = False, name: str = "",
                      cwd: str = "", max_lines: int = 0, full: bool = False,
-                     expand_hint: bool = False) -> Text:
+                     expand_hint=False) -> Text:
     """Tool output under a `⎿` elbow, shortened for display (the model sees it all).
 
-    `full` shows every line (Ctrl+O); `expand_hint` says how to get there."""
+    `full` shows every line (Ctrl+O); `expand_hint` says how to get there
+    (True: the REPL's "(ctrl+o to expand)", or the hint text to use)."""
     max_lines = max_lines or _MAX_RESULT_LINES
     if cwd:
         content = content.replace(cwd.rstrip("/") + "/", "")
@@ -451,11 +543,17 @@ def tool_result_text(content: str, is_error: bool = False, name: str = "",
         # The list itself is already on screen (panel / dock); keep the
         # headline and any nudge the tool gave the model.
         lines = [lines[0].rstrip(":")] + [ln for ln in lines[1:] if ln.startswith("Note:")]
-    shown = lines if full else lines[:max_lines]
+    if not full:
+        if name == "bash" and lines and lines[0] == "[exit 0]":
+            lines = lines[1:]  # success is the usual case; a non-zero exit stays
+        lines = _squeeze_blank(lines)
+    shown = lines if full else [_cut_line(ln) for ln in lines[:max_lines]]
     text = "\n".join(shown)
     cut_chars = not full and len(text) > _MAX_RESULT_CHARS
     if cut_chars:
         text = text[:_MAX_RESULT_CHARS] + "…"
+    cut_chars = cut_chars or (not full and any(len(ln) > _line_limit()
+                                               for ln in lines[:max_lines]))
     if not text.strip():
         text = "(no output)"
     style = ERR if is_error else MUTED
@@ -464,7 +562,8 @@ def tool_result_text(content: str, is_error: bool = False, name: str = "",
         body.append("  ⎿  " if i == 0 else "     ", style=style)
         body.append(line + "\n", style=style)
     extra = len(lines) - len(shown)
-    hint = " (ctrl+o to expand)" if expand_hint else ""
+    hint = (expand_hint if isinstance(expand_hint, str) else " (ctrl+o to expand)") \
+        if expand_hint else ""
     if extra > 0:
         body.append(f"     … +{extra} lines{hint}\n", style=f"{MUTED} italic")
     elif cut_chars and hint:
@@ -472,23 +571,58 @@ def tool_result_text(content: str, is_error: bool = False, name: str = "",
     return body
 
 
+def _squeeze_blank(lines: list) -> list:
+    """No blank lines at the ends, and at most one in a row (display only)."""
+    out: list = []
+    for ln in lines:
+        if not ln.strip() and (not out or not out[-1].strip()):
+            continue
+        out.append(ln.rstrip())
+    while out and not out[-1].strip():
+        out.pop()
+    return out
+
+
+def _line_limit() -> int:
+    """Folded lines fit one terminal row (after the 5-column `⎿` indent)."""
+    try:
+        width = int(console.width) - 6
+    except Exception:  # noqa: BLE001
+        width = _MAX_LINE_CHARS
+    return max(40, min(_MAX_LINE_CHARS, width))
+
+
+def _cut_line(line: str) -> str:
+    limit = _line_limit()
+    return line if len(line) <= limit else line[:limit - 1] + "…"
+
+
 def tool_result(content: str, is_error: bool = False, name: str = "", cwd: str = "") -> None:
     """A tool result in the REPL: shortened (Ctrl+O shows it in full), or whole
     while output is expanded."""
-    global _last_cut
     if _expanded:
         console.print(tool_result_text(content, is_error, name, cwd, full=True), end="")
         return
     text = tool_result_text(content, is_error, name, cwd, expand_hint=True)
     if "ctrl+o to expand" in text.plain:
-        _last_cut = (content, is_error, name, cwd)
+        _cuts.append((_last_call, content, is_error, name, cwd))
+        del _cuts[:-_MAX_CUTS]
     console.print(text, end="")
 
 
 # Ctrl+O: tool output shown whole instead of shortened (REPL), and the
 # running tasks' full activity instead of the last few steps.
 _expanded = False
-_last_cut: Optional[tuple] = None  # the newest result that was shortened
+# The results shortened this turn (with their `● Tool(args)` line), newest
+# last, so Ctrl+O can show every one of them whole.
+_cuts: list = []
+_MAX_CUTS = 50
+_last_call: Optional[Text] = None
+
+
+def reset_cuts() -> None:
+    """A new turn starts: Ctrl+O expands only what this turn shortened."""
+    _cuts.clear()
 
 
 def is_expanded() -> bool:
@@ -501,12 +635,18 @@ def set_expanded(on: bool) -> None:
 
 
 def show_last_cut() -> bool:
-    """Print the newest shortened tool result in full; False if there is none."""
-    if _last_cut is None:
+    """Print every result shortened this turn in full, each under its tool
+    call; False if there is none."""
+    if not _cuts:
         return False
-    content, is_error, name, cwd = _last_cut
-    console.print(Text("  ⊕ full output of the last shortened result:", style=MUTED))
-    console.print(tool_result_text(content, is_error, name, cwd, full=True), end="")
+    n = len(_cuts)
+    console.print(Text(f"  ⊕ full output of {n} shortened result{'s' if n != 1 else ''}:",
+                       style=MUTED))
+    for call, content, is_error, name, cwd in list(_cuts):
+        if call is not None:
+            console.print(call)
+        console.print(tool_result_text(content, is_error, name, cwd, full=True), end="")
+    _cuts.clear()
     return True
 
 
@@ -671,10 +811,14 @@ def diff_text(text: str, max_lines: int = _MAX_DIFF_LINES) -> Text:
             old, new = int(m.group(1)), int(m.group(2))
             continue
         if line.startswith("+"):
-            body.append(f"     {new:>4} + {line[1:]}\n", style="#86efac on #12301f")
+            body.append("     ")  # the indent stays unshaded, under the tool call
+            body.append(f"{new:>4} + {line[1:]}", style="#86efac on #12301f")
+            body.append("\n")
             new += 1
         elif line.startswith("-"):
-            body.append(f"     {old:>4} - {line[1:]}\n", style="#fca5a5 on #3a1620")
+            body.append("     ")
+            body.append(f"{old:>4} - {line[1:]}", style="#fca5a5 on #3a1620")
+            body.append("\n")
             old += 1
         else:
             body.append(f"     {new:>4}   {line[1:]}\n", style=MUTED)

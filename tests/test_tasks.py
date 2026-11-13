@@ -216,15 +216,21 @@ def test_ctrl_o_expands_and_collapses_tool_output(monkeypatch):
     con = Console(width=100, record=True, color_system=None,
                   file=io.StringIO())
     monkeypatch.setattr(ui, "console", con)
-    monkeypatch.setattr(ui, "_last_cut", None)
+    monkeypatch.setattr(ui, "_cuts", [])
     monkeypatch.setattr(ui, "_expanded", False)
     long = "\n".join(f"line {i}" for i in range(40))
+    ui.tool_call("bash", {"command": "first"})
     ui.tool_result(long, name="bash")
+    ui.tool_call("bash", {"command": "second"})
+    ui.tool_result(long.replace("line", "row"), name="bash")
     out = con.export_text()
-    assert "+28 lines (ctrl+o to expand)" in out and "line 39" not in out
+    assert "+37 lines (ctrl+o to expand)" in out and "line 39" not in out
     ui.set_expanded(True)
     assert ui.show_last_cut()
-    assert "line 39" in con.export_text()
+    full = con.export_text()
+    assert "line 39" in full and "row 39" in full and "2 shortened results" in full
+    assert full.count("Bash(first)") == 1 and full.count("Bash(second)") == 1
+    assert not ui.show_last_cut()  # shown once
     ui.tool_result(long, name="bash")  # expanded: shown whole, no hint
     assert "line 39" in con.export_text() and "ctrl+o" not in con.export_text()
     ui.set_expanded(False)

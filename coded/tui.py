@@ -32,14 +32,12 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import (
-    Button,
     Input,
-    Label,
     Markdown,
     Static,
 )
 
-from coded import sidebar, ui
+from coded import choice, sidebar, ui
 from coded.agent import Agent
 from coded.llm import explain_failure
 
@@ -66,10 +64,39 @@ class ToolCall(Static):
 
 
 class ToolResult(Static):
-    def __init__(self, content: str, is_error: bool, name: str = "", cwd: str = ""):
-        body = ui.tool_result_text(content, is_error, name, cwd)
+    """A tool result, folded to a few lines; a click (or Ctrl+O for all of
+    them) shows it whole and folds it again."""
+
+    _HINT = " (click or ctrl+o to expand)"
+
+    def __init__(self, content: str, is_error: bool, name: str = "", cwd: str = "",
+                 expanded: bool = False):
+        self._args = (content, is_error, name, cwd)
+        folded = ui.tool_result_text(content, is_error, name, cwd, expand_hint=self._HINT)
+        self.foldable = self._HINT in folded.plain
+        self.expanded = expanded and self.foldable
+        classes = "toolresult error" if is_error else "toolresult"
+        if self.foldable:
+            classes += " foldable"
+        super().__init__(self._body(), classes=classes)
+
+    def _body(self):
+        content, is_error, name, cwd = self._args
+        if self.expanded:
+            body = ui.tool_result_text(content, is_error, name, cwd, full=True)
+            body.append("     (click or ctrl+o to collapse)\n", style=f"{ui.MUTED} italic")
+        else:
+            body = ui.tool_result_text(content, is_error, name, cwd, expand_hint=self._HINT)
         body.rstrip()
-        super().__init__(body, classes="toolresult error" if is_error else "toolresult")
+        return body
+
+    def set_expanded(self, on: bool) -> None:
+        if self.foldable and on != self.expanded:
+            self.expanded = on
+            self.update(self._body())
+
+    def on_click(self) -> None:
+        self.set_expanded(not self.expanded)
 
 
 class DiffView(Static):
@@ -87,65 +114,101 @@ class StatusNote(Static):
 # ---------------------------------------------------------------------------
 # Permission modal
 # ---------------------------------------------------------------------------
-class PermissionModal(ModalScreen[str]):
-    def __init__(self, title: str, detail: str):
+_TEXTUAL_KEYS = {"up": choice.UP, "down": choice.DOWN, "left": choice.LEFT,
+                 "right": choice.RIGHT, "tab": choice.TAB, "shift+tab": choice.BACKTAB,
+                 "enter": choice.ENTER, "escape": choice.ESCAPE,
+                 "backspace": choice.BACKSPACE, "ctrl+u": choice.CLEAR}
+
+
+class ChoiceModal(ModalScreen):
+    """A `choice.Chooser` (permission or questions), drawn exactly as the REPL
+    draws it and driven by the same keys."""
+
+    def __init__(self, chooser: "choice.Chooser"):
         super().__init__()
-        self._title = title
-        self._detail = detail
+        self.chooser = chooser
 
     def compose(self) -> ComposeResult:
         from textual.containers import Vertical
         with Vertical(id="perm-box"):
-            yield Label(f"[b {ui.ACCENT}]{_esc(self._title)}[/]", id="perm-title")
-            yield Static(Text(self._detail), id="perm-detail")
-            with Horizontal(id="perm-buttons"):
-                yield Button("Allow (y)", variant="success", id="yes")
-                yield Button("Deny (n)", variant="error", id="no")
-                yield Button("Always (a)", variant="primary", id="always")
+            yield Static(self.chooser.render(), id="choice")
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss({"yes": "yes", "no": "no", "always": "always"}[event.button.id])
+    def _result(self):
+        raise NotImplementedError
+
+    def press(self, key: str) -> None:
+        self.chooser.key(key)
+        if self.chooser.done:
+            self.dismiss(self._result())
+        else:
+            self.query_one("#choice", Static).update(self.chooser.render())
 
     def on_key(self, event) -> None:
-        mapping = {"y": "yes", "n": "no", "a": "always", "escape": "no"}
-        if event.key in mapping:
-            event.stop()
-            self.dismiss(mapping[event.key])
+        key = _TEXTUAL_KEYS.get(event.key)
+        if key is None:
+            key = " " if event.key == "space" else event.character
+        if not key or (len(key) == 1 and key < " "):
+            return
+        event.stop()
+        event.prevent_default()
+        self.press(key)
 
 
-class QuestionModal(ModalScreen[str]):
-    """ask_user: the agent's question, with its choices and a free answer."""
+class DashboardModal(ModalScreen):
+    """/dashboard: the Command Center, refreshed every second while open."""
 
-    def __init__(self, question: str, options: list):
+    BINDINGS = [Binding("escape", "dismiss", "Close"), Binding("q", "dismiss", "Close")]
+
+    def __init__(self, app_ref):
         super().__init__()
-        self._question = question
-        self._options = list(options)
+        self._app_ref = app_ref
 
     def compose(self) -> ComposeResult:
-        from textual.containers import Vertical
-        with Vertical(id="perm-box"):
-            yield Label(f"[b {ui.ACCENT}]? Question[/]", id="perm-title")
-            yield Static(Text(self._question), id="perm-detail")
-            if self._options:
-                with Vertical(id="question-options"):
-                    for i, opt in enumerate(self._options):
-                        yield Button(f"{i + 1}. {opt}", id=f"opt-{i}")
-            yield Input(placeholder="Your own answer (Enter to send, Esc to skip)",
-                        id="question-input")
+        from textual.containers import VerticalScroll as _VS
+        with _VS(id="dash-box"):
+            yield Static(self._dashboard(), id="dash")
+
+    def _dashboard(self):
+        from coded.dashboard import render
+
+        return render(self._app_ref.agent, busy=self._app_ref.busy)
 
     def on_mount(self) -> None:
-        self.query_one("#question-input", Input).focus()
+        self.set_interval(1.0, self._refresh)
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(self._options[int(event.button.id.split("-", 1)[1])])
+    def _refresh(self) -> None:
+        self.query_one("#dash", Static).update(self._dashboard())
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self.dismiss(ui.pick_answer(event.value, self._options) or "")
+    def action_dismiss(self) -> None:
+        self.dismiss(None)
+
+
+class PermissionModal(ChoiceModal):
+    """"Do you want to proceed?" for a risky action."""
+
+    def __init__(self, title: str, detail: str):
+        super().__init__(choice.permission_chooser(title, detail))
+
+    def _result(self):
+        return choice.permission_answer(self.chooser)
 
     def on_key(self, event) -> None:
-        if event.key == "escape":
+        if not self.chooser.editing and event.key in ("y", "n", "a"):
             event.stop()
-            self.dismiss("")
+            self.dismiss({"y": "yes", "n": "no", "a": "always"}[event.key])
+            return
+        super().on_key(event)
+
+
+class QuestionModal(ChoiceModal):
+    """ask_user: one or more questions, with a review page before submitting."""
+
+    def __init__(self, questions: list):
+        super().__init__(choice.Chooser(questions))
+
+    def _result(self):
+        answers = self.chooser.result()
+        return None if answers is None else [str(a) for a in answers]
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +227,7 @@ class CodedTUI(App):
     .toolcall {{ margin: 1 0 0 0; }}
     .toolresult {{ color: {ui.MUTED}; }}
     .toolresult.error {{ color: {ui.ERR}; }}
+    .toolresult.foldable:hover {{ background: #181426; }}
     .statusnote {{ margin: 1 0 0 0; }}
     #main {{ height: 1fr; }}
     #left {{ width: 1fr; }}
@@ -176,12 +240,10 @@ class CodedTUI(App):
     #prompt {{ border: round #3b3260; background: #100d1a; margin: 0 1; }}
     #prompt:focus {{ border: round {ui.ACCENT}; }}
     #statusline {{ height: 1; padding: 0 2; color: {ui.MUTED}; }}
-    #perm-box {{ background: #181426; border: round {ui.ACCENT}; padding: 1 2; width: 76; height: auto; }}
-    #perm-buttons {{ height: auto; align: center middle; padding-top: 1; }}
-    #question-options {{ height: auto; padding-top: 1; }}
-    #question-options Button {{ width: 100%; margin: 0 0 0 0; }}
-    #question-input {{ margin-top: 1; }}
-    PermissionModal {{ align: center middle; background: #100d1a 60%; }}
+    #perm-box {{ width: 96; max-width: 95%; height: auto; padding: 0; background: #100d1a; }}
+    #choice {{ height: auto; }}
+    PermissionModal, QuestionModal, DashboardModal {{ align: center middle; background: #100d1a 60%; }}
+    #dash-box {{ width: 110; max-width: 96%; height: 90%; background: #100d1a; padding: 0 1; }}
     """
 
     BINDINGS = [
@@ -190,6 +252,7 @@ class CodedTUI(App):
         Binding("ctrl+u", "undo", "Undo edits"),
         Binding("shift+tab", "toggle_plan", "Mode", priority=True),
         Binding("ctrl+b", "toggle_sidebar", "Side panel", priority=True),
+        Binding("ctrl+o", "toggle_output", "Expand output", priority=True),
         Binding("up", "edit_queued", "Edit queued", show=False),
     ]
 
@@ -201,12 +264,13 @@ class CodedTUI(App):
         self._on_turn = on_turn
         self.agent.on_event = self._agent_event  # called from the worker thread
         self.agent.permissions.set_prompt(self._permission_prompt, threadsafe=True)
-        self.agent.permissions.set_question(self._question_prompt)
+        self.agent.permissions.set_questions(self._questions_prompt)
         self._assistant_md: Optional[Markdown] = None
         self._assistant_buf = ""
         self._thought: Optional[Static] = None
         self._thought_buf = ""
         self._queued: list = []  # messages typed while a turn was running
+        self._expanded = False  # Ctrl+O: tool results shown whole
         self._panel_choice: Optional[bool] = None  # None: follow the terminal width
         self._changes: list = []  # sidebar.FileChange, recomputed after tool results
         from coded import notify
@@ -346,6 +410,12 @@ class CodedTUI(App):
     def on_resize(self, event) -> None:
         self._apply_panel()
 
+    def action_toggle_output(self) -> None:
+        """Ctrl+O: show every tool result whole, or fold them all again."""
+        self._expanded = not self._expanded
+        for widget in self.query(ToolResult):
+            widget.set_expanded(self._expanded)
+
     def action_toggle_sidebar(self) -> None:
         self._panel_choice = not self.panel_open
         self._apply_panel()
@@ -375,6 +445,9 @@ class CodedTUI(App):
         event.input.value = ""
         if text == "/btw" or text.startswith("/btw "):
             self._btw(text[len("/btw"):].strip())  # answered now, even mid-turn
+            return
+        if text.split()[0] == "/dashboard":
+            self.push_screen(DashboardModal(self))  # read-only: fine mid-turn
             return
         if self.busy:
             # Don't swallow a question asked mid-turn: queue it and run it next.
@@ -431,6 +504,50 @@ class CodedTUI(App):
         if text == "/undo":
             self.action_undo()
             return
+        if text.split()[0] == "/dashboard":
+            self.push_screen(DashboardModal(self))
+            return
+        if text.split()[0] == "/twin":
+            from coded import twin
+
+            self._mount(Static(twin.render(twin.refresh(self.agent.cwd)), classes="statusnote"))
+            return
+        if text.split()[0] == "/redteam":
+            self._mount(StatusNote("Adversarial review (read-only sub-agent)…"))
+            self._run_redteam(text[len("/redteam"):].strip() or None)
+            return
+        if text.split()[0] == "/timeline":
+            from coded import timeline
+
+            parts = text.split()
+            turns = timeline.build_for(self.agent)
+            if len(parts) > 1 and parts[1].isdigit() and 1 <= int(parts[1]) <= len(turns):
+                view = timeline.render_turn(turns[int(parts[1]) - 1], self.agent.checkpoints,
+                                            self.agent.cwd)
+            else:
+                view = timeline.render_list(turns)
+            self._mount(Static(view, classes="statusnote"))
+            return
+        if text.split()[0] == "/refactor":
+            from coded.codehealth import refactor_prompt
+
+            text = refactor_prompt(text[len("/refactor"):])
+            self._start_turn(text)
+            return
+        if text.split()[0] == "/heal":
+            from coded.verify import detect_checks
+
+            arg = text.split()[1].lower() if len(text.split()) > 1 else ""
+            on = (arg == "on") or (arg != "off" and not self.agent.self_heal)
+            self.agent.self_heal = on
+            self.agent._heal_declined = False
+            found = detect_checks(self.agent.cwd)
+            note = ("Self-healing off." if not on else
+                    f"Self-healing on: `{found}` will run after each change (you'll be asked "
+                    "once to allow it)." if found else
+                    "Self-healing on, but no test command was found; set verify.command.")
+            self._mount(StatusNote(note))
+            return
         if text.split()[0] == "/plan":
             self.agent.set_mode("default" if self.agent.mode == "plan" else "plan")
             text = text[len("/plan"):].strip()
@@ -441,6 +558,13 @@ class CodedTUI(App):
             name = text.split()[0][1:]
             text = self.commands[name].expand(text[len(name) + 1:])
         self._start_turn(text)
+
+    @work(thread=True)
+    def _run_redteam(self, target) -> None:
+        from coded import adversary
+
+        report = adversary.run(self.agent, target)
+        self.call_from_thread(lambda: self._mount(Markdown(report, classes="assistant")))
 
     @work(thread=True, exclusive=True)
     def _run_agent(self, text: str) -> None:
@@ -508,7 +632,8 @@ class CodedTUI(App):
             self._mount(ToolCall(ev["name"], ev.get("args", {}), self.agent.cwd))
         elif kind == "tool_result":
             self._mount(ToolResult(ev.get("content", ""), ev.get("is_error", False),
-                                   ev.get("name", ""), self.agent.cwd))
+                                   ev.get("name", ""), self.agent.cwd,
+                                   expanded=self._expanded))
         elif kind == "diff":
             self._mount(DiffView(ev.get("diff", "")))
         elif kind == "status":
@@ -541,16 +666,16 @@ class CodedTUI(App):
         done.wait()
         return result["v"]
 
-    def _question_prompt(self, question: str, options: list) -> str:
+    def _questions_prompt(self, questions: list):
         done = threading.Event()
-        result = {"v": ""}
+        result = {"v": None}
         self.notifier.waiting("Question")
 
         def ask():
-            def cb(answer):
-                result["v"] = answer or ""
+            def cb(answers):
+                result["v"] = answers
                 done.set()
-            self.push_screen(QuestionModal(question, options), cb)
+            self.push_screen(QuestionModal(questions), cb)
 
         self.call_from_thread(ask)
         done.wait()
