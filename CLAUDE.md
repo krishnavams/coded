@@ -736,6 +736,9 @@ config.example.json     # sample configuration
   keys) are dropped, and `TypeAhead.stop()` must restore the terminal (`close()`).
   Esc stops the turn by sending this process SIGINT, so it behaves exactly as
   Ctrl-C.
+  The dock's spinner shows `ui.spinner_word` (coded's own `SPINNER_WORDS`,
+  rotating every few seconds from a random start) for a generic label and the
+  turn's elapsed time; a specific `thinking(text)` label is shown as is.
 - **Tasks** (`tasks.py`, `Agent.tasks`, `ctx.extra["tasks"]`): every sub-agent
   run is a `TaskEntry`; the sub-agent's `on_activity` (fired in
   `_show_tool_call`) records its steps. `task` with `run_in_background` runs

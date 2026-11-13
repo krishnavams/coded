@@ -146,6 +146,28 @@ class _DockStatus:
         return False
 
 
+# What the spinner says while the model works and nothing more specific is
+# known: coded's own words, a new one every few seconds.
+SPINNER_WORDS = (
+    "Working", "Compiling thoughts", "Tracing", "Untangling", "Refactoring ideas",
+    "Reading the room", "Connecting dots", "Sketching", "Tinkering", "Pondering",
+    "Assembling", "Weaving", "Distilling", "Mulling", "Puzzling", "Calibrating",
+    "Charting", "Crafting", "Sifting", "Noodling", "Brewing", "Wrangling",
+)
+_GENERIC_ACTIVITY = (None, "Working", "Thinking")
+_WORD_SECONDS = 4.0
+
+
+def spinner_word(elapsed: float, offset: int = 0) -> str:
+    """The rotating spinner word `elapsed` seconds into a turn."""
+    return SPINNER_WORDS[(offset + int(elapsed // _WORD_SECONDS)) % len(SPINNER_WORDS)]
+
+
+def _elapsed(seconds: float) -> str:
+    seconds = int(seconds)
+    return f"{seconds}s" if seconds < 60 else f"{seconds // 60}m {seconds % 60:02d}s"
+
+
 class TurnDock:
     """The bottom of the screen for a whole REPL turn: what the agent is doing,
     the unfinished task list and an input box showing what is being typed.
@@ -174,6 +196,11 @@ class TurnDock:
         self._question = False
         self._prompt = None
         self._live = None
+        import random
+        import time
+
+        self._started = time.monotonic()
+        self._word_offset = random.randrange(len(SPINNER_WORDS))
 
     # -- lifecycle ----------------------------------------------------------
     def start(self) -> "TurnDock":
@@ -239,9 +266,14 @@ class TurnDock:
         else:
             if not hasattr(self, "_spinner"):
                 self._spinner = Spinner("dots", style=ACCENT)
+            import time
+
+            elapsed = time.monotonic() - self._started
+            label = (spinner_word(elapsed, self._word_offset)
+                     if self._activity in _GENERIC_ACTIVITY else self._activity)
             self._spinner.update(text=Text.from_markup(
-                f"[{ACCENT}]{self._activity or 'Working'}…[/] "
-                f"[{MUTED}](esc to interrupt)[/]"))
+                f"[{ACCENT}]{escape(label)}…[/] "
+                f"[{MUTED}]({_elapsed(elapsed)} · esc to interrupt)[/]"))
             parts.append(self._spinner)
         running = list(self._get_running() or [])
         if running:

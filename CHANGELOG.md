@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Changed
+- The REPL spinner cycles through coded's own words while the model works
+  ("Tracing…", "Untangling…", …, a new one every few seconds) and shows how
+  long the turn has run; specific labels ("Compacting…") still win.
 - Every skill is also a slash command: `/prompt-master write a mail` is
   `/skill prompt-master write a mail` (REPL and TUI), and skills appear in
   slash-command completion. Built-in and custom commands win a name clash.

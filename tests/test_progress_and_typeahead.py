@@ -439,7 +439,8 @@ def test_thinking_relabels_the_dock_instead_of_opening_a_second_live():
         assert ui.active_dock() is dock
         with ui.thinking("Compacting"):
             assert "Compacting…" in _plain(dock.render())
-        assert "Working…" in _plain(dock.render())
+        text = _plain(dock.render())
+        assert any(f"{w}…" in text for w in ui.SPINNER_WORDS) and "esc to interrupt" in text
     finally:
         dock.stop()
     assert ui.active_dock() is None
@@ -518,3 +519,16 @@ def test_the_posix_reader_hands_tab_to_the_completer():
         reader.close()
         os.close(master)
         os.close(slave)
+
+
+def test_the_dock_spinner_rotates_words_and_shows_elapsed_time():
+    words = {ui.spinner_word(t) for t in range(0, 400, 4)}
+    assert len(words) == len(ui.SPINNER_WORDS)          # every word comes round
+    assert ui.spinner_word(0) == ui.spinner_word(3.9)   # steady for a few seconds
+    assert ui.spinner_word(0) != ui.spinner_word(4)
+    dock = ui.TurnDock(lambda: "")
+    dock._started -= 75
+    text = _plain(dock.render())
+    assert "1m 15s · esc to interrupt" in text
+    dock.set_activity("Compacting")                     # a specific label wins
+    assert "Compacting…" in _plain(dock.render())
