@@ -471,6 +471,12 @@ class CodedTUI(App):
         if text == "/undo":
             self.action_undo()
             return
+        if text.split()[0] == "/refactor":
+            from coded.codehealth import refactor_prompt
+
+            text = refactor_prompt(text[len("/refactor"):])
+            self._start_turn(text)
+            return
         if text.split()[0] == "/heal":
             from coded.verify import detect_checks
 

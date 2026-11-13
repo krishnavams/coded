@@ -48,6 +48,7 @@ coded/
 ├── repo_overview.py    # repository overview for large-context models
 ├── repomap.py          # ranked symbol map (ast + regex, PageRank over references)
 ├── depgraph.py         # import graph (Python ast, JS/TS regex): dependents, impact, cycles
+├── codehealth.py       # refactor hot spots: function metrics (ast), duplicate blocks, ranking
 ├── memory.py           # project memory store (./.coded/memory.json)
 ├── speed.py            # `coded models --speed`: first token, total, tok/s per model
 ├── verify.py           # post-turn gates: project checks + a second model
@@ -60,7 +61,8 @@ coded/
 ├── ui.py               # rich-based rendering helpers (single Console)
 ├── skills.py           # skill discovery, frontmatter parsing, prompt section
 ├── review.py           # /review pipeline: reviewer→qa→security sub-agents
-├── builtin_skills/     # bundled roles: planner, reviewer, debugger (bodies from prompt files), qa, security
+├── builtin_skills/     # bundled roles: planner, reviewer, debugger (bodies from prompt files), qa,
+│                       # security, refactor
 ├── compaction.py       # context auto-compaction (summarize old messages)
 ├── sessions_store.py   # persist/restore sessions (--continue/--resume)
 ├── checkpoints.py      # CheckpointManager: per-turn file snapshots for /undo and /rewind
@@ -144,6 +146,7 @@ tests/
 ├── test_routing.py     # difficulty routing, pools, endpoint reuse, per-model cost
 ├── test_repomap.py     # symbol extraction, ranking, budgets, the repo_map tool
 ├── test_depgraph.py    # import resolution, impact + tests to run, cycles, repo_map operations
+├── test_codehealth.py  # function metrics, elif-not-nesting, duplicates, ranking, /refactor
 ├── test_memory.py      # memory store, the permission gate, prompt injection
 ├── test_documents.py   # reading PDF/Word/Excel/PowerPoint, refusals, no-extra path
 ├── test_speed.py       # lazy SDK import, disabled_tools, compact tool schema, --speed
@@ -510,6 +513,13 @@ config.example.json     # sample configuration
   resolved like a bundler (extensions, `index.*`, `.js`→`.ts`). Bounded,
   honours `.codedignore`, never raises. Same tool, not a new one: an omitted
   `operation` is the old outline.
+- **Refactor finder** (`codehealth.py`, `repo_map` `operation: health`, the
+  built-in `refactor` skill, REPL/TUI `/refactor [path]` → `refactor_prompt`):
+  a plain scan, no model call — Python functions over the thresholds (length,
+  decision points, nesting where an `elif` is not a level, parameters without
+  self/cls) and `DUP_WINDOW`-line copies in any code file (normalized, short
+  and import lines skipped), ranked by excess × fan-in from `depgraph`. The
+  edits go through the normal permission prompt, checkpoints and verify loop.
 - **Project memory** (`memory.py`, the `memory` tool, `/memory`): short notes in
   `./.coded/memory.json`, injected by `build_system_prompt` as labelled data
   within `limits.memory_chars`. The model writes only the **project** store and

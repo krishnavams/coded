@@ -21,12 +21,14 @@ rank files around). It lists definitions only, never code: read the files it poi
 Other operations answer dependency questions (Python and JS/TS imports): `imports` (what \
 `path` imports), `dependents` (what imports `path`), `impact` (everything a change to \
 `path` — comma-separate several — can affect, and the tests to run) and `cycles` (import \
-cycles). Check `impact` before changing a widely used module."""
+cycles). Check `impact` before changing a widely used module. `health` lists refactoring hot \
+spots (long, branchy or deeply nested functions, copy-pasted blocks) under `path`."""
     parameters = {
         "type": "object",
         "properties": {
             "operation": {"type": "string",
-                          "enum": ["outline", "imports", "dependents", "impact", "cycles"],
+                          "enum": ["outline", "imports", "dependents", "impact", "cycles",
+                                   "health"],
                           "description": "'outline' (default) ranks definitions; the others "
                                          "follow imports."},
             "path": {"type": "string",
@@ -83,9 +85,11 @@ cycles). Check `impact` before changing a widely used module."""
     def _deps(self, op: str, path: str, ctx: ToolContext, budget: int) -> ToolResult:
         from coded import depgraph
 
+        if op == "health":
+            return self._health(path, ctx, budget)
         if op not in ("imports", "dependents", "impact", "cycles"):
             return ToolResult.error(f"Unknown operation {op!r}; use outline, imports, "
-                                    "dependents, impact or cycles.")
+                                    "dependents, impact, cycles or health.")
         if op != "cycles" and not path:
             return ToolResult.error(f"'{op}' needs `path`: a repo-relative file or folder.")
         graph = depgraph.build_for(ctx.cwd)
@@ -108,4 +112,30 @@ cycles). Check `impact` before changing a widely used module."""
                 "graph. Use glob to find the exact repo-relative path.")
         if graph.truncated:
             text += "(The scan was capped, so the graph may be incomplete.)\n"
+        return ToolResult.ok(text)
+
+    def _health(self, path: str, ctx: ToolContext, budget: int) -> ToolResult:
+        from coded import codehealth
+        from coded.repo_overview import list_files
+
+        try:
+            files, _ = list_files(ctx.cwd)
+        except Exception as exc:  # noqa: BLE001
+            return ToolResult.error(f"Could not list the repository: {exc}")
+        path = path.strip().strip("/")
+        if path:
+            files = [f for f in files if f == path or f.startswith(path + "/")]
+            if not files:
+                return ToolResult.error(f"No files under '{path}'. Use glob to find it.")
+        try:
+            from coded.ignore import rules_for
+
+            rules = rules_for(ctx.cwd)
+            ignored = rules.ignored if rules else None
+        except Exception:  # noqa: BLE001
+            ignored = None
+        findings, truncated = codehealth.scan(ctx.cwd, files, ignored=ignored)
+        text = codehealth.render(findings, budget)
+        if truncated:
+            text += "(The scan was capped; narrow it with `path` for a complete picture.)\n"
         return ToolResult.ok(text)

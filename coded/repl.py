@@ -153,6 +153,7 @@ SLASH_COMMANDS = {
     "/setup": "Configure models interactively (adds, tests, roles, pools, routing).",
     "/verify": "Run the project's checks (and the verify model) over the last change.",
     "/memory": "Project memory: /memory [list|add <note>|forget <id>|clear].",
+    "/refactor": "Find code-quality hot spots and improve a few safely: /refactor [path].",
     "/heal": "Self-healing: after each change run the project's tests and fix failures "
              "automatically: /heal [on|off].",
     "/exit": "Quit (also /quit).",
@@ -726,6 +727,11 @@ class Repl:
             self._cmd_memory(args)
         elif cmd == "/heal":
             self._cmd_heal(args)
+        elif cmd == "/refactor":
+            from coded.codehealth import refactor_prompt
+
+            ui.user_prefix()
+            self.agent.run(refactor_prompt(" ".join(args)), route_hint="/refactor")
         elif cmd == "/model":
             self._cmd_model(args)
         elif cmd == "/tools":
