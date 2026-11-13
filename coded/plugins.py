@@ -671,15 +671,19 @@ def plugin_command_dirs(cwd: Optional[str] = None) -> List[Tuple[Path, str]]:
     return [(d, p.name) for p in installed_plugins(cwd) for d in p.command_dirs()]
 
 
-def apply_plugins_to_config(cfg: Any, cwd: Optional[str] = None) -> List[str]:
+def apply_plugins_to_config(cfg: Any, cwd: Optional[str] = None,
+                            include_project: bool = True) -> List[str]:
     """Merge enabled plugins' hooks (appended), MCP servers and outside agents into
-    a loaded Config. User config wins on name clashes. Returns warnings."""
+    a loaded Config. User config wins on name clashes. Returns warnings.
+    Project-scope plugins are skipped for an untrusted project."""
     warnings: List[str] = []
     try:
         plugins = installed_plugins(cwd)
     except Exception as exc:  # noqa: BLE001 - a broken registry must not stop coded
         return [f"Could not load plugins: {exc}"]
     for p in plugins:
+        if not include_project and getattr(p, "scope", "user") == "project":
+            continue
         try:
             hooks = p.hooks()
             mcp = p.mcp_servers()

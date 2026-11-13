@@ -111,6 +111,14 @@ def _loud_ui():
 
 
 @pytest.fixture(autouse=True)
+def _trust_store(tmp_path_factory, monkeypatch):
+    """Project trust is remembered per user; keep each test's own (empty)."""
+    monkeypatch.setenv("CODED_TRUST_STORE",
+                       str(tmp_path_factory.mktemp("trust") / "trusted.json"))
+    monkeypatch.delenv("CODED_TRUST_PROJECT", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_update_check(monkeypatch):
     """Tests run from a git checkout of coded: never let the REPL start a real
     `git ls-remote` in the background."""

@@ -37,6 +37,7 @@ coded/
 ├── agent.py            # Agent: the agentic loop; sub-agent spawning
 ├── session.py          # Session: message history + usage/cost tracking
 ├── permissions.py      # PermissionManager: approve/deny/always gate, accept-edits mode
+├── trust.py            # project trust: which .coded/config.json keys need it, fingerprint store
 ├── choice.py           # Chooser: arrow-key selector for permission prompts + ask_user (review page)
 ├── notify.py           # Notifier: bell/desktop notification when a long turn ends or asks
 ├── tasks.py            # TaskManager: running sub-agents (progress, background, stop)
@@ -126,6 +127,7 @@ tests/
 ├── test_queue_edit.py  # ↑ edits the newest queued message (REPL reader, dock, TUI)
 ├── test_btw.py         # /btw: session untouched, answered mid-turn, REPL + TUI
 ├── test_choice.py      # selector keys/lines, review page, permission feedback, REPL dock, TUI
+├── test_trust.py       # project trust gate: what applies untrusted, remembered fingerprint, CLI
 ├── test_session_autosave.py  # per-step autosave, atomic save, orphan tool calls, todos
 ├── test_memory_bounds.py  # bounded output/file reads, timeout kills the process group
 ├── test_compaction.py  # context compaction trigger + tail preservation
@@ -637,6 +639,20 @@ config.example.json     # sample configuration
   whitespace and must name something that exists (cwd or `add_dirs`), so emails
   and decorators are left alone. The original text is kept; the files follow in
   a `<mentioned-files>` block, images go to the image list for vision models.
+- **Project trust** (`trust.py`, `config._merge_project`): a repository's
+  `./.coded/config.json` is written by whoever wrote the repository. Only
+  `trust.SAFE_KEYS` (output/model-choice settings), deny rules, a stricter
+  `injection_guard` and models that just name a known provider apply at once;
+  everything else (hooks, MCP servers, outside agents, endpoints/keys/headers,
+  allow rules, auto-approve, sandbox, shell, statusline, verify, lsp, …) and
+  project-scope plugins apply only to a trusted project. Trust is stored per
+  realpath with a fingerprint of those settings (`~/.config/coded/trusted.json`,
+  `$CODED_TRUST_STORE` in tests), so a changed hook asks again. The REPL/TUI
+  start asks once (`cli._ask_project_trust`, every command verbatim); `-p`,
+  `review`, `commit`, ACP and `mcp-serve` stay untrusted with a stderr note
+  unless `--trust-project` / `CODED_TRUST_PROJECT=1`. A new config key is
+  sensitive unless added to `SAFE_KEYS` on purpose. Permission rule lists add
+  up across layers (a later file can never drop a deny rule).
 - **Config is layered**: presets → user file → project file → CLI flags. Don't
   hard-code paths or keys; go through `config.py`. Dict-valued settings
   (`hooks`, `sandbox`, `telemetry`, `external_agents`, `model_roles`) merge

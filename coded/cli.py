@@ -49,6 +49,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Non-interactive: run the prompt once, print the result, and exit.")
     p.add_argument("--yolo", "--auto-approve", action="store_true", dest="auto_approve",
                    help="Auto-approve all tool actions (no permission prompts). Use with care.")
+    p.add_argument("--trust-project", action="store_true",
+                   help="Apply this folder's .coded/config.json hooks, MCP servers, endpoints "
+                        "and permission settings without asking (also CODED_TRUST_PROJECT=1).")
     p.add_argument("--add-dir", action="append", metavar="DIR", dest="add_dirs",
                    help="Another folder the agent may work in (repeatable).")
     p.add_argument("--accept-edits", action="store_true",
@@ -492,7 +495,7 @@ def _handle_index_command(argv: List[str]) -> int:
     args = p.parse_args(argv)
     cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
     try:
-        cfg = load_config(cwd=cwd, config_path=args.config)
+        cfg = _load_noting(cwd, args.config)
         from coded.embeddings import EmbeddingClient, resolve_embedding_model
         from coded.index import CodeIndex
 
@@ -539,7 +542,7 @@ def _handle_commit_command(argv: List[str]) -> int:
 
     cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
     try:
-        cfg = load_config(cwd=cwd, config_path=args.config)
+        cfg = _load_noting(cwd, args.config)
         if any([args.base_url, args.api_key, args.model_name, args.provider]):
             cfg.add_model(model_from_overrides(
                 model_name=args.model_name, provider=args.provider,
@@ -616,7 +619,7 @@ def _handle_review_command(argv: List[str]) -> int:
 
     cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
     try:
-        cfg = load_config(cwd=cwd, config_path=args.config)
+        cfg = _load_noting(cwd, args.config)
         if any([args.base_url, args.api_key, args.model_name, args.provider]):
             cfg.add_model(model_from_overrides(
                 model_name=args.model_name, provider=args.provider,
@@ -662,6 +665,58 @@ def _handle_review_command(argv: List[str]) -> int:
         if verdict == UNKNOWN:
             ui.warn("Verdict indeterminate; not failing the build.")
     return 0
+
+
+def _stdin_is_tty() -> bool:
+    try:
+        return bool(sys.stdin and sys.stdin.isatty())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _ask_project_trust(info: dict, read=input) -> bool:
+    """Show what this folder's .coded/ settings would run or change, and ask
+    once. A yes is remembered until those settings change."""
+    from rich.panel import Panel
+    from rich.text import Text
+
+    from coded import trust
+
+    body = Text()
+    body.append(f"{info['root']}\n\n", style="bold")
+    body.append("This folder's .coded/ settings would:\n", style=ui.MUTED)
+    for line in info["lines"]:
+        body.append(f"  • {line}\n")
+    body.append("\nOnly trust a project whose files you have read or wrote yourself.",
+                style=ui.WARN)
+    ui.console.print(Panel(body, title=f"[{ui.WARN}]Trust this project?[/]",
+                           title_align="left", border_style=ui.WARN))
+    try:
+        answer = read("  Apply these settings? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer in ("y", "yes"):
+        trust.remember(info["root"], info["fingerprint"])
+        return True
+    return False
+
+
+def _load_noting(cwd: str, config_path: Optional[str]):
+    """load_config for a non-interactive subcommand: an untrusted project's
+    sensitive settings stay off, with a note on stderr."""
+    cfg = load_config(cwd=cwd, config_path=config_path)
+    if cfg.untrusted_project:
+        _note_untrusted(cfg.untrusted_project)
+    return cfg
+
+
+def _note_untrusted(info: dict, asked: bool = False) -> None:
+    """Say (on stderr, so piped output stays clean) what was not applied."""
+    head = ("Not applying" if asked else "Untrusted project: not applying")
+    print(f"coded: {head} {len(info['lines'])} setting(s) from "
+          f"{os.path.join(info['root'], '.coded')} (hooks, MCP servers, endpoints or "
+          "permissions). Run coded in this folder interactively to review them, or pass "
+          "--trust-project / set CODED_TRUST_PROJECT=1.", file=sys.stderr)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -733,7 +788,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
 
     try:
-        cfg = load_config(cwd=cwd, config_path=args.config)
+        cfg = load_config(cwd=cwd, config_path=args.config,
+                          trust_project=True if args.trust_project else None)
+        if cfg.untrusted_project:
+            interactive = not args.print_mode and _stdin_is_tty()
+            if interactive and _ask_project_trust(cfg.untrusted_project):
+                cfg = load_config(cwd=cwd, config_path=args.config, trust_project=True)
+            else:
+                _note_untrusted(cfg.untrusted_project, asked=interactive)
         _apply_overrides(cfg, args)
     except ConfigError as exc:
         ui.error(str(exc))

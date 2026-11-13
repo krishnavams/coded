@@ -10,6 +10,12 @@ name: coded review
 # Point coded at a different provider by editing the `coded review` flags below
 # (e.g. --provider groq --model-name llama-3.3-70b-versatile) and passing that
 # provider's key in `env` instead.
+#
+# Security: the API key must never reach code the pull request controls. coded
+# itself is installed from the base branch (not the PR checkout), the review
+# runs without --yolo (it only needs the read-only git tool), and `coded review`
+# ignores the PR's .coded/config.json hooks, MCP servers and endpoints because
+# the project is not trusted in a non-interactive run.
 
 on:
   pull_request:
@@ -43,16 +49,26 @@ jobs:
             → Actions, or edit .github/workflows/coded-review.yml to use another provider."
           fi
 
+      # The reviewer's own code comes from the base branch, so a pull request
+      # cannot change what runs with the key.
+      - name: Check out coded from the base branch
+        if: steps.key.outputs.configured == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref }}
+          path: .coded-trusted
+          persist-credentials: false
+
       - name: Install coded
         if: steps.key.outputs.configured == 'true'
-        run: pip install -e .
+        run: pip install ./.coded-trusted
 
       - name: Run review
         if: steps.key.outputs.configured == 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          coded review --yolo --output review.md \
+          coded review --output review.md \
             "the changes in this pull request against origin/${{ github.base_ref }} — \
              use the git tool to see the diff (git diff origin/${{ github.base_ref }}...HEAD)"
 

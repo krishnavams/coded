@@ -272,6 +272,9 @@ class Config:
     plugins: list = field(default_factory=list)  # names of enabled plugins merged in
     plugin_warnings: list = field(default_factory=list)
     source_paths: list = field(default_factory=list)  # config files that were loaded
+    # The project's sensitive settings that were NOT applied because the
+    # project is not trusted yet: {"root", "fingerprint", "lines"} (see trust.py).
+    untrusted_project: Optional[Dict[str, Any]] = None
 
     def get_model(self, name: Optional[str] = None) -> ModelConfig:
         name = name or self.default_model
@@ -478,7 +481,16 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
     if data.get("web_search"):
         cfg.web_search = data["web_search"]
     if data.get("permissions"):
-        cfg.permissions = data["permissions"]
+        # Rule lists add up across layers: a later file can never drop an
+        # earlier file's deny rule.
+        merged = {k: list(v) if isinstance(v, list) else v
+                  for k, v in (cfg.permissions or {}).items()}
+        for key, value in data["permissions"].items():
+            if isinstance(value, list):
+                merged[key] = list(dict.fromkeys(list(merged.get(key) or []) + value))
+            else:
+                merged[key] = value
+        cfg.permissions = merged
     for key in ("hooks", "sandbox", "telemetry", "external_agents", "model_roles",
                 "pools", "routing", "verify", "statusline"):
         if data.get(key):
@@ -495,17 +507,50 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
             setattr(cfg, key, data[key])
 
 
+def _merge_project(cfg: Config, cwd: Optional[str], trust_project: Optional[bool],
+                   plugins: bool) -> bool:
+    """Merge ./.coded/config.json. Its sensitive settings (and project-scope
+    plugins) apply only when the project is trusted; otherwise they are listed
+    in `cfg.untrusted_project` for the front-end to ask about. True when
+    everything the project asked for was applied."""
+    from coded import trust
+
+    path = project_config_path(cwd)
+    data = _load_json(path)
+    safe, sensitive = trust.split(data, cfg.injection_guard)
+    if plugins:
+        contrib = trust.project_plugin_contributions(cwd)
+        if contrib:
+            sensitive = dict(sensitive, plugins=contrib)
+    if not sensitive:
+        _merge_into(cfg, data, path)
+        return True
+    root = str(Path(cwd or os.getcwd()))
+    fp = trust.fingerprint(sensitive)
+    if trust_project or trust.env_trusts() or trust.is_trusted(root, fp):
+        _merge_into(cfg, data, path)
+        return True
+    _merge_into(cfg, safe, path)
+    cfg.untrusted_project = {"root": root, "fingerprint": fp, "lines": trust.describe(sensitive)}
+    return False
+
+
 def load_config(cwd: Optional[str] = None, config_path: Optional[str] = None,
-                plugins: bool = True) -> Config:
+                plugins: bool = True, trust_project: Optional[bool] = None) -> Config:
     """Load and merge all configuration layers, then enabled plugins' hooks,
-    MCP servers and outside agents (user config wins on name clashes)."""
+    MCP servers and outside agents (user config wins on name clashes).
+
+    The project file's settings that run commands, reach endpoints or loosen
+    permissions apply only to a trusted project (`trust.py`); `trust_project`
+    trusts it for this load."""
     cfg = Config()
+    project_trusted = True
 
     if config_path:
         _merge_into(cfg, _load_json(Path(config_path).expanduser()), Path(config_path))
     else:
         _merge_into(cfg, _load_json(user_config_path()), user_config_path())
-        _merge_into(cfg, _load_json(project_config_path(cwd)), project_config_path(cwd))
+        project_trusted = _merge_project(cfg, cwd, trust_project, plugins)
 
     # Settle the shell before anything that depends on it (plugin hook paths,
     # the system prompt, the bash tool).
@@ -514,7 +559,7 @@ def load_config(cwd: Optional[str] = None, config_path: Optional[str] = None,
     if plugins:
         from coded.plugins import apply_plugins_to_config
 
-        cfg.plugin_warnings = apply_plugins_to_config(cfg, cwd)
+        cfg.plugin_warnings = apply_plugins_to_config(cfg, cwd, include_project=project_trusted)
 
     # Fallback: if nothing is configured but OPENAI_API_KEY exists, register a
     # sensible default so the tool works out of the box.
