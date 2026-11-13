@@ -146,7 +146,9 @@ def render(agent: Any, *, busy: bool = False, width: int = 100) -> Group:
             kind = e["kind"]
             if kind == "tool":
                 what = e.get("name", "?") + (f" ({e['task']})" if e.get("task") else "")
-                detail = (e.get("detail") or "failed").replace(agent.cwd.rstrip("/\\") + "/", "")
+                root = agent.cwd.rstrip("/\\")
+                detail = (e.get("detail") or "failed").replace(root + "/", "").replace(
+                    root + "\\", "")
                 if e.get("denied"):
                     said = detail.split("said what to do instead:", 1)
                     why = "denied by you" + (f": {said[1].strip()}" if len(said) > 1 else "")
