@@ -59,6 +59,7 @@ coded/
 ├── repl.py             # interactive REPL and slash commands
 ├── tui.py              # full-screen Textual app (coded --tui), optional
 ├── sidebar.py          # the TUI's right panel: session, changed files, queue, sub-agents, shells
+├── dashboard.py        # /dashboard Command Center: agents, models, tools, checks, problems
 ├── ui.py               # rich-based rendering helpers (single Console)
 ├── skills.py           # skill discovery, frontmatter parsing, prompt section
 ├── review.py           # /review pipeline: reviewer→qa→security sub-agents
@@ -134,6 +135,7 @@ tests/
 ├── test_choice.py      # selector keys/lines, review page, permission feedback, REPL dock, TUI
 ├── test_trust.py       # project trust gate: what applies untrusted, remembered fingerprint, CLI
 ├── test_events.py      # event log: tool outcomes, denials, timings, saved, bounded, thread-safe
+├── test_dashboard.py   # /dashboard render, REPL + mid-turn, TUI modal
 ├── test_session_autosave.py  # per-step autosave, atomic save, orphan tool calls, todos
 ├── test_memory_bounds.py  # bounded output/file reads, timeout kills the process group
 ├── test_compaction.py  # context compaction trigger + tail preservation
@@ -588,6 +590,12 @@ config.example.json     # sample configuration
   Bounded, locked, saved with the session (old sessions load without it) and
   **never** put in `session.messages`. `/dashboard`, `/timeline` and
   `coded lab` read it.
+- **Command Center** (`dashboard.render`, `/dashboard`): one plain render (no
+  Textual import) from the session, its event log (`llm` events give the
+  per-model cost), the task manager, shells, todos and verify state. REPL: a
+  snapshot, also mid-turn via `TypeAhead(intercept=…)` (read-only); TUI:
+  `DashboardModal`, refreshed every second, opened even while busy. Don't name
+  a Screen method `_render` — it shadows Textual's own.
 - **Sessions survive a crash**: `Agent.on_step` (main agent only; the CLI sets
   it to autosave) runs after the user message, each tool step and the final
   answer, so a kill loses at most one step; the REPL also saves after Ctrl-C.

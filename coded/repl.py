@@ -153,6 +153,8 @@ SLASH_COMMANDS = {
     "/setup": "Configure models interactively (adds, tests, roles, pools, routing).",
     "/verify": "Run the project's checks (and the verify model) over the last change.",
     "/memory": "Project memory: /memory [list|search <words>|add <note>|forget <id>|clear].",
+    "/dashboard": "Command Center: agents, tasks, models, tool usage, errors and cost "
+                  "(works mid-turn).",
     "/refactor": "Find code-quality hot spots and improve a few safely: /refactor [path].",
     "/heal": "Self-healing: after each change run the project's tests and fix failures "
              "automatically: /heal [on|off].",
@@ -538,8 +540,13 @@ class Repl:
         ui.console.print(ui.btw_panel(question, answer))
 
     def _intercept_midturn(self, text: str) -> bool:
-        """A line typed mid-turn: /btw is answered now, alongside the turn;
-        anything else is queued as before."""
+        """A line typed mid-turn: /btw is answered now, alongside the turn, and
+        /dashboard is shown at once (it only reads); anything else is queued."""
+        if text.split()[:1] == ["/dashboard"]:
+            from coded.dashboard import render
+
+            ui.console.print(render(self.agent, busy=True))
+            return True
         if not (text == "/btw" or text.startswith("/btw ")):
             return False
         question = text[len("/btw"):].strip()
@@ -727,6 +734,10 @@ class Repl:
             self._cmd_memory(args)
         elif cmd == "/heal":
             self._cmd_heal(args)
+        elif cmd == "/dashboard":
+            from coded.dashboard import render
+
+            ui.console.print(render(self.agent))
         elif cmd == "/refactor":
             from coded.codehealth import refactor_prompt
 

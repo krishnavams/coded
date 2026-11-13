@@ -481,6 +481,12 @@ class Agent:
                 context_retry = False
             answered = self.config.models.get(completion.model) or self.model
             self.session.record_usage(completion.usage, answered)
+            from coded.session import usage_cost
+
+            self.events.add("llm", model=answered.name, input=completion.usage.prompt_tokens,
+                            output=completion.usage.completion_tokens,
+                            cost=round(usage_cost(completion.usage, answered), 6),
+                            **({"task": self.event_task} if self.event_task else {}))
             if completion.usage.prompt_tokens:
                 self.session.last_prompt_tokens = completion.usage.prompt_tokens
 

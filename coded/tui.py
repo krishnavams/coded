@@ -154,6 +154,35 @@ class ChoiceModal(ModalScreen):
         self.press(key)
 
 
+class DashboardModal(ModalScreen):
+    """/dashboard: the Command Center, refreshed every second while open."""
+
+    BINDINGS = [Binding("escape", "dismiss", "Close"), Binding("q", "dismiss", "Close")]
+
+    def __init__(self, app_ref):
+        super().__init__()
+        self._app_ref = app_ref
+
+    def compose(self) -> ComposeResult:
+        from textual.containers import VerticalScroll as _VS
+        with _VS(id="dash-box"):
+            yield Static(self._dashboard(), id="dash")
+
+    def _dashboard(self):
+        from coded.dashboard import render
+
+        return render(self._app_ref.agent, busy=self._app_ref.busy)
+
+    def on_mount(self) -> None:
+        self.set_interval(1.0, self._refresh)
+
+    def _refresh(self) -> None:
+        self.query_one("#dash", Static).update(self._dashboard())
+
+    def action_dismiss(self) -> None:
+        self.dismiss(None)
+
+
 class PermissionModal(ChoiceModal):
     """"Do you want to proceed?" for a risky action."""
 
@@ -213,7 +242,8 @@ class CodedTUI(App):
     #statusline {{ height: 1; padding: 0 2; color: {ui.MUTED}; }}
     #perm-box {{ width: 96; max-width: 95%; height: auto; padding: 0; background: #100d1a; }}
     #choice {{ height: auto; }}
-    PermissionModal, QuestionModal {{ align: center middle; background: #100d1a 60%; }}
+    PermissionModal, QuestionModal, DashboardModal {{ align: center middle; background: #100d1a 60%; }}
+    #dash-box {{ width: 110; max-width: 96%; height: 90%; background: #100d1a; padding: 0 1; }}
     """
 
     BINDINGS = [
@@ -416,6 +446,9 @@ class CodedTUI(App):
         if text == "/btw" or text.startswith("/btw "):
             self._btw(text[len("/btw"):].strip())  # answered now, even mid-turn
             return
+        if text.split()[0] == "/dashboard":
+            self.push_screen(DashboardModal(self))  # read-only: fine mid-turn
+            return
         if self.busy:
             # Don't swallow a question asked mid-turn: queue it and run it next.
             self._queued.append(text)
@@ -470,6 +503,9 @@ class CodedTUI(App):
             return
         if text == "/undo":
             self.action_undo()
+            return
+        if text.split()[0] == "/dashboard":
+            self.push_screen(DashboardModal(self))
             return
         if text.split()[0] == "/refactor":
             from coded.codehealth import refactor_prompt

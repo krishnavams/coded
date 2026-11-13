@@ -19,6 +19,7 @@ with its task id. Every entry has `t` (epoch seconds) and `kind`:
     max_turns   the turn hit max_turns
     interrupt   the user stopped the turn
     answer      chars (the final answer's length)
+    llm         model, input, output, cost (one model call; sub-agents too)
 """
 
 from __future__ import annotations
@@ -90,3 +91,18 @@ def recent_problems(events: Iterable[Dict[str, Any]], limit: int = 8) -> List[Di
                 kind in ("max_turns", "interrupt", "overflow"):
             out.append(e)
     return out[-limit:]
+
+
+def model_usage(events: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
+    """model -> calls, input, output, cost (sub-agents included)."""
+    out: Dict[str, Dict[str, float]] = defaultdict(
+        lambda: {"calls": 0, "input": 0, "output": 0, "cost": 0.0})
+    for e in events:
+        if e.get("kind") != "llm":
+            continue
+        m = out[str(e.get("model", "?"))]
+        m["calls"] += 1
+        m["input"] += int(e.get("input") or 0)
+        m["output"] += int(e.get("output") or 0)
+        m["cost"] += float(e.get("cost") or 0)
+    return dict(sorted(out.items(), key=lambda kv: -kv[1]["cost"]))
