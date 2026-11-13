@@ -53,7 +53,7 @@ def _call(name, args, cid):
 
 
 @pytest.fixture(params=["quiet", "verbose", "streaming"])
-def repl(request, tmp_path, fake_server, monkeypatch):
+def repl(request, tmp_path, fake_server, monkeypatch, headless):
     """A REPL whose session holds text full of "[x]" / "[/x]" (rich markup look-alikes)."""
     monkeypatch.chdir(tmp_path)
     con = ui.TranscriptConsole(width=200, record=True, file=io.StringIO(), color_system=None)
@@ -95,8 +95,11 @@ def repl(request, tmp_path, fake_server, monkeypatch):
         agent.run("and again [/f]")
         agent.tasks.finish(agent.tasks.start("search the api [/g]", "fake"), "found [/h]", "completed")
         agent.tasks.start("still going [/i]", "fake")
+        r = Repl(agent, cfg)
+        # Nobody is at the keyboard: every typed question sees input end.
+        monkeypatch.setattr(r, "_read_line", lambda label: None)
         try:
-            yield Repl(agent, cfg)
+            yield r
         finally:
             for sid, _cmd, _status in agent.shells.list():
                 agent.shells.kill(sid)
