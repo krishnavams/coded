@@ -673,6 +673,7 @@ class Repl:
                             ta.requeue(waiting)
                     queued[:] = [q for q in queued if q == _WAKE]
                     self.notifier.start()
+                    ui.reset_cuts()
                     dock = self._turn_dock(ta)
                     self.agent.tasks.can_detach = ta.available
                     try:

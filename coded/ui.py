@@ -448,8 +448,10 @@ def tool_call_text(name: str, args: dict, cwd: str = "") -> Text:
 
 
 def tool_call(name: str, args: dict, cwd: str = "") -> None:
+    global _last_call
+    _last_call = tool_call_text(name, args, cwd)
     console.print()
-    console.print(tool_call_text(name, args, cwd))
+    console.print(_last_call)
 
 
 def tool_result_text(content: str, is_error: bool = False, name: str = "",
@@ -469,7 +471,10 @@ def tool_result_text(content: str, is_error: bool = False, name: str = "",
         # The list itself is already on screen (panel / dock); keep the
         # headline and any nudge the tool gave the model.
         lines = [lines[0].rstrip(":")] + [ln for ln in lines[1:] if ln.startswith("Note:")]
-    lines = _squeeze_blank(lines)
+    if not full:
+        if name == "bash" and lines and lines[0] == "[exit 0]":
+            lines = lines[1:]  # success is the usual case; a non-zero exit stays
+        lines = _squeeze_blank(lines)
     shown = lines if full else [_cut_line(ln) for ln in lines[:max_lines]]
     text = "\n".join(shown)
     cut_chars = not full and len(text) > _MAX_RESULT_CHARS
@@ -523,20 +528,29 @@ def _cut_line(line: str) -> str:
 def tool_result(content: str, is_error: bool = False, name: str = "", cwd: str = "") -> None:
     """A tool result in the REPL: shortened (Ctrl+O shows it in full), or whole
     while output is expanded."""
-    global _last_cut
     if _expanded:
         console.print(tool_result_text(content, is_error, name, cwd, full=True), end="")
         return
     text = tool_result_text(content, is_error, name, cwd, expand_hint=True)
     if "ctrl+o to expand" in text.plain:
-        _last_cut = (content, is_error, name, cwd)
+        _cuts.append((_last_call, content, is_error, name, cwd))
+        del _cuts[:-_MAX_CUTS]
     console.print(text, end="")
 
 
 # Ctrl+O: tool output shown whole instead of shortened (REPL), and the
 # running tasks' full activity instead of the last few steps.
 _expanded = False
-_last_cut: Optional[tuple] = None  # the newest result that was shortened
+# The results shortened this turn (with their `● Tool(args)` line), newest
+# last, so Ctrl+O can show every one of them whole.
+_cuts: list = []
+_MAX_CUTS = 50
+_last_call: Optional[Text] = None
+
+
+def reset_cuts() -> None:
+    """A new turn starts: Ctrl+O expands only what this turn shortened."""
+    _cuts.clear()
 
 
 def is_expanded() -> bool:
@@ -549,12 +563,18 @@ def set_expanded(on: bool) -> None:
 
 
 def show_last_cut() -> bool:
-    """Print the newest shortened tool result in full; False if there is none."""
-    if _last_cut is None:
+    """Print every result shortened this turn in full, each under its tool
+    call; False if there is none."""
+    if not _cuts:
         return False
-    content, is_error, name, cwd = _last_cut
-    console.print(Text("  ⊕ full output of the last shortened result:", style=MUTED))
-    console.print(tool_result_text(content, is_error, name, cwd, full=True), end="")
+    n = len(_cuts)
+    console.print(Text(f"  ⊕ full output of {n} shortened result{'s' if n != 1 else ''}:",
+                       style=MUTED))
+    for call, content, is_error, name, cwd in list(_cuts):
+        if call is not None:
+            console.print(call)
+        console.print(tool_result_text(content, is_error, name, cwd, full=True), end="")
+    _cuts.clear()
     return True
 
 

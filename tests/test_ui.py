@@ -200,3 +200,12 @@ def test_folded_output_drops_blank_lines_and_cuts_long_ones():
     long = ui.tool_result_text("x" * 500, expand_hint=True).plain
     assert "x" * 200 not in long and "(ctrl+o to expand)" in long
     assert "x" * 500 in ui.tool_result_text("x" * 500, full=True).plain
+    # Expanded output is verbatim: blank lines and spacing are kept.
+    assert "a\n     \n     \n     b" in ui.tool_result_text("a\n\n\nb", full=True).plain
+
+
+def test_folded_bash_output_hides_a_successful_exit_line():
+    out = ui.tool_result_text("[exit 0]\n1\n2\n3\n4", name="bash", expand_hint=True).plain
+    assert "[exit 0]" not in out and "1" in out and "+1 lines" in out
+    assert "[exit 2]" in ui.tool_result_text("[exit 2]\nboom", name="bash").plain
+    assert "[exit 0]" in ui.tool_result_text("[exit 0]\nok", name="bash", full=True).plain
