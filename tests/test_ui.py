@@ -156,7 +156,22 @@ def test_diff_display_has_line_numbers_and_no_file_headers():
 
 def test_logo_is_coded_own_mark():
     assert len(ui.LOGO) == 3 and len({len(r) for r in ui.LOGO}) == 1
-    assert "◆" in ui.logo_text().plain
+    t = ui.logo_text()
+    assert t.plain.splitlines() == list(ui.LOGO)
+    shades = {str(span.style) for span in t.spans}
+    assert ui.ACCENT_SOFT in shades and ui.ACCENT_DEEP in shades  # light → deep
+
+
+def test_welcome_banner_fits_the_wordmark_and_details():
+    import io
+
+    from rich.console import Console
+
+    con = Console(width=100, record=True, file=io.StringIO(), color_system=None)
+    con.print(ui.welcome("gpt-4o", "/home/me/shop"))
+    rows = con.export_text().splitlines()
+    assert len(rows) == 5  # border, three logo rows, border: nothing wraps
+    assert "gpt-4o" in rows[1] and "/help" in rows[2] and "interrupt" in rows[2]
 
 
 def test_repl_shift_tab_is_bound_to_plan_mode(headless):

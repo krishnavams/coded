@@ -348,40 +348,47 @@ def _short_path(cwd: str, width: int = 48) -> str:
 
 
 # coded's own mark: a pair of code brackets around a diamond.
-LOGO = (" ▟▀▀ ▀▀▙ ",
-        " █  ◆  █ ",
-        " ▜▄▄ ▄▄▛ ")
+# coded's own wordmark: block letters shaded light → deep purple.
+LOGO = ("█▀▀ █▀█ █▀▄ █▀▀ █▀▄",
+        "█   █ █ █ █ █▀▀ █ █",
+        "▀▀▀ ▀▀▀ ▀▀  ▀▀▀ ▀▀ ")
+_LOGO_SHADES = (ACCENT_SOFT, "#b9a2fc", ACCENT, "#9a74f8", "#8b5cf6", ACCENT_DEEP)
 
 
 def logo_text() -> Text:
+    width = max(len(r) for r in LOGO)
     t = Text()
     for i, row in enumerate(LOGO):
-        for ch in row:
-            t.append(ch, style=f"bold {ACCENT_SOFT}" if ch == "◆" else ACCENT)
+        for x, ch in enumerate(row):
+            t.append(ch, style=_LOGO_SHADES[min(len(_LOGO_SHADES) - 1,
+                                                x * len(_LOGO_SHADES) // width)])
         if i < len(LOGO) - 1:
             t.append("\n")
     return t
 
 
 def welcome(model_name: str, cwd: str) -> Panel:
-    """The start-of-session card (shared by the REPL and the TUI)."""
+    """The start-of-session card (shared by the REPL and the TUI). The
+    wordmark already says "coded", so the text beside it is the version, the
+    model, the folder and the keys."""
     from rich.table import Table
 
     from coded import __version__
 
     right = Text()
-    right.append("coded", style=f"bold {ACCENT}")
-    right.append(f"  v{__version__}\n", style=MUTED)
+    right.append(f"v{__version__}", style=MUTED)
+    right.append("  ·  ", style=MUTED)
     right.append(model_name, style="bold")
     right.append("  ·  ", style=MUTED)
     right.append(_short_path(_home_short(cwd)) + "\n", style=MUTED)
     right.append("/help", style=ACCENT)
-    right.append(" for commands  ·  ", style=MUTED)
+    right.append(" commands  ·  ", style=MUTED)
     right.append("/model", style=ACCENT)
-    right.append(" to switch  ·  ", style=MUTED)
+    right.append(" switch  ·  ", style=MUTED)
     right.append("Ctrl-C", style=ACCENT)
-    right.append(" to interrupt", style=MUTED)
+    right.append(" interrupt", style=MUTED)
     grid = Table.grid(padding=(0, 2))
+    grid.add_column(no_wrap=True)
     grid.add_row(logo_text(), right)
     # Full width, like the input box, so the boxes line up at any terminal size.
     return Panel(grid, box=ROUNDED, border_style=ACCENT, padding=(0, 1), expand=True)

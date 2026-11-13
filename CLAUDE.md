@@ -407,7 +407,8 @@ config.example.json     # sample configuration
   `--ca-bundle`/`--insecure` CLI flags override the selected model; disabling
   verification warns. Route new endpoint clients through this helper.
 - **Look**: purple theme (`ui.ACCENT`/`ACCENT_DEEP`/`ACCENT_SOFT`) and coded's own
-  logo (`ui.LOGO`: code brackets around a diamond). Never hard-code colors or
+  logo (`ui.LOGO`: a block-letter "coded" wordmark shaded light → deep purple by
+  `logo_text`). Never hard-code colors or
   reuse another product's logo/branding. Tool calls display as `● Edit(app.py)`
   with results under `⎿` (`ui.tool_call_text` / `tool_result_text` / `diff_text`
   / `welcome`); the REPL and the TUI both render through these so they match.
