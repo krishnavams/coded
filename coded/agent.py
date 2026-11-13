@@ -143,6 +143,11 @@ class Agent:
         # checks after a change even when verify.command is not configured.
         self.self_heal = False
         self._heal_declined = False
+        from coded.events import EventLog
+
+        # A sub-agent's run_subagent replaces this with the parent's log.
+        self.events = EventLog(self.session.events)
+        self.event_task: Optional[str] = None  # the task id, in a sub-agent
         self._last_request = ""
         self._interrupted = False
         self._session_started = False
@@ -162,6 +167,7 @@ class Agent:
                          last_resort=self.config.last_resort_models(model, pool))
 
     def _status_note(self, text: str) -> None:
+        self.events.add("note", text=text, **({"task": self.event_task} if self.event_task else {}))
         if not self._emit("status", text=text) and self.verbose:
             ui.warn(text)
 
@@ -220,6 +226,8 @@ class Agent:
         self._verify_rounds = 0
         self._fix_nudged = False
         self._last_request = str(user_message)
+        if not self.is_subagent:
+            self.events.add("turn", prompt=" ".join(self._last_request.split()))
         if self.checkpoints is not None:
             self.checkpoints.begin(str(user_message)[:60])
         # A turn interrupted mid-tool left calls without results; endpoints
@@ -254,6 +262,7 @@ class Agent:
     def interrupt(self) -> None:
         """Ask the running turn to stop at the next checkpoint (between steps)."""
         self._interrupted = True
+        self.events.add("interrupt")
 
     def switch_model(self, model: ModelConfig, pool: Optional[str] = None,
                      pin: bool = True) -> None:
@@ -458,6 +467,7 @@ class Agent:
                 # The request no longer fits the window: shrink this turn's tool
                 # results, summarize older history, and retry once.
                 context_retry = True
+                self.events.add("overflow")
                 self._status_note("Request exceeded the model's context window; "
                                   "shrinking tool results and compacting, then retrying.")
                 refused_by = getattr(exc, "coded_model", None)  # may be a smaller fallback
@@ -514,9 +524,12 @@ class Agent:
                     _TOOL_IMAGES + ", ".join(ui._rel(p, self.cwd) for p in paths), paths)
             self._step_done()
         else:
+            self.events.add("max_turns", limit=self.max_turns)
             if not self._emit("status", text=f"Reached max turns ({self.max_turns})."):
                 if self.verbose:
                     ui.warn(f"Reached max turns ({self.max_turns}); stopping.")
+        if final_text and not self.is_subagent:
+            self.events.add("answer", chars=len(final_text))
         return final_text
 
     def _verify_turn(self, final_text: Optional[str]) -> Optional[str]:
@@ -577,11 +590,15 @@ class Agent:
 
                 if self._verify_rounds > 1 and same_failure(self._verify_prev_output,
                                                             checks.output):
+                    self.events.add("verify", result="stall", command=command)
                     self._status_note(stalled_note(command))
                     self._verify_rounds = 0
                     self._verify_prev_output = ""
                     return None
                 self._verify_prev_output = checks.output
+                self.events.add("verify", result="fail", command=command,
+                                detail=(checks.error or checks.output.strip().splitlines()[-1]
+                                        if (checks.error or checks.output.strip()) else ""))
                 self._verify_last = f"`{command}` failed"
                 self._status_note(f"Checks failed; sending the turn back "
                                   f"(round {self._verify_rounds}/{settings.max_rounds}).")
@@ -599,6 +616,8 @@ class Agent:
                                   f"(round {self._verify_rounds}/{settings.max_rounds}).")
                 return review_feedback(notes)
             self._status_note(f"Second opinion: {verdict.lower()}.")
+        if checks is not None and checks.ok:
+            self.events.add("verify", result="pass", command=checks.command)
         healed = checks is not None and checks.ok and self._verify_rounds > 1
         self._verify_rounds = 0  # this turn is clean; a later one starts fresh
         self._verify_prev_output = ""
@@ -1034,6 +1053,24 @@ class Agent:
         )
 
     def _run_tool(self, tc, display: bool = True) -> Tuple[str, bool, Optional[dict]]:
+        """Run one tool call and record it in the event log (timing, outcome)."""
+        import time as _time
+
+        from coded.events import classify
+
+        start = _time.monotonic()
+        content, is_error, args = self._run_tool_inner(tc, display)
+        flags = classify(content) if is_error else {"denied": False, "outside": False}
+        event = {"name": tc.name, "ms": round((_time.monotonic() - start) * 1000),
+                 "error": bool(is_error), **flags}
+        if is_error:
+            event["detail"] = (content or "").strip().splitlines()[0] if content else ""
+        if self.event_task:
+            event["task"] = self.event_task
+        self.events.add("tool", **event)
+        return content, is_error, args
+
+    def _run_tool_inner(self, tc, display: bool = True) -> Tuple[str, bool, Optional[dict]]:
         """Run one tool call. Returns (content for the model, is_error, parsed args).
 
         With display=False nothing is shown (the parallel path shows calls and
@@ -1323,6 +1360,8 @@ class Agent:
             entry = task or self.tasks.start(role, sub_model.name)
             entry.model = sub_model.name
             entry.agent = sub_agent
+            sub_agent.events = self.events
+            sub_agent.event_task = entry.id
 
             def activity(name: str, args: dict) -> None:
                 label, summary = ui.tool_title(name, args, sub_cwd)

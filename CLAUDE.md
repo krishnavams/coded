@@ -36,6 +36,7 @@ coded/
 ├── llm.py              # LLMClient: OpenAI-compatible streaming + tool calls
 ├── agent.py            # Agent: the agentic loop; sub-agent spawning
 ├── session.py          # Session: message history + usage/cost tracking
+├── events.py           # EventLog: per-session structured facts (tool timings/errors, checks, …)
 ├── permissions.py      # PermissionManager: approve/deny/always gate, accept-edits mode
 ├── trust.py            # project trust: which .coded/config.json keys need it, fingerprint store
 ├── choice.py           # Chooser: arrow-key selector for permission prompts + ask_user (review page)
@@ -132,6 +133,7 @@ tests/
 ├── test_btw.py         # /btw: session untouched, answered mid-turn, REPL + TUI
 ├── test_choice.py      # selector keys/lines, review page, permission feedback, REPL dock, TUI
 ├── test_trust.py       # project trust gate: what applies untrusted, remembered fingerprint, CLI
+├── test_events.py      # event log: tool outcomes, denials, timings, saved, bounded, thread-safe
 ├── test_session_autosave.py  # per-step autosave, atomic save, orphan tool calls, todos
 ├── test_memory_bounds.py  # bounded output/file reads, timeout kills the process group
 ├── test_compaction.py  # context compaction trigger + tail preservation
@@ -577,6 +579,15 @@ config.example.json     # sample configuration
   background reads return at most `BG_READ_MAX_BYTES` of the newest output
   (`tests/test_memory_bounds.py`). Unbounded reads let a sub-agent grow coded
   until the OS SIGKILLed it.
+- **Event log** (`events.py`, `Session.events`, `Agent.events`): structured
+  facts the conversation has no room for — each tool call (name, ms, error,
+  denied, outside, sub-agent `task`), turns, verify pass/fail/stall, status
+  notes (fallbacks, retries), overflow retries, max_turns, interrupts, answer
+  length. Recorded by the `_run_tool` wrapper (the work is in
+  `_run_tool_inner`) and the loop; sub-agents write into the parent's log.
+  Bounded, locked, saved with the session (old sessions load without it) and
+  **never** put in `session.messages`. `/dashboard`, `/timeline` and
+  `coded lab` read it.
 - **Sessions survive a crash**: `Agent.on_step` (main agent only; the CLI sets
   it to autosave) runs after the user message, each tool step and the final
   answer, so a kill loses at most one step; the REPL also saves after Ctrl-C.
