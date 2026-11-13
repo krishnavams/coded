@@ -37,6 +37,7 @@ coded/
 ├── agent.py            # Agent: the agentic loop; sub-agent spawning
 ├── session.py          # Session: message history + usage/cost tracking
 ├── permissions.py      # PermissionManager: approve/deny/always gate, accept-edits mode
+├── choice.py           # Chooser: arrow-key selector for permission prompts + ask_user (review page)
 ├── notify.py           # Notifier: bell/desktop notification when a long turn ends or asks
 ├── tasks.py            # TaskManager: running sub-agents (progress, background, stop)
 ├── btw.py              # /btw: side question over a copy of the conversation (no tools)
@@ -124,6 +125,7 @@ tests/
 ├── test_tasks.py       # sub-agent tasks: activity, background, Ctrl+B, /tasks, Ctrl+O
 ├── test_queue_edit.py  # ↑ edits the newest queued message (REPL reader, dock, TUI)
 ├── test_btw.py         # /btw: session untouched, answered mid-turn, REPL + TUI
+├── test_choice.py      # selector keys/lines, review page, permission feedback, REPL dock, TUI
 ├── test_session_autosave.py  # per-step autosave, atomic save, orphan tool calls, todos
 ├── test_memory_bounds.py  # bounded output/file reads, timeout kills the process group
 ├── test_compaction.py  # context compaction trigger + tail preservation
@@ -262,13 +264,29 @@ config.example.json     # sample configuration
 - **Shared agent state reaches tools via `ToolContext.extra`**: `todos`,
   `shells`, `get_mode`/`set_mode`. Sub-agents share the parent's
   `PermissionManager`, tracer and shells, but not todos/skills/Stop hooks.
-- **Asking the user** (`ask_user`): `PermissionManager.question(text, options)`
-  goes to the front-end's `set_question` callback (REPL: `ui.question_panel`
-  + `TypeAhead.ask()`; TUI: `QuestionModal`); None (no front-end: `--print`,
-  ACP) tells the model to state an assumption and go on. `ui.pick_answer`
-  maps a typed number to the choice. Main agent only, like `enter_plan_mode`,
-  which refuses when `permissions.interactive` is false: nobody could approve
-  the plan, so a `--print`/CI run would stay read-only.
+- **Asking the user** (`ask_user`, 1-4 questions with headers, option
+  descriptions, `multi_select`): `PermissionManager.questions(list[choice.Question])`
+  goes to the front-end's `set_questions` callback (one answer string per
+  question; `[]` = cancelled; None = nobody can answer: `--print`, ACP, which
+  tells the model to state an assumption and go on). A front-end that only set
+  the older `set_question(text, options)` is asked each question in turn.
+  Main agent only, like `enter_plan_mode`, which refuses when
+  `permissions.interactive` is false: nobody could approve the plan, so a
+  `--print`/CI run would stay read-only.
+- **Choice prompts** (`choice.py`): permission prompts ("Do you want to
+  proceed?" → Yes / Yes, don't ask again / No, and tell coded what to do
+  differently) and `ask_user` are one pure state machine, `Chooser`, fed key
+  names (`key()`) or typed lines (`line()`) and drawn by `render()` — the same
+  panel in the REPL and the TUI. Several questions get tabs and a "Review your
+  answers → Submit" page. REPL: when the type-ahead reader can hand over keys
+  (`TypeAhead.supports_keys`/`begin_keys`/`next_key`, the reader's
+  `keys_mode`) and a `TurnDock` is up, the prompt replaces the dock's spinner
+  and input box (`TurnDock.set_prompt`); otherwise it is printed with numbers
+  and answered by a line (a follow-up typed at a permission prompt is
+  requeued, never an answer). TUI: `PermissionModal`/`QuestionModal`
+  (`ChoiceModal`). A "no" with text reaches the prompt callback as
+  `"no: <text>"`; `request()` keeps it per thread and `Agent._run_tool` puts it
+  in the denial (`take_feedback`).
 - **`view_image`** queues a path through `ctx.extra["attach_image"]`; after the
   step's tool results the agent adds one user message with the images (a
   `tool` message cannot carry one). `Config.disabled_tools_for` drops it for a

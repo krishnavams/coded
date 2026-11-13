@@ -1028,12 +1028,18 @@ class Agent:
                 auto_allowed=auto,
             )
             if decision is Decision.DENY:
+                feedback = self.permissions.take_feedback()
                 if display:
-                    self._show_tool_result("Denied.", True, tc.id, tc.name)
+                    self._show_tool_result(f"Denied: {feedback}" if feedback else "Denied.",
+                                           True, tc.id, tc.name)
                 if self.permissions.in_background():
                     return ("Refused: this task runs in the background, so it cannot ask the "
                             "user for approval. Do not retry it; finish what you can without "
                             "it and say in your report what still needs to be done.", True, args)
+                if feedback:
+                    return ("The user denied permission to run this action and said what to do "
+                            f"instead: {feedback}\nDo not retry it as it was; follow their "
+                            "instruction.", True, args)
                 return ("The user denied permission to run this action. Do not retry it; ask "
                         "how to proceed or try another approach.", True, args)
 

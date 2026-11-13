@@ -104,6 +104,7 @@ class TurnDock:
         self._activity: Optional[str] = None
         self._body = None
         self._question = False
+        self._prompt = None
         self._live = None
 
     # -- lifecycle ----------------------------------------------------------
@@ -150,12 +151,21 @@ class TurnDock:
         """A prompt is waiting for a typed answer: the box says so."""
         self._question = on
 
+    def set_prompt(self, renderable) -> None:
+        """A choice prompt (permission, questions) in place of the spinner and
+        input box while it waits for keys; None puts them back."""
+        self._prompt = renderable
+        if self._live is not None:
+            self._live.refresh()
+
     def render(self):
         from rich.spinner import Spinner
 
         parts = []
         if self._body is not None:
             parts += [self._body, Text("")]
+        if self._prompt is not None:
+            return Group(*parts, self._prompt)
         if self._question:
             parts.append(Text.from_markup(f"[{WARN}]● Waiting for your answer…[/]"))
         else:
@@ -387,6 +397,9 @@ def tool_title(name: str, args: dict, cwd: str = "") -> tuple:
             val = args.get("prompt")
         if name == "git":
             val = args.get("command") or args.get("args")
+        if name == "ask_user" and not val and isinstance(args.get("questions"), list):
+            qs = [q.get("question") for q in args["questions"] if isinstance(q, dict)]
+            val = qs[0] if len(qs) == 1 else (f"{len(qs)} questions" if qs else None)
         if val is None or val == "":
             return label, ""
         return label, _rel(val, cwd) if key in _PATH_KEYS else _one_line(val)

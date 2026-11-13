@@ -32,14 +32,12 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import (
-    Button,
     Input,
-    Label,
     Markdown,
     Static,
 )
 
-from coded import sidebar, ui
+from coded import choice, sidebar, ui
 from coded.agent import Agent
 from coded.llm import explain_failure
 
@@ -87,65 +85,72 @@ class StatusNote(Static):
 # ---------------------------------------------------------------------------
 # Permission modal
 # ---------------------------------------------------------------------------
-class PermissionModal(ModalScreen[str]):
+_TEXTUAL_KEYS = {"up": choice.UP, "down": choice.DOWN, "left": choice.LEFT,
+                 "right": choice.RIGHT, "tab": choice.TAB, "shift+tab": choice.BACKTAB,
+                 "enter": choice.ENTER, "escape": choice.ESCAPE,
+                 "backspace": choice.BACKSPACE, "ctrl+u": choice.CLEAR}
+
+
+class ChoiceModal(ModalScreen):
+    """A `choice.Chooser` (permission or questions), drawn exactly as the REPL
+    draws it and driven by the same keys."""
+
+    def __init__(self, chooser: "choice.Chooser"):
+        super().__init__()
+        self.chooser = chooser
+
+    def compose(self) -> ComposeResult:
+        from textual.containers import Vertical
+        with Vertical(id="perm-box"):
+            yield Static(self.chooser.render(), id="choice")
+
+    def _result(self):
+        raise NotImplementedError
+
+    def press(self, key: str) -> None:
+        self.chooser.key(key)
+        if self.chooser.done:
+            self.dismiss(self._result())
+        else:
+            self.query_one("#choice", Static).update(self.chooser.render())
+
+    def on_key(self, event) -> None:
+        key = _TEXTUAL_KEYS.get(event.key)
+        if key is None:
+            key = " " if event.key == "space" else event.character
+        if not key or (len(key) == 1 and key < " "):
+            return
+        event.stop()
+        event.prevent_default()
+        self.press(key)
+
+
+class PermissionModal(ChoiceModal):
+    """"Do you want to proceed?" for a risky action."""
+
     def __init__(self, title: str, detail: str):
-        super().__init__()
-        self._title = title
-        self._detail = detail
+        super().__init__(choice.permission_chooser(title, detail))
 
-    def compose(self) -> ComposeResult:
-        from textual.containers import Vertical
-        with Vertical(id="perm-box"):
-            yield Label(f"[b {ui.ACCENT}]{_esc(self._title)}[/]", id="perm-title")
-            yield Static(Text(self._detail), id="perm-detail")
-            with Horizontal(id="perm-buttons"):
-                yield Button("Allow (y)", variant="success", id="yes")
-                yield Button("Deny (n)", variant="error", id="no")
-                yield Button("Always (a)", variant="primary", id="always")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss({"yes": "yes", "no": "no", "always": "always"}[event.button.id])
+    def _result(self):
+        return choice.permission_answer(self.chooser)
 
     def on_key(self, event) -> None:
-        mapping = {"y": "yes", "n": "no", "a": "always", "escape": "no"}
-        if event.key in mapping:
+        if not self.chooser.editing and event.key in ("y", "n", "a"):
             event.stop()
-            self.dismiss(mapping[event.key])
+            self.dismiss({"y": "yes", "n": "no", "a": "always"}[event.key])
+            return
+        super().on_key(event)
 
 
-class QuestionModal(ModalScreen[str]):
-    """ask_user: the agent's question, with its choices and a free answer."""
+class QuestionModal(ChoiceModal):
+    """ask_user: one or more questions, with a review page before submitting."""
 
-    def __init__(self, question: str, options: list):
-        super().__init__()
-        self._question = question
-        self._options = list(options)
+    def __init__(self, questions: list):
+        super().__init__(choice.Chooser(questions))
 
-    def compose(self) -> ComposeResult:
-        from textual.containers import Vertical
-        with Vertical(id="perm-box"):
-            yield Label(f"[b {ui.ACCENT}]? Question[/]", id="perm-title")
-            yield Static(Text(self._question), id="perm-detail")
-            if self._options:
-                with Vertical(id="question-options"):
-                    for i, opt in enumerate(self._options):
-                        yield Button(f"{i + 1}. {opt}", id=f"opt-{i}")
-            yield Input(placeholder="Your own answer (Enter to send, Esc to skip)",
-                        id="question-input")
-
-    def on_mount(self) -> None:
-        self.query_one("#question-input", Input).focus()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(self._options[int(event.button.id.split("-", 1)[1])])
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self.dismiss(ui.pick_answer(event.value, self._options) or "")
-
-    def on_key(self, event) -> None:
-        if event.key == "escape":
-            event.stop()
-            self.dismiss("")
+    def _result(self):
+        answers = self.chooser.result()
+        return None if answers is None else [str(a) for a in answers]
 
 
 # ---------------------------------------------------------------------------
@@ -176,12 +181,9 @@ class CodedTUI(App):
     #prompt {{ border: round #3b3260; background: #100d1a; margin: 0 1; }}
     #prompt:focus {{ border: round {ui.ACCENT}; }}
     #statusline {{ height: 1; padding: 0 2; color: {ui.MUTED}; }}
-    #perm-box {{ background: #181426; border: round {ui.ACCENT}; padding: 1 2; width: 76; height: auto; }}
-    #perm-buttons {{ height: auto; align: center middle; padding-top: 1; }}
-    #question-options {{ height: auto; padding-top: 1; }}
-    #question-options Button {{ width: 100%; margin: 0 0 0 0; }}
-    #question-input {{ margin-top: 1; }}
-    PermissionModal {{ align: center middle; background: #100d1a 60%; }}
+    #perm-box {{ width: 96; max-width: 95%; height: auto; padding: 0; background: #100d1a; }}
+    #choice {{ height: auto; }}
+    PermissionModal, QuestionModal {{ align: center middle; background: #100d1a 60%; }}
     """
 
     BINDINGS = [
@@ -201,7 +203,7 @@ class CodedTUI(App):
         self._on_turn = on_turn
         self.agent.on_event = self._agent_event  # called from the worker thread
         self.agent.permissions.set_prompt(self._permission_prompt, threadsafe=True)
-        self.agent.permissions.set_question(self._question_prompt)
+        self.agent.permissions.set_questions(self._questions_prompt)
         self._assistant_md: Optional[Markdown] = None
         self._assistant_buf = ""
         self._thought: Optional[Static] = None
@@ -541,16 +543,16 @@ class CodedTUI(App):
         done.wait()
         return result["v"]
 
-    def _question_prompt(self, question: str, options: list) -> str:
+    def _questions_prompt(self, questions: list):
         done = threading.Event()
-        result = {"v": ""}
+        result = {"v": None}
         self.notifier.waiting("Question")
 
         def ask():
-            def cb(answer):
-                result["v"] = answer or ""
+            def cb(answers):
+                result["v"] = answers
                 done.set()
-            self.push_screen(QuestionModal(question, options), cb)
+            self.push_screen(QuestionModal(questions), cb)
 
         self.call_from_thread(ask)
         done.wait()

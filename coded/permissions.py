@@ -24,8 +24,12 @@ class Decision(Enum):
     DENY = "deny"
 
 
-# A prompt callback returns one of: "yes", "no", "always".
+# A prompt callback returns one of: "yes", "no", "always", or "no: <feedback>"
+# (the user said no and what to do instead).
 PromptFn = Callable[[str, str], str]
+# The front-end's multi-question prompt (ask_user): the answers, one string per
+# question ('' = not answered), or None when the user cancelled.
+QuestionsFn = Callable[[list], Optional[List[str]]]
 
 
 def _parse_rule(pattern: str):
@@ -54,6 +58,7 @@ class PermissionManager:
         self._prompt = prompt
         self._prompt_threadsafe = False
         self._question: Optional[Callable[[str, List[str]], Optional[str]]] = None
+        self._questions: Optional[QuestionsFn] = None
         self._lock = threading.Lock()
         self._always: Set[str] = set()
         rules = rules or {}
@@ -107,13 +112,51 @@ class PermissionManager:
         """The front-end's way to ask the user a free-form question (ask_user)."""
         self._question = fn
 
+    def set_questions(self, fn: Optional[QuestionsFn]) -> None:
+        """The front-end's interactive prompt for one or more `choice.Question`s."""
+        self._questions = fn
+
+    @property
+    def can_question(self) -> bool:
+        return (self._questions is not None or self._question is not None) \
+            and not self.in_background()
+
+    def questions(self, items: list) -> Optional[List[str]]:
+        """Ask several questions (`choice.Question`s) at once. One answer per
+        question ('' = skipped); [] when the user cancelled; None when nobody
+        can answer (no front-end, or a background task)."""
+        if not self.can_question:
+            return None
+        with self._lock:
+            if self._questions is not None:
+                answers = self._questions(list(items))
+                return [] if answers is None else list(answers)
+            out = []
+            for q in items:
+                answer = self._question(q.text, [o.label for o in q.options])
+                out.append(answer or "")
+            return out
+
     def question(self, text: str, options: Optional[List[str]] = None) -> Optional[str]:
         """Ask the user a question; their answer, or None when nobody can answer."""
-        fn = getattr(self, "_question", None)
+        if self._questions is not None and not self.in_background():
+            from coded.choice import Question
+
+            answers = self.questions([Question.make(text, list(options or []))])
+            if answers is None:
+                return None
+            return answers[0] if answers else ""
+        fn = self._question
         if fn is None or self.in_background():
             return None
         with self._lock:
             return fn(text, list(options or []))
+
+    def take_feedback(self) -> str:
+        """What the user said with their last "no" on this thread (once)."""
+        text = getattr(self._local, "feedback", "") or ""
+        self._local.feedback = ""
+        return text
 
     def allow_always(self, key: str) -> None:
         self._always.add(key)
@@ -159,6 +202,7 @@ class PermissionManager:
         auto_allowed — the tool vouches the call is safe (e.g. it runs sandboxed).
         """
         target = target if target is not None else detail
+        self._local.feedback = ""
         # Deny rules win over everything, including --yolo.
         if self._matches(self.deny_rules, key, target):
             return Decision.DENY
@@ -179,7 +223,11 @@ class PermissionManager:
         if self.tainted and self.injection_guard != "off":
             title = f"⚠ untrusted content is in context — {title}"
         with self._lock:
-            answer = self._prompt(title, detail).strip().lower()
+            raw = (self._prompt(title, detail) or "no").strip()
+        answer = raw.lower()
+        if answer.startswith("no:"):
+            self._local.feedback = raw[3:].strip()
+            return Decision.DENY
         if answer in ("a", "always"):
             self._always.add(key)
             return Decision.ALLOW

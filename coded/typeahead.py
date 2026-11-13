@@ -37,6 +37,28 @@ UP = "\x00up"
 # Shift+Tab: turn accept-edits on or off while the turn runs.
 SHIFT_TAB = "\x00stab"
 CONTROL_KEYS = (CTRL_B, CTRL_O, CTRL_T, UP, SHIFT_TAB)
+# Key mode (`TypeAhead.keys()`, for the choice prompts): the reader returns one
+# key at a time as KEY + a name from `coded.choice` ("up", "enter", …) or the
+# typed character itself.
+KEY = "\x00key:"
+_CSI_KEYS = {"[A": "up", "OA": "up", "[B": "down", "OB": "down", "[C": "right",
+             "OC": "right", "[D": "left", "OD": "left", "[Z": "shift_tab"}
+_WIN_KEYS = {"H": "up", "P": "down", "M": "right", "K": "left"}
+
+
+def _key_name(ch: str) -> Optional[str]:
+    """A single typed character as a key name (None: ignore it)."""
+    if ch in ("\r", "\n"):
+        return "enter"
+    if ch in ("\x7f", "\x08"):
+        return "backspace"
+    if ch == "\t":
+        return "tab"
+    if ch == "\x15":
+        return "ctrl_u"
+    if ch < " ":
+        return None
+    return ch
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +83,7 @@ class _PosixKeys:
         self.out = out or sys.stdout
         self.buf: List[str] = []
         self.echo = True  # off while ui.TurnDock draws the line in its input box
+        self.keys_mode = False  # one key per call (choice prompts), see KEY
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._saved = None
         self._pending = ""
@@ -109,8 +132,36 @@ class _PosixKeys:
             raise EOFError
         return self._decoder.decode(data)
 
+    def _key(self, timeout: float) -> Optional[str]:
+        chunk = self._pending or self._read(timeout)
+        self._pending = ""
+        while chunk:
+            ch, chunk = chunk[0], chunk[1:]
+            if ch == "\x1b":
+                rest = chunk or self._read(0.03)
+                if not rest:
+                    return KEY + "escape"
+                j = 1
+                if rest[:1] in ("[", "O"):
+                    while j < len(rest) and not ("@" <= rest[j] <= "~"):
+                        j += 1
+                    j += 1
+                self._pending = rest[j:]
+                name = _CSI_KEYS.get(rest[:j])
+                if name:
+                    return KEY + name
+                chunk, self._pending = self._pending, ""
+                continue
+            name = _key_name(ch)
+            if name is not None:
+                self._pending = chunk
+                return KEY + name
+        return None
+
     def __call__(self, timeout: float) -> Optional[str]:
         self._raw()
+        if self.keys_mode:
+            return self._key(timeout)
         chunk = self._pending or self._read(timeout)
         self._pending = ""
         i = 0
@@ -185,6 +236,7 @@ class _WindowsPoll:
     def __init__(self) -> None:
         self.buf: List[str] = []
         self.echo = True  # off while ui.TurnDock draws the line in its input box
+        self.keys_mode = False  # one key per call (choice prompts), see KEY
 
     def _out(self, text: str) -> None:
         if self.echo:
@@ -199,6 +251,23 @@ class _WindowsPoll:
         while True:
             while msvcrt.kbhit():
                 ch = msvcrt.getwch()
+                if self.keys_mode:
+                    if ch == "\x1b":
+                        return KEY + "escape"
+                    if ch in ("\x00", "\xe0"):
+                        second = msvcrt.getwch()
+                        if ch == "\x00" and second == "\x0f":
+                            return KEY + "shift_tab"
+                        name = _WIN_KEYS.get(second)
+                        if name:
+                            return KEY + name
+                        continue
+                    if ch == "\x03":
+                        return None
+                    name = _key_name(ch)
+                    if name is not None:
+                        return KEY + name
+                    continue
                 if ch in ("\r", "\n"):
                     self._out("\n")
                     line, self.buf = "".join(self.buf), []
@@ -278,6 +347,8 @@ class TypeAhead:
         self._qlock = threading.Lock()
         self._answers: "queue.Queue[str]" = queue.Queue()
         self._want_answer = threading.Event()
+        self._key_q: "queue.Queue[str]" = queue.Queue()
+        self._want_keys = threading.Event()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -320,6 +391,10 @@ class TypeAhead:
             except Exception:  # noqa: BLE001 - a dead terminal just ends type-ahead
                 return
             if line is None:
+                continue
+            if line.startswith(KEY):
+                if self._want_keys.is_set():
+                    self._key_q.put(line[len(KEY):])
                 continue
             if line == ESCAPE:
                 self.escape()
@@ -398,6 +473,35 @@ class TypeAhead:
             return None
         finally:
             self._want_answer.clear()
+
+    # -- key mode (choice prompts) ---------------------------------------------
+    @property
+    def supports_keys(self) -> bool:
+        """The reader can hand over single keys (arrows, Enter, Esc)."""
+        return self._poll is not None and hasattr(self._poll, "keys_mode")
+
+    def begin_keys(self) -> None:
+        while not self._key_q.empty():
+            self._key_q.get_nowait()
+        self._want_keys.set()
+        self._poll.keys_mode = True  # type: ignore[union-attr]
+
+    def end_keys(self) -> None:
+        self._want_keys.clear()
+        if self._poll is not None and hasattr(self._poll, "keys_mode"):
+            self._poll.keys_mode = False  # type: ignore[union-attr]
+
+    def next_key(self, timeout: Optional[float] = None) -> Optional[str]:
+        """The next key in key mode; None on timeout or once type-ahead ended."""
+        try:
+            return self._key_q.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def push_key(self, key: str) -> None:
+        """Deliver a key as if typed (also the test entry point)."""
+        if self._want_keys.is_set():
+            self._key_q.put(key)
 
     def requeue(self, text: str) -> None:
         """Put a line back: it was typed as a message, not as an answer."""

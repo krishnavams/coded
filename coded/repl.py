@@ -16,7 +16,8 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
 from rich.table import Table
 
-from coded import ui
+from coded import choice, ui
+from coded.choice import Chooser
 from coded.agent import Agent
 from coded.config import Config, ConfigError, load_config
 from coded.typeahead import CTRL_B, CTRL_O, CTRL_T, SHIFT_TAB, TypeAhead, default_poll
@@ -307,7 +308,7 @@ class Repl:
         self._boxed = _box_input(self.prompt, self._bottom_toolbar)
         # Wire the permission prompt into the manager.
         self.agent.permissions.set_prompt(self._permission_prompt)
-        self.agent.permissions.set_question(self._question_prompt)
+        self.agent.permissions.set_questions(self._questions_prompt)
         # Background tasks: the REPL wakes the agent with their reports, so a
         # turn does not have to wait for them.
         self.agent.wait_for_background = False
@@ -351,58 +352,85 @@ class Repl:
             f"  ·  @ files  ·  shift+tab mode  ·  /help"
         )
 
-    def _permission_prompt(self, title: str, detail: str) -> str:
-        self.notifier.waiting(title)
-        ui.console.print()
-        ui.permission_panel(title, detail)
-        if self._typeahead is not None and self._typeahead.available:
-            # A turn is running and the type-ahead reader owns stdin; asking it
-            # for the line keeps the two from racing for the same keystrokes.
-            # Only a real answer counts here: a follow-up the user happened to
-            # send at this moment must not approve an action, nor be lost.
-            while True:
-                ui.console.print("  [bold]Allow?[/bold] [green]y[/green]es  "
-                                 "[red]n[/red]o  [cyan]a[/cyan]lways")
-                self._asking(True)
-                try:
-                    answer = self._typeahead.ask()
-                finally:
-                    self._asking(False)
-                if answer is None:
-                    return "no"
-                answer = answer.strip()
-                if answer.lower() in ("y", "yes", "n", "no", "a", "always"):
-                    return answer
-                if answer:
-                    self._typeahead.requeue(answer)
-                    ui.console.print(f"[{ui.ACCENT_SOFT}]  (queued as a message — "
-                                     f"answer y, n or a first)[/]")
-        try:
-            answer = self.prompt.prompt(
-                HTML("  <b>Allow?</b> <ansigreen>y</ansigreen>es  "
-                     "<ansired>n</ansired>o  <ansicyan>a</ansicyan>lways "),
-                bottom_toolbar=None,
-            )
-        except (EOFError, KeyboardInterrupt):
-            return "no"
-        return answer or "no"
+    def _keys_ready(self) -> bool:
+        """Arrow-key prompts work: the reader hands over keys and a dock draws."""
+        ta = self._typeahead
+        return (ta is not None and ta.available and ta.supports_keys
+                and ui.active_dock() is not None)
 
-    def _question_prompt(self, question: str, options: list) -> Optional[str]:
-        """ask_user: show the question, return the answer ('' = skipped)."""
-        self.notifier.waiting("Question")
-        ui.console.print()
-        ui.question_panel(question, options)
+    def _choose(self, chooser: Chooser) -> None:
+        """Run a choice prompt in the turn dock, key by key, until it is done."""
+        ta, dock = self._typeahead, ui.active_dock()
+        ta.begin_keys()
+        dock.set_prompt(chooser.render())
+        try:
+            while not chooser.done:
+                key = ta.next_key(timeout=0.25)
+                if key is None:
+                    continue
+                chooser.key(key)
+                dock.set_prompt(chooser.render())
+        finally:
+            ta.end_keys()
+            dock.set_prompt(None)
+
+    def _read_line(self, label: str) -> Optional[str]:
+        """One typed answer in line mode; None when input ended (Esc, EOF, ^C)."""
         if self._typeahead is not None and self._typeahead.available:
             self._asking(True)
             try:
-                return ui.pick_answer(self._typeahead.ask() or "", options)
+                return self._typeahead.ask()
             finally:
                 self._asking(False)
         try:
-            answer = self.prompt.prompt(HTML("  <b>Answer:</b> "), bottom_toolbar=None)
+            return self.prompt.prompt(HTML(f"  <b>{label}</b> "), bottom_toolbar=None)
         except (EOFError, KeyboardInterrupt):
-            return ""
-        return ui.pick_answer(answer, options)
+            return None
+
+    def _permission_prompt(self, title: str, detail: str) -> str:
+        self.notifier.waiting(title)
+        chooser = choice.permission_chooser(title, detail)
+        if self._keys_ready():
+            self._choose(chooser)
+            return choice.permission_answer(chooser)
+        ui.console.print()
+        ui.console.print(chooser.render(line_mode=True))
+        while True:
+            line = self._read_line("Answer (1-3):")
+            if line is None:
+                return "no"
+            answer = choice.permission_line(line)
+            if answer is not None:
+                return answer
+            if line.strip() and self._typeahead is not None and self._typeahead.available:
+                # A turn is running and this was typed as a follow-up message
+                # just as the prompt appeared: it must not approve the action,
+                # nor be lost.
+                self._typeahead.requeue(line)
+                ui.console.print(f"[{ui.ACCENT_SOFT}]  (queued as a message — "
+                                 f"answer 1, 2 or 3 first)[/]")
+            elif line.strip():
+                return f"no: {line.strip()}"
+            else:
+                return "no"
+
+    def _questions_prompt(self, questions: list) -> Optional[List[str]]:
+        """ask_user: one or more questions; the answers, or None if cancelled."""
+        self.notifier.waiting("Question")
+        chooser = Chooser(questions)
+        if self._keys_ready():
+            self._choose(chooser)
+        else:
+            while not chooser.done:
+                ui.console.print()
+                ui.console.print(chooser.render(line_mode=True))
+                line = self._read_line("Answer:")
+                if line is None:
+                    chooser.key(choice.ESCAPE)
+                else:
+                    chooser.line(line)
+        answers = chooser.result()
+        return None if answers is None else [str(a) for a in answers]
 
     def _grab_clipboard(self) -> Optional[str]:
         """Attach the clipboard's image to the next message; None if there is none."""

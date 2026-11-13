@@ -152,8 +152,7 @@ async def test_tui_question_modal_answers_ask_user(tmp_path, fake_server):
                     break
                 await pilot.pause()
             assert isinstance(app.screen, QuestionModal)
-            app.screen.query_one("#question-input", Input).value = "2"
-            await pilot.press("enter")
+            await pilot.press("down", "enter")  # ↓ to the second choice, Enter
             await app.workers.wait_for_complete()
             await pilot.pause()
     tool_msg = next(m for m in requests[-1]["messages"] if m["role"] == "tool")
