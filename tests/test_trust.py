@@ -287,3 +287,89 @@ def test_browser_blocks_a_page_reaching_an_internal_address(tmp_path):
     assert not res.is_error, res.content
     assert "Blocked" in res.content and f"127.0.0.1:{port}/meta" in res.content
     assert hits == []  # the request never left the browser
+
+
+# -- smaller audit fixes ----------------------------------------------------------
+def test_patch_refuses_to_move_onto_an_existing_file_or_touch_one_twice(tmp_path):
+    from coded.config import Config
+    from coded.permissions import PermissionManager
+    from coded.tools.base import ToolContext
+    from coded.tools.patch import PatchError, plan_patch
+
+    (tmp_path / "a.py").write_text("x = 1\n")
+    (tmp_path / "b.py").write_text("keep me\n")
+    ctx = ToolContext(cwd=str(tmp_path), permissions=PermissionManager(), config=Config())
+    move = "*** Begin Patch\n*** Update File: a.py\n*** Move to: b.py\n@@\n-x = 1\n+x = 2\n*** End Patch"
+    import pytest
+
+    with pytest.raises(PatchError, match="already exists"):
+        plan_patch(move, ctx)
+    twice = ("*** Begin Patch\n*** Update File: a.py\n@@\n-x = 1\n+x = 2\n"
+             "*** Delete File: a.py\n*** End Patch")
+    with pytest.raises(PatchError, match="both change"):
+        plan_patch(twice, ctx)
+    assert (tmp_path / "b.py").read_text() == "keep me\n"
+
+
+def test_mcp_call_that_times_out_is_cancelled(tmp_path):
+    import asyncio
+    import threading
+
+    import pytest
+
+    from coded.mcp_client import MCPManager
+
+    mgr = MCPManager.__new__(MCPManager)
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+    mgr.loop = loop
+    state = {}
+
+    async def slow(server, tool, args):
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            state["cancelled"] = True
+            raise
+
+    mgr._call = slow
+    with pytest.raises(TimeoutError, match="cancelled"):
+        mgr.call("srv", "deploy", {}, timeout=0.2)
+    import time
+
+    for _ in range(50):
+        if state.get("cancelled"):
+            break
+        time.sleep(0.02)
+    loop.call_soon_threadsafe(loop.stop)
+    assert state.get("cancelled")
+
+
+def test_commit_command_keeps_deny_rules_and_only_allows_git(tmp_path, monkeypatch):
+    from coded import cli
+    from coded.permissions import Decision
+
+    _user(tmp_path, monkeypatch, {"models": {"m": {"provider": "openai", "model": "m"}},
+                                  "default_model": "m",
+                                  "permissions": {"deny": ["git(push*)"]}})
+    seen = {}
+
+    def fake_create_agent(**kw):
+        seen["perms"] = kw["permissions"]
+
+        class A:
+            def run(self, prompt):
+                return ""
+        return A()
+
+    monkeypatch.setattr(cli, "create_agent", fake_create_agent)
+    cli._handle_commit_command(["--cwd", str(tmp_path), "--commit"])
+    perms = seen["perms"]
+    assert not perms.auto_approve
+    assert perms.request(key="git", title="t", detail="commit -m x",
+                         target="commit -m x") is Decision.ALLOW
+    assert perms.request(key="git", title="t", detail="push", target="push origin") is Decision.DENY
+    assert perms.request(key="bash", title="t", detail="rm -rf .") is Decision.DENY
+    cli._handle_commit_command(["--cwd", str(tmp_path)])  # no --commit: git writes not allowed
+    assert seen["perms"].request(key="git", title="t", detail="commit",
+                                 target="commit") is Decision.DENY

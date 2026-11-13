@@ -556,8 +556,13 @@ def _handle_commit_command(argv: List[str]) -> int:
 
     from coded.skills import discover_skills
 
-    # Allow git so the agent can read the diff (and commit if requested).
-    permissions = PermissionManager(auto_approve=True)
+    # Reading the diff needs no approval (read-only git); creating the commit
+    # is allowed only with --commit, and only for git. The user's deny rules
+    # still win over that allow rule.
+    rules = {k: list(v) for k, v in (cfg.permissions or {}).items() if isinstance(v, list)}
+    if args.commit:
+        rules["allow"] = list(rules.get("allow") or []) + ["git"]
+    permissions = PermissionManager(rules=rules, injection_guard=cfg.injection_guard)
     agent = create_agent(model=model, config=cfg, cwd=cwd, permissions=permissions,
                          skills=discover_skills(cwd), stream=False, verbose=False)
     action = ("Then create the commit using the git tool."
@@ -634,7 +639,8 @@ def _handle_review_command(argv: List[str]) -> int:
     from coded.review import NEEDS_CHANGES, UNKNOWN, run_review, synthesize_verdict
     from coded.skills import discover_skills
 
-    permissions = PermissionManager(auto_approve=args.auto_approve, rules=cfg.permissions)
+    permissions = PermissionManager(auto_approve=args.auto_approve, rules=cfg.permissions,
+                                    injection_guard=cfg.injection_guard)
     skills = discover_skills(cwd)
     agent = create_agent(
         model=model, config=cfg, cwd=cwd, permissions=permissions,
