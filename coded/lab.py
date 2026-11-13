@@ -111,8 +111,8 @@ def analyze(sessions: List[Dict[str, Any]]) -> Report:
         if len(hits) < _MIN_REPEATS:
             continue
         example = examples[(tool, norm)][:160]
-        line = (f"The `{tool}` tool often fails with: {norm}. Check the cause before "
-                f"calling it again instead of retrying the same call.")
+        line = (f"`{tool}` often fails here with “{example[:100]}” — check the cause "
+                "before calling it again instead of retrying the same call.")
         report.findings.append(Finding(
             f"`{tool}` keeps failing the same way", f"{len(hits)} times in "
             f"{len(set(hits))} session(s), e.g. “{example}”", len(hits),

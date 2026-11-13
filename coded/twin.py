@@ -219,8 +219,10 @@ def render(facts: Dict[str, Any]):
                 if items:
                     t.append(f"  {label} {len(items)}: ", style=colour)
                     t.append(", ".join(items[:8]) + (" …" if len(items) > 8 else "") + "\n")
-    hits, misses = facts["cache"]
-    foot = Text(f"{facts['seconds']:.1f}s · {hits} file(s) from the twin, {misses} re-read"
+    _, misses = facts["cache"]
+    read = (f"re-read {misses} new or changed file(s)" if misses else
+            "every file came from the twin")
+    foot = Text(f"{facts['seconds']:.1f}s · {read}"
                 + (" · scan capped" if facts["truncated"] else ""), style=ui.MUTED)
     return Group(Panel(t, title=f"[bold {ui.ACCENT}]Project twin[/]", title_align="left",
                        border_style=ui.ACCENT, box=ROUNDED), foot)
