@@ -22,6 +22,9 @@ runtime.
 
 - **Agentic tool loop** — the model reads, writes, and edits files, searches the
   codebase, and runs shell commands until your request is done.
+- **Missions** — `coded mission "<goal>"`: asks everything up front, works
+  alone on a separate branch, keeps going through outages and step limits, and
+  ends with a report and a notification.
 - **Full tool suite** — `read`, `write`, `edit`, `multi_edit`, `apply_patch`,
   `ls`, `move`, `delete`, `glob`, `grep`, `semantic_search`, `bash` (+
   `bash_output` / `kill_shell` for background jobs), `git`, `github`,
@@ -519,6 +522,38 @@ rings the terminal bell when it finishes or stops to ask you something, so
 you can work in another window. `"notify": "desktop"` shows a desktop
 notification instead (osascript on macOS, `notify-send` on Linux; the bell
 elsewhere); `"notify": "off"` turns it off.
+
+### Missions: work while you're away
+
+```bash
+coded mission "add CSV export to the reports page" --budget 2.00
+coded mission "fix the flaky date tests" --notify-url https://ntfy.sh/my-topic
+```
+
+A mission asks everything up front — trust this project? run its checks
+(`npm test`, `pytest`, …) after each change? run shell commands without
+asking? — and then works alone until the goal is done:
+
+- **On a copy.** It runs in a new git worktree on a `coded/mission-…` branch;
+  your checkout is never touched (`--here` works in place instead).
+- **Plans first**, keeps the task list current, and the project's checks gate
+  every change. Nothing waits for you: an action nobody approved is refused,
+  and a question becomes a stated assumption.
+- **Keeps going.** A model outage is retried after a pause, a run that hit the
+  step limit or left tasks open is sent back to finish (up to
+  `--max-restarts`, default 3). It stops when it is clearly stuck, the
+  `--budget` runs out, or you press Ctrl-C. Each step is saved, so
+  `coded --continue` in the worktree picks it up later.
+- **Ends with a report** in `.coded/missions/<time>.md`: the result, changed
+  files, checks, tasks, cost, what went wrong on the way, the agent's summary
+  and the exact commands to review, merge or discard the branch. The changes
+  are committed on the branch. You get a desktop notification, and with
+  `--notify-url` the report is POSTed there too (an ntfy.sh topic shows it on
+  your phone).
+
+Without a terminal (`-y`/`--yes`, cron, CI) nothing is asked: unapproved checks
+and shell commands stay off unless `--allow-bash` (or `--yolo`) says otherwise.
+Deny rules always win.
 
 ### Context & sessions
 

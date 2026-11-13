@@ -52,6 +52,7 @@ coded/
 ├── codehealth.py       # refactor hot spots: function metrics (ast), duplicate blocks, ranking
 ├── twin.py             # project twin: per-file parse cache (user cache dir) + /twin snapshot
 ├── lab.py              # coded lab / /lab: recurring failures in past sessions, approved proposals
+├── mission.py          # coded mission: unattended run in a worktree, restarts, report, notify
 ├── memory.py           # project memory store (./.coded/memory.json)
 ├── speed.py            # `coded models --speed`: first token, total, tok/s per model
 ├── verify.py           # post-turn gates: project checks + a second model
@@ -146,6 +147,7 @@ tests/
 ├── test_twin.py        # same answers with/without the cache, outside the repo, /twin changes
 ├── test_lab.py         # lab heuristics, per-folder sessions, one-by-one apply, loosening flagged
 ├── test_turn_limit.py  # max_turns grows with progress, stops a loop, ceiling, hard-cap switches
+├── test_mission.py     # restarts/stops, open tasks, budget, branch + report, up-front questions
 ├── test_session_autosave.py  # per-step autosave, atomic save, orphan tool calls, todos
 ├── test_memory_bounds.py  # bounded output/file reads, timeout kills the process group
 ├── test_compaction.py  # context compaction trigger + tail preservation
@@ -667,6 +669,17 @@ config.example.json     # sample configuration
   `_LOOP_WINDOW`, or `_ERROR_RUN` failures in a row). `auto_extend_turns: false`
   or `--max-turns` (`max_turns_override`) is a hard cap. Events:
   `turns_extended`, then `max_turns` on the stop.
+- **Missions** (`mission.py`, `coded mission`): every question is asked before
+  the run (project trust, `trust.approve_check` for the detected checks, a
+  `bash` allow rule); during it `permissions` has no prompt, so anything
+  unapproved is refused and `ask_user` returns None. Edits run under
+  `accept_edits`; the checks go in as `verify.command`. `run_mission` drives
+  `Agent.run` and decides from the run's events: an exception → backoff +
+  continue, `max_turns` → continue unless its `reason` says not progressing,
+  open todos → continue, `over_budget()` → stop; all bounded by
+  `max_restarts`. It works in `worktree.create_worktree` (the project's
+  `.coded/memory.json` is copied in), commits there at the end, and writes the
+  report to `<repo>/.coded/missions/`. Never pushes or merges.
 - **Sessions survive a crash**: `Agent.on_step` (main agent only; the CLI sets
   it to autosave) runs after the user message, each tool step and the final
   answer, so a kill loses at most one step; the REPL also saves after Ctrl-C.
@@ -852,7 +865,7 @@ one (e.g. `ruff`, `black`), record the commands here.
 
 - **argparse + free-form prompt**: the top-level parser has a `nargs="*"`
   positional `prompt`, which conflicts with argparse subparsers. Subcommands
-  (`config`, `models`, `agents`, `doctor`, `index`, `review`, `sessions`, `commit`, `import`, `skill`,
+  (`config`, `models`, `agents`, `doctor`, `index`, `review`, `sessions`, `commit`, `mission`, `import`, `skill`,
   `plugin`, `prompts`, `acp`, `mcp-serve`) are therefore dispatched manually by the first token in
   `cli.main()` — keep new subcommands on that path, not on `add_subparsers`.
 - **ACP / MCP server modes keep stdout clean** (`ui.set_quiet(True)`): stdout

@@ -41,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Subcommands: `coded config setup|init|path|show`, `coded models [--check]`, "
                "`coded skill install|list|remove|update|info`, `coded prompts list|show|init`, "
                "`coded plugin install|list|remove|update|enable|disable|info|search|marketplace`, "
-               "`coded review`, `coded commit`, `coded lab`, `coded index`, `coded sessions`, "
+               "`coded mission \"<goal>\"` (unattended, on a branch), `coded review`, `coded commit`, `coded lab`, `coded index`, `coded sessions`, "
                "`coded doctor`, "
                "`coded import` (MCP servers from other agents), "
                "`coded acp` (Agent Client Protocol server), `coded mcp-serve` (MCP server).",
@@ -816,6 +816,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _handle_sessions_command(argv[1:])
     if argv and argv[0] == "commit":
         return _handle_commit_command(argv[1:])
+    if argv and argv[0] == "mission":
+        from coded.mission import mission_main
+
+        return mission_main(argv[1:])
     if argv and argv[0] == "lab":
         return _handle_lab_command(argv[1:])
     if argv and argv[0] == "skill":

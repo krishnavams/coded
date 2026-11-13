@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+- `coded mission "<goal>"`: an unattended run. It asks everything up front
+  (trust, the project's checks, shell commands), works in its own git worktree
+  and branch, plans with the task list, retries model outages, continues after
+  the step limit or with tasks left open (`--max-restarts`), respects
+  `--budget`, commits its changes on the branch and ends with a Markdown report
+  in `.coded/missions/` plus a desktop notification or a POST to `--notify-url`.
+- The `max_turns` event records why the run stopped (`reason`).
+
 ### Changed
 - The REPL spinner cycles through coded's own words while the model works
   ("Tracing…", "Untangling…", …, a new one every few seconds) and shows how

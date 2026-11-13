@@ -609,7 +609,7 @@ class Agent:
         return final_text
 
     def _stop_at_limit(self, limit: int, why: str) -> None:
-        self.events.add("max_turns", limit=limit,
+        self.events.add("max_turns", limit=limit, reason=why,
                         **({"task": self.event_task} if self.event_task else {}))
         text = f"Reached max turns ({limit}); stopping: {why}."
         if not self.is_subagent:

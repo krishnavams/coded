@@ -18,7 +18,7 @@ with its task id. Every entry has `t` (epoch seconds) and `kind`:
     note        text (status notes: fallbacks, retries, hooks)
     overflow    a context-window retry
     turns_extended  limit (still making progress at the step limit)
-    max_turns   the turn hit max_turns
+    max_turns   limit, reason (the turn hit the step limit and stopped)
     interrupt   the user stopped the turn
     answer      chars (the final answer's length)
     llm         model, input, output, cost (one model call; sub-agents too)
