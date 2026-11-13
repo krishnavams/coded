@@ -536,14 +536,20 @@ asking? — and then works alone until the goal is done:
 
 - **On a copy.** It runs in a new git worktree on a `coded/mission-…` branch;
   your checkout is never touched (`--here` works in place instead).
-- **Plans first**, keeps the task list current, and the project's checks gate
-  every change. Nothing waits for you: an action nobody approved is refused,
-  and a question becomes a stated assumption.
+- **Plans first.** The first run may only look around: every change is
+  refused until it has written a task list (it is asked twice; without one
+  the work starts anyway and the report says so). Then it works through the
+  list, and the project's checks gate every change. Nothing waits for you: an
+  action nobody approved is refused, and a question becomes a stated
+  assumption.
 - **Keeps going.** A model outage is retried after a pause, a run that hit the
   step limit or left tasks open is sent back to finish (up to
   `--max-restarts`, default 3). It stops when it is clearly stuck, the
-  `--budget` runs out, or you press Ctrl-C. Each step is saved, so
-  `coded --continue` in the worktree picks it up later.
+  `--budget` runs out, or you press Ctrl-C.
+- **Survives being killed.** Every step is saved. If the computer sleeps or
+  restarts or the terminal closes, `coded mission --resume` (in the project or
+  the worktree) carries on with the same answers, branch and task list, and
+  still ends with the report. `coded mission --list` shows the missions.
 - **Ends with a report** in `.coded/missions/<time>.md`: the result, changed
   files, checks, tasks, cost, what went wrong on the way, the agent's summary
   and the exact commands to review, merge or discard the branch. The changes

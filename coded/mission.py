@@ -19,6 +19,7 @@ accept or discard the branch, plus a notification (bell/desktop, or a POST to
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -37,12 +38,20 @@ BRIEF_HEAD = (
     "You are running unattended as a coded mission: nobody is watching and nobody can "
     "answer questions until it is over.\n\nGoal:\n"
 )
-BRIEF_TAIL = """
+PLAN_TAIL = """
+
+Phase 1 of 2 — plan. Look around the code first (reading is allowed; every change is \
+refused in this phase), then write the whole task list with todo_write: concrete steps, \
+including running the project's tests or checks at the end. Reply with the plan in a few \
+lines (not with exit_plan_mode). Do not start the work yet: the next message starts it."""
+PLAN_NUDGE = ("[mission] There is still no task list. Call todo_write now with the steps "
+              "for the goal, then reply with the plan in a few lines.")
+WORK_HEAD = "Phase 2 of 2 — do the work, following your task list. Goal:\n"
+WORK_TAIL = """
 
 How to work:
-1. Look around first, then write a task list with todo_write. Keep it current.
-2. Work through it step by step. Make the smallest changes that reach the goal and follow \
-the project's conventions.
+1. Keep the task list current: one item in_progress, mark items completed when done.
+2. Make the smallest changes that reach the goal and follow the project's conventions.
 3. When a question has no clear answer, pick the safest reasonable option, write the \
 assumption down in your final summary, and keep going. Do not stop to ask.
 4. Run the project's tests or checks before you finish, and fix what fails.
@@ -55,6 +64,8 @@ CONTINUE_PREFIX = "[mission] You stopped before the goal was done ("
 CONTINUE_SUFFIX = ("). Continue from where you left off: check the task list, finish the "
                    "open items (or mark why one cannot be done), run the checks, then give "
                    "the final summary.")
+RESUMED = ("the mission was interrupted: the computer slept or restarted, or the terminal "
+           "closed. Files may be half-edited, so look at what is there before going on")
 
 STATUS_TEXT = {
     "done": "Done",
@@ -62,11 +73,19 @@ STATUS_TEXT = {
     "budget": "Stopped: the budget ran out",
     "failed": "Stopped: the model kept failing",
     "interrupted": "Stopped: interrupted",
+    "running": "Still running (or killed)",
 }
+# Outcomes that send a run back to work and so count against max_restarts.
+_RESTARTS = ("error", "max_turns", "open_tasks")
 
 
 def brief(goal: str) -> str:
-    return BRIEF_HEAD + goal.strip() + BRIEF_TAIL
+    """The first message: plan only."""
+    return BRIEF_HEAD + goal.strip() + PLAN_TAIL
+
+
+def work_message(goal: str) -> str:
+    return WORK_HEAD + goal.strip() + WORK_TAIL
 
 
 def continue_message(why: str) -> str:
@@ -76,7 +95,8 @@ def continue_message(why: str) -> str:
 @dataclass
 class Attempt:
     number: int
-    outcome: str        # "answered", "max_turns", "error", "open_tasks", "budget", "interrupted"
+    # planned, no_plan, answered, max_turns, error, open_tasks, budget, interrupted
+    outcome: str
     detail: str = ""
 
 
@@ -108,14 +128,24 @@ def _new_events(agent, before: List[dict]) -> List[dict]:
 
 def run_mission(agent, goal: str, *, max_restarts: int = DEFAULT_RESTARTS,
                 sleep: Callable[[float], None] = time.sleep,
-                backoff=BACKOFF_SECONDS,
+                backoff=BACKOFF_SECONDS, resume: bool = False,
                 on_attempt: Optional[Callable[[Attempt], None]] = None) -> MissionResult:
-    """Drive the agent until the goal is done or it cannot go on."""
+    """Drive the agent until the goal is done or it cannot go on.
+
+    It plans first: a run in which every change is refused, until a task list
+    exists (asked for twice, then the work starts anyway and the report says
+    so). A resumed mission with a task list goes straight back to work."""
     from coded.llm import explain_failure
 
     started = time.monotonic()
     result = MissionResult(status="done")
-    message = brief(goal)
+    planning = not (resume and agent.todos.items)
+    plan_asks = 0
+    if planning:
+        message = brief(goal) if not resume else (
+            continue_message(RESUMED) + "\n\n" + brief(goal))
+    else:
+        message = continue_message(RESUMED)
     failures = 0
 
     def record(outcome: str, detail: str = "") -> Attempt:
@@ -125,8 +155,12 @@ def run_mission(agent, goal: str, *, max_restarts: int = DEFAULT_RESTARTS,
             on_attempt(attempt)
         return attempt
 
+    def restarts() -> int:
+        return sum(a.outcome in _RESTARTS for a in result.attempts)
+
     while True:
         before = agent.events.snapshot()
+        agent.permissions.plan_mode = planning
         try:
             final = agent.run(message)
         except KeyboardInterrupt:
@@ -137,35 +171,56 @@ def run_mission(agent, goal: str, *, max_restarts: int = DEFAULT_RESTARTS,
             why = explain_failure(exc)
             record("error", why)
             failures += 1
-            if len(result.attempts) > max_restarts:
+            if restarts() > max_restarts:
                 result.status = "failed"
                 result.final = why
                 break
-            sleep(backoff[min(failures - 1, len(backoff) - 1)])
-            message = continue_message("the model request failed: " + why.splitlines()[0])
+            try:
+                sleep(backoff[min(failures - 1, len(backoff) - 1)])
+            except KeyboardInterrupt:
+                record("interrupted")
+                result.status = "interrupted"
+                break
+            if not planning:
+                message = continue_message("the model request failed: " + why.splitlines()[0])
             continue
-        result.final = final or result.final
+        finally:
+            agent.permissions.plan_mode = False
         events = _new_events(agent, before)
         kinds = [e.get("kind") for e in events]
         if agent.over_budget():
             record("budget", agent.over_budget() or "")
             result.status = "budget"
+            result.final = final or result.final
             break
         if "interrupt" in kinds:
             record("interrupted")
             result.status = "interrupted"
             break
+        if planning:
+            plan_asks += 1
+            if agent.todos.items:
+                record("planned", f"{len(agent.todos.items)} task(s)")
+            elif plan_asks < 2:
+                message = PLAN_NUDGE
+                continue
+            else:
+                record("no_plan", "the model wrote no task list; working without one")
+            planning = False
+            message = work_message(goal)
+            continue
+        result.final = final or result.final
         if "max_turns" in kinds:
             stop = [e for e in events if e.get("kind") == "max_turns"][-1]
             why = str(stop.get("reason") or "the step limit was reached")
             record("max_turns", why)
-            if len(result.attempts) > max_restarts or "not look like progress" in why:
+            if restarts() > max_restarts or "not look like progress" in why:
                 result.status = "stuck"
                 break
             message = continue_message("step limit: " + why)
             continue
         open_items = _open_todos(agent)
-        if open_items and len(result.attempts) < max_restarts:
+        if open_items and restarts() < max_restarts:
             names = "; ".join(str(t.get("content", ""))[:60] for t in open_items[:5])
             record("open_tasks", names)
             message = continue_message(f"{len(open_items)} task(s) still open: {names}")
@@ -231,7 +286,8 @@ def _checks_line(events: List[dict], command: Optional[str]) -> str:
 
 def build_report(*, goal: str, result: MissionResult, agent, branch: str = "",
                  worktree: str = "", root: str = "", base: str = "",
-                 check_command: Optional[str] = None, commit_note: str = "") -> str:
+                 check_command: Optional[str] = None, commit_note: str = "",
+                 mission_id: str = "") -> str:
     status = STATUS_TEXT.get(result.status, result.status)
     icon = "✅" if result.status == "done" else "⚠️"
     events = agent.events.snapshot()
@@ -263,7 +319,7 @@ def build_report(*, goal: str, result: MissionResult, agent, branch: str = "",
             lines.append(f"- [{'x' if done else ' '}] {t.get('content', '')}")
         lines.append("")
 
-    problems = [a for a in result.attempts if a.outcome != "answered"]
+    problems = [a for a in result.attempts if a.outcome not in ("answered", "planned")]
     errors = [e for e in events if e.get("kind") == "tool" and e.get("error")]
     denied = [e for e in events if e.get("kind") == "tool" and e.get("denied")]
     if problems or errors or denied:
@@ -287,10 +343,12 @@ def build_report(*, goal: str, result: MissionResult, agent, branch: str = "",
         lines += [f"- Review: `git -C {root} diff {base[:10]}..{branch}`",
                   f"- Accept: `git -C {root} merge {branch}`",
                   f"- Discard: `git -C {root} worktree remove --force {worktree} && "
-                  f"git -C {root} branch -D {branch}`",
-                  f"- Keep going: `cd {worktree} && coded --continue`"]
+                  f"git -C {root} branch -D {branch}`"]
     else:
-        lines += ["- Review the changes with `git diff`.", "- Keep going: `coded --continue`"]
+        lines += ["- Review the changes with `git diff`."]
+    if result.status != "done":
+        lines.append(f"- Carry on with this mission: `coded mission --resume"
+                     f"{' ' + mission_id if mission_id else ''}`")
     return "\n".join(lines) + "\n"
 
 
@@ -319,6 +377,59 @@ def post_notification(url: str, title: str, body: str, opener=None) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Mission state: what --resume needs to carry on without asking again
+# ---------------------------------------------------------------------------
+
+STATE_KEYS = ("id", "goal", "status", "session_id", "model", "branch", "worktree",
+              "work_dir", "root", "base", "check_command", "allow_bash", "yolo", "budget",
+              "max_restarts", "trusted", "notify", "notify_url", "seconds", "runs")
+
+
+def missions_dir(root: str) -> Path:
+    return Path(root) / ".coded" / "missions"
+
+
+def save_state(state: Dict[str, Any]) -> Path:
+    path = missions_dir(state["root"]) / f"{state['id']}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({k: state.get(k) for k in STATE_KEYS}, indent=2),
+                   encoding="utf-8")
+    os.replace(tmp, path)
+    return path
+
+
+def load_states(root: str) -> List[Dict[str, Any]]:
+    """Saved missions of this repository, newest first."""
+    out = []
+    for path in sorted(missions_dir(root).glob("*.json"), reverse=True):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("id") and data.get("goal"):
+            out.append(data)
+    return out
+
+
+def main_root(cwd: str) -> str:
+    """The main checkout of the repository `cwd` is in (also from inside a
+    mission's worktree), else `cwd`."""
+    common = _git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if common and Path(common).name == ".git":
+        return str(Path(common).parent)
+    top = _git(cwd, "rev-parse", "--show-toplevel")
+    return top or cwd
+
+
+def find_resumable(root: str, wanted: Optional[str]) -> Optional[Dict[str, Any]]:
+    states = load_states(root)
+    if wanted and wanted != "latest":
+        return next((s for s in states if s["id"] == wanted), None)
+    return next((s for s in states if s.get("status") != "done"), None)
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -328,11 +439,15 @@ def build_parser() -> argparse.ArgumentParser:
         description="Work on a goal unattended in a separate git worktree and finish with "
                     "a report. Everything that needs you is asked before it starts.")
     p.add_argument("goal", nargs="*", help="What to do (or pipe it on stdin).")
+    p.add_argument("--resume", nargs="?", const="latest", metavar="ID",
+                   help="Carry on with a mission that stopped (the newest unfinished one, "
+                        "or this id), with the answers given when it started.")
+    p.add_argument("--list", action="store_true", help="List this repository's missions.")
     p.add_argument("-m", "--model", help="Model alias to use.")
     p.add_argument("--config", help="Path to a specific config file.")
     p.add_argument("--cwd", help="Repository directory.")
     p.add_argument("--budget", type=float, help="Stop when the cost reaches this many dollars.")
-    p.add_argument("--max-restarts", type=int, default=DEFAULT_RESTARTS,
+    p.add_argument("--max-restarts", type=int, default=None,
                    help=f"How often to send a stopped run back to work (default "
                         f"{DEFAULT_RESTARTS}).")
     p.add_argument("--here", action="store_true",
@@ -362,12 +477,46 @@ def _yes(question: str, read=input, default: bool = True) -> bool:
     return default if not answer else answer in ("y", "yes")
 
 
-def mission_main(argv: List[str], read=input) -> int:
-    from coded import cli, notify, trust
-    from coded.config import ConfigError, load_config
-    from coded.permissions import PermissionManager
+def _list(root: str) -> int:
+    states = load_states(root)
+    if not states:
+        ui.info("No missions in this repository yet.")
+        return 0
+    for s in states:
+        ui.console.print(f"  {s['id']}  {STATUS_TEXT.get(s.get('status'), s.get('status'))}  "
+                         f"{' '.join(str(s['goal']).split())[:70]}", markup=False,
+                         highlight=False)
+    return 0
 
+
+def mission_main(argv: List[str], read=input) -> int:
     args = build_parser().parse_args(argv)
+    cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
+    if args.list:
+        return _list(main_root(cwd))
+    if args.resume:
+        root = main_root(cwd)
+        state = find_resumable(root, args.resume)
+        if state is None:
+            ui.error("No unfinished mission to resume here" + (
+                f" with id {args.resume}" if args.resume != "latest" else "")
+                + ". `coded mission --list` shows them.")
+            return 1
+        if not Path(state["work_dir"]).is_dir():
+            ui.error(f"The mission's folder {state['work_dir']} is gone; it cannot be resumed.")
+            return 1
+        for key in ("budget", "notify", "notify_url", "max_restarts"):
+            value = getattr(args, key)
+            if value is not None:
+                state[key] = value
+        return _run(state, args, resume=True)
+    return _start(args, cwd, read)
+
+
+def _start(args, cwd: str, read) -> int:
+    from coded import cli, trust
+    from coded.config import ConfigError, load_config
+
     goal = " ".join(args.goal).strip()
     if not goal:
         try:
@@ -378,19 +527,20 @@ def mission_main(argv: List[str], read=input) -> int:
     if not goal:
         ui.error('What should the mission do? coded mission "add CSV export to reports"')
         return 2
-    cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
     asking = not args.yes and cli._stdin_is_tty()
 
     # 1. Everything that needs a person, before it starts.
+    trusted = bool(args.trust_project)
     try:
         cfg = load_config(cwd=cwd, config_path=args.config,
-                          trust_project=True if args.trust_project else None)
+                          trust_project=True if trusted else None)
         if cfg.untrusted_project:
             if asking and cli._ask_project_trust(cfg.untrusted_project, read=read):
-                cfg = load_config(cwd=cwd, config_path=args.config, trust_project=True)
+                trusted = True
             else:
                 cli._note_untrusted(cfg.untrusted_project, asked=asking)
-        model, pool = cli._select_model(cfg, args.model)
+        else:
+            trusted = True
     except ConfigError as exc:
         ui.error(str(exc))
         return 1
@@ -399,9 +549,9 @@ def mission_main(argv: List[str], read=input) -> int:
     if not args.no_checks:
         from coded.verify import VerifySettings, detect_checks
 
-        check_command = VerifySettings.from_config(cfg.verify).command or detect_checks(cwd)
-        if check_command and not VerifySettings.from_config(cfg.verify).command \
-                and not trust.check_approved(cwd, check_command):
+        configured = VerifySettings.from_config(cfg.verify).command
+        check_command = configured or detect_checks(cwd)
+        if check_command and not configured and not trust.check_approved(cwd, check_command):
             if asking and _yes(f"Run the project's checks after each change?\n  "
                                f"{check_command}\n(This runs the repository's own code.)", read):
                 trust.approve_check(cwd, check_command)
@@ -411,15 +561,13 @@ def mission_main(argv: List[str], read=input) -> int:
     if not allow_bash and asking:
         allow_bash = _yes("Let the mission run shell commands (tests, builds) without asking?"
                           + ("" if args.here else " It works in a separate worktree."), read)
-    if args.budget is not None:
-        cfg.max_cost = args.budget
-    elif cfg.max_cost is None:
+    if args.budget is None and cfg.max_cost is None:
         ui.warn("No budget set: the mission can spend until it is done. "
                 "Pass --budget <dollars> to cap it.")
 
     # 2. Where it works.
     branch = worktree = base = ""
-    root = cwd
+    root = main_root(cwd) if args.here else cwd
     work_dir = cwd
     if not args.here:
         from coded.worktree import WorktreeError, create_worktree
@@ -435,12 +583,43 @@ def mission_main(argv: List[str], read=input) -> int:
             (Path(work_dir) / ".coded").mkdir(exist_ok=True)
             shutil.copy2(memory, Path(work_dir) / ".coded" / "memory.json")
 
-    if check_command:
-        cfg.verify = dict(cfg.verify or {}, command=check_command)
+    from coded.sessions_store import SessionStore
+
+    state = {
+        "id": time.strftime("%Y%m%d-%H%M%S"), "goal": goal, "status": "running",
+        "session_id": SessionStore().new_id(), "model": args.model, "branch": branch,
+        "worktree": worktree, "work_dir": work_dir, "root": root, "base": base,
+        "check_command": check_command, "allow_bash": bool(allow_bash),
+        "yolo": bool(args.yolo), "budget": args.budget,
+        "max_restarts": DEFAULT_RESTARTS if args.max_restarts is None else args.max_restarts,
+        "trusted": trusted, "notify": args.notify, "notify_url": args.notify_url,
+        "seconds": 0.0, "runs": 0,
+    }
+    return _run(state, args, resume=False)
+
+
+def _run(state: Dict[str, Any], args, resume: bool) -> int:
+    """Build the agent from the mission's state, run it, report."""
+    from coded import cli, notify
+    from coded.config import ConfigError, load_config
+    from coded.permissions import PermissionManager
+
+    work_dir = state["work_dir"]
+    try:
+        cfg = load_config(cwd=work_dir, config_path=args.config,
+                          trust_project=True if state.get("trusted") else None)
+        model, pool = cli._select_model(cfg, state.get("model"))
+    except ConfigError as exc:
+        ui.error(str(exc))
+        return 1
+    if state.get("budget") is not None:
+        cfg.max_cost = state["budget"]
+    if state.get("check_command"):
+        cfg.verify = dict(cfg.verify or {}, command=state["check_command"])
     rules = {k: list(v) for k, v in (cfg.permissions or {}).items() if isinstance(v, list)}
-    if allow_bash:
+    if state.get("allow_bash"):
         rules["allow"] = list(rules.get("allow") or []) + ["bash", "bash_output", "kill_shell"]
-    permissions = PermissionManager(auto_approve=bool(args.yolo), rules=rules,
+    permissions = PermissionManager(auto_approve=bool(state.get("yolo")), rules=rules,
                                     injection_guard=cfg.injection_guard)
     permissions.accept_edits = True  # nobody is there to approve an edit
     mcp_manager, extra_tools = cli._init_mcp(cfg, disabled=args.no_mcp)
@@ -452,50 +631,69 @@ def mission_main(argv: List[str], read=input) -> int:
     agent = create_agent(model=model, config=cfg, cwd=work_dir, permissions=permissions,
                          extra_tools=extra_tools, skills=discover_skills(work_dir),
                          stream=False, verbose=True, pool=pool)
-    if args.model:
+    if state.get("model"):
         agent.set_routing(False)
     store = SessionStore()
-    session_id = store.new_id()
+    if resume:
+        loaded = store.load(state["session_id"])
+        if loaded is not None:
+            agent.session = loaded
+            agent.todos.items = [dict(t) for t in loaded.todos]
 
     def autosave() -> None:
         agent.session.todos = [dict(t) for t in agent.todos.items]
         try:
-            store.save(agent.session, session_id=session_id, cwd=work_dir, model=model.name)
+            store.save(agent.session, session_id=state["session_id"], cwd=work_dir,
+                       model=model.name)
         except OSError:
             pass
 
     agent.on_step = autosave
-    ui.info(f"Mission started{f' on branch {branch}' if branch else ''}. "
-            "You can walk away; Ctrl-C stops it.")
+    state["status"] = "running"
+    save_state(state)
+    where = f" on branch {state['branch']}" if state.get("branch") else ""
+    ui.info(f"Mission {state['id']} {'resumed' if resume else 'started'}{where}. "
+            "You can walk away; Ctrl-C stops it, `coded mission --resume` carries on.")
 
     def note(attempt: Attempt) -> None:
-        if attempt.outcome != "answered":
+        state["runs"] = int(state.get("runs") or 0) + 1
+        save_state(state)
+        if attempt.outcome == "planned":
+            ui.info(f"Planned: {attempt.detail}. Starting the work.")
+        elif attempt.outcome != "answered":
             ui.warn(f"Run {attempt.number} ended: {attempt.outcome.replace('_', ' ')}"
                     + (f" ({attempt.detail.splitlines()[0][:120]})" if attempt.detail else "")
                     + ".")
 
     # 3. The work, then the report.
     try:
-        result = run_mission(agent, goal, max_restarts=max(0, args.max_restarts),
-                             on_attempt=note)
+        result = run_mission(agent, state["goal"], max_restarts=max(0, state["max_restarts"]),
+                             resume=resume, on_attempt=note)
     finally:
         if mcp_manager is not None:
             mcp_manager.stop()
         autosave()
-    commit_note = commit_changes(worktree, goal) if branch else ""
-    report = build_report(goal=goal, result=result, agent=agent, branch=branch,
-                          worktree=worktree, root=root, base=base,
-                          check_command=check_command, commit_note=commit_note)
-    path = save_report(root, report)
+    result.seconds += float(state.get("seconds") or 0)
+    state["seconds"] = result.seconds
+    state["status"] = result.status
+    save_state(state)
+    branch, worktree = state.get("branch") or "", state.get("worktree") or ""
+    commit_note = commit_changes(worktree, state["goal"]) if branch else ""
+    report = build_report(goal=state["goal"], result=result, agent=agent, branch=branch,
+                          worktree=worktree, root=state["root"], base=state.get("base") or "",
+                          check_command=state.get("check_command"), commit_note=commit_note,
+                          mission_id=state["id"])
+    path = save_report(state["root"], report, stamp=state["id"])
     ui.rule("Mission report")
     ui.assistant_markdown(report)
     ui.info(f"Report saved to {path}")
 
     title = f"coded mission: {STATUS_TEXT.get(result.status, result.status)}"
-    summary = f"{' '.join(goal.split())[:80]} — report: {path}"
+    summary = f"{' '.join(state['goal'].split())[:80]} — report: {path}"
     # A mission's end is worth more than a bell: desktop unless notify is off.
-    mode = args.notify or ("off" if cfg.notify == "off" else "desktop")
+    mode = state.get("notify") or ("off" if cfg.notify == "off" else "desktop")
     notify.send(title, summary, mode)
-    if args.notify_url and not post_notification(args.notify_url, title, report):
-        ui.warn(f"Could not reach {args.notify_url} to send the notification.")
+    url = state.get("notify_url")
+    if url and not post_notification(url, title, report):
+        ui.warn(f"Could not reach {url} to send the notification.")
     return 0 if result.status == "done" else 1

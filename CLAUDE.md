@@ -674,12 +674,19 @@ config.example.json     # sample configuration
   `bash` allow rule); during it `permissions` has no prompt, so anything
   unapproved is refused and `ask_user` returns None. Edits run under
   `accept_edits`; the checks go in as `verify.command`. `run_mission` drives
-  `Agent.run` and decides from the run's events: an exception → backoff +
+  `Agent.run`; the first run is planning (`permissions.plan_mode` set by the
+  mission, not `set_mode`, so no model swap or plan prompt) until a todo list
+  exists (`PLAN_NUDGE` once, then `no_plan`). Then it decides from the run's
+  events: an exception → backoff +
   continue, `max_turns` → continue unless its `reason` says not progressing,
   open todos → continue, `over_budget()` → stop; all bounded by
   `max_restarts`. It works in `worktree.create_worktree` (the project's
   `.coded/memory.json` is copied in), commits there at the end, and writes the
-  report to `<repo>/.coded/missions/`. Never pushes or merges.
+  report to `<repo>/.coded/missions/<id>.md`. `<id>.json` is the mission state
+  (the up-front answers, session id, branch, worktree, status), saved at each
+  run; `--resume` reloads it (`main_root` finds the main checkout from inside
+  a worktree) and the session's todos, so it skips planning. Never pushes or
+  merges.
 - **Sessions survive a crash**: `Agent.on_step` (main agent only; the CLI sets
   it to autosave) runs after the user message, each tool step and the final
   answer, so a kill loses at most one step; the REPL also saves after Ctrl-C.

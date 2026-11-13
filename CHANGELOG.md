@@ -10,6 +10,10 @@
   `--budget`, commits its changes on the branch and ends with a Markdown report
   in `.coded/missions/` plus a desktop notification or a POST to `--notify-url`.
 - The `max_turns` event records why the run stopped (`reason`).
+- Missions plan first: the first run may only read and must write the task
+  list before any change is allowed. `coded mission --resume [id]` carries on
+  with a mission that was killed (sleep, restart, closed terminal) and still
+  writes the report; `coded mission --list` shows them.
 
 ### Changed
 - The REPL spinner cycles through coded's own words while the model works
