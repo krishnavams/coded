@@ -647,6 +647,9 @@ def _handle_review_command(argv: List[str]) -> int:
     p.add_argument("--fail-on", choices=["needs-changes", "never"], default="needs-changes",
                    help="Exit non-zero when the verdict is NEEDS_CHANGES (default) or never.")
     p.add_argument("--no-verdict", action="store_true", help="Skip the pass/fail verdict step.")
+    p.add_argument("--adversarial", action="store_true",
+                   help="Add a read-only adversarial phase that hunts for security holes, wrong "
+                        "assumptions and hidden bugs (findings need a file:line and a trigger).")
     p.add_argument("--base-url", help="Ad-hoc OpenAI-compatible base URL.")
     p.add_argument("--api-key", help="Ad-hoc API key.")
     p.add_argument("--model-name", help="Ad-hoc concrete model id.")
@@ -682,7 +685,10 @@ def _handle_review_command(argv: List[str]) -> int:
 
     target = " ".join(args.target).strip() or None
     ui.info("Running review pipeline (reviewer → qa → security)…")
-    report = run_review(agent, target, verbose=False)
+    from coded.review import REVIEW_PHASES
+
+    phases = REVIEW_PHASES + (["adversary"] if args.adversarial else [])
+    report = run_review(agent, target, phases=phases, verbose=False)
 
     verdict = None
     if not args.no_verdict:

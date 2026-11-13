@@ -507,6 +507,10 @@ class CodedTUI(App):
         if text.split()[0] == "/dashboard":
             self.push_screen(DashboardModal(self))
             return
+        if text.split()[0] == "/redteam":
+            self._mount(StatusNote("Adversarial review (read-only sub-agent)…"))
+            self._run_redteam(text[len("/redteam"):].strip() or None)
+            return
         if text.split()[0] == "/timeline":
             from coded import timeline
 
@@ -549,6 +553,13 @@ class CodedTUI(App):
             name = text.split()[0][1:]
             text = self.commands[name].expand(text[len(name) + 1:])
         self._start_turn(text)
+
+    @work(thread=True)
+    def _run_redteam(self, target) -> None:
+        from coded import adversary
+
+        report = adversary.run(self.agent, target)
+        self.call_from_thread(lambda: self._mount(Markdown(report, classes="assistant")))
 
     @work(thread=True, exclusive=True)
     def _run_agent(self, text: str) -> None:

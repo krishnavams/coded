@@ -132,6 +132,9 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: Dict[str, Tool] = {}
 
+    def unregister(self, name: str) -> None:
+        self._tools.pop(name, None)
+
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
 

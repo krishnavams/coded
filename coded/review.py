@@ -39,6 +39,17 @@ def run_review(agent, target: Optional[str] = None,
 
     sections: List[tuple] = []
     for name in phases:
+        if name == "adversary":
+            # Read-only, fresh context, findings without evidence dropped.
+            from coded import adversary
+
+            if verbose:
+                ui.rule("adversary phase")
+            report = adversary.run(agent, target)
+            sections.append((name, report))
+            if verbose:
+                ui.assistant_markdown(report)
+            continue
         skill = agent.skills.get(name)
         if skill is None:
             sections.append((name, f"(skipped: no '{name}' skill found)"))

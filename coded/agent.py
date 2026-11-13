@@ -1323,11 +1323,14 @@ class Agent:
 
     # -- sub-agents ---------------------------------------------------------
     def run_subagent(self, prompt: str, *, role: str = "subagent", cwd: Optional[str] = None,
-                     model: Optional[str] = None) -> str:
-        """Run a one-shot sub-agent (isolated context) and return its report."""
-        return self._make_subagent_runner(role)(prompt, cwd=cwd, model=model)
+                     model: Optional[str] = None, read_only: bool = False) -> str:
+        """Run a one-shot sub-agent (isolated context) and return its report.
+        `read_only` builds it without any file-changing tool (not just told not
+        to edit); bash stays, behind the normal permission prompt."""
+        return self._make_subagent_runner(role, read_only=read_only)(prompt, cwd=cwd, model=model)
 
-    def _make_subagent_runner(self, role: str = "subagent") -> Callable[..., str]:
+    def _make_subagent_runner(self, role: str = "subagent",
+                              read_only: bool = False) -> Callable[..., str]:
         def runner(prompt: str, cwd: Optional[str] = None, model: Optional[str] = None,
                    task: Optional[TaskEntry] = None) -> str:
             if model:
@@ -1345,6 +1348,11 @@ class Agent:
             sub_system = build_subagent_prompt(sub_cwd, sub_model)
             sub_session = Session(system_prompt=sub_system)
             sub_registry = build_registry(include_task=False)
+            if read_only:
+                from coded.permissions import EDIT_KEYS
+
+                for name in set(EDIT_KEYS) | {"delete", "move"}:
+                    sub_registry.unregister(name)
             if self.config.lsp:
                 from coded.tools.lsp import LspTool
 

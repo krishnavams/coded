@@ -153,6 +153,8 @@ SLASH_COMMANDS = {
     "/setup": "Configure models interactively (adds, tests, roles, pools, routing).",
     "/verify": "Run the project's checks (and the verify model) over the last change.",
     "/memory": "Project memory: /memory [list|search <words>|add <note>|forget <id>|clear].",
+    "/redteam": "Adversarial review: a read-only agent hunts for security holes, wrong "
+                "assumptions and hidden bugs: /redteam [target].",
     "/timeline": "Time-travel: list requests, replay one step by step (/timeline N), or go "
                  "back before one with a preview (/timeline restore N).",
     "/dashboard": "Command Center: agents, tasks, models, tool usage, errors and cost "
@@ -736,6 +738,14 @@ class Repl:
             self._cmd_memory(args)
         elif cmd == "/heal":
             self._cmd_heal(args)
+        elif cmd == "/redteam":
+            from coded import adversary
+
+            ui.info("Adversarial review (read-only sub-agent)…")
+            try:
+                ui.assistant_markdown(adversary.run(self.agent, " ".join(args).strip() or None))
+            except KeyboardInterrupt:
+                ui.warn("Review interrupted.")
         elif cmd == "/timeline":
             self._cmd_timeline(args)
         elif cmd == "/dashboard":
@@ -1373,10 +1383,12 @@ class Repl:
             ui.error("Review roles unavailable (skills disabled?). Expected: "
                      + ", ".join(REVIEW_PHASES))
             return
-        target = " ".join(args).strip() or None
-        ui.info("Running review pipeline: " + " → ".join(REVIEW_PHASES))
+        adversarial = "--adversarial" in args
+        target = " ".join(a for a in args if a != "--adversarial").strip() or None
+        phases = REVIEW_PHASES + (["adversary"] if adversarial else [])
+        ui.info("Running review pipeline: " + " → ".join(phases))
         try:
-            run_review(self.agent, target, verbose=True)
+            run_review(self.agent, target, phases=phases, verbose=True)
         except KeyboardInterrupt:
             ui.warn("Review interrupted.")
 

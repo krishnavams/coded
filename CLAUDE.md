@@ -64,8 +64,9 @@ coded/
 ├── ui.py               # rich-based rendering helpers (single Console)
 ├── skills.py           # skill discovery, frontmatter parsing, prompt section
 ├── review.py           # /review pipeline: reviewer→qa→security sub-agents
+├── adversary.py        # /redteam, review --adversarial: read-only critic, evidence-checked findings
 ├── builtin_skills/     # bundled roles: planner, reviewer, debugger (bodies from prompt files), qa,
-│                       # security, refactor
+│                       # security, refactor, adversary
 ├── compaction.py       # context auto-compaction (summarize old messages)
 ├── sessions_store.py   # persist/restore sessions (--continue/--resume)
 ├── checkpoints.py      # CheckpointManager: per-turn file snapshots for /undo and /rewind
@@ -138,6 +139,7 @@ tests/
 ├── test_events.py      # event log: tool outcomes, denials, timings, saved, bounded, thread-safe
 ├── test_dashboard.py   # /dashboard render, REPL + mid-turn, TUI modal
 ├── test_timeline.py    # timeline turns, per-turn file changes, restore preview + rewind, saved
+├── test_adversary.py   # findings need file:line + trigger, read-only tools, model note, opt-in
 ├── test_session_autosave.py  # per-step autosave, atomic save, orphan tool calls, todos
 ├── test_memory_bounds.py  # bounded output/file reads, timeout kills the process group
 ├── test_compaction.py  # context compaction trigger + tail preservation
@@ -607,6 +609,15 @@ config.example.json     # sample configuration
   previews (`restore_preview`), confirms and then calls `/rewind` — never a
   second undo path. Always say bash edits are not snapshotted and hidden
   reasoning is not stored.
+- **Adversarial review** (`adversary.py`, `/redteam [target]`, `/review
+  --adversarial`, `coded review --adversarial`): the built-in `adversary`
+  skill in `run_subagent(read_only=True)` — the registry is built without
+  `EDIT_KEYS` + delete/move (never by toggling the shared `plan_mode`); bash
+  stays behind the normal prompt. Fresh context with only the target; runs on
+  `model_roles.review` and says when that is the main model. `parse` keeps a
+  finding only with a known severity, a `file:line` that exists and a concrete
+  trigger, and reports how many it dropped. Opt-in: `REVIEW_PHASES` and the CI
+  exit codes are unchanged without the flag.
 - **Sessions survive a crash**: `Agent.on_step` (main agent only; the CLI sets
   it to autosave) runs after the user message, each tool step and the final
   answer, so a kill loses at most one step; the REPL also saves after Ctrl-C.
