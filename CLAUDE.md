@@ -606,7 +606,9 @@ config.example.json     # sample configuration
   (`typeahead.CTRL_B/O/T`) go to `TypeAhead(keys=…)`; the POSIX reader clears
   IEXTEN so ^O/^T reach it. **Ctrl+O** flips `ui.set_expanded`: `ui.tool_result`
   then prints whole results and `show_last_cut` re-prints the newest shortened
-  one; `tool_result_text`'s defaults are unchanged (the TUI shares it).
+  one. Folded output is 3 lines (`_MAX_RESULT_LINES`), blank runs squeezed and
+  long lines cut to one terminal row; the TUI's `ToolResult` folds the same way
+  and a click (or Ctrl+O, `action_toggle_output`, for all) expands it.
 - **Queued messages** (`TypeAhead._queued`, a deque): **↑** mid-turn
   (`typeahead.UP`, from `ESC [A`/`ESC OA` or Windows `\xe0H`) runs
   `edit_last`, moving the newest one into the line being typed; Enter queues it
