@@ -579,7 +579,10 @@ def _handle_commit_command(argv: List[str]) -> int:
 
 
 def _handle_sessions_command(argv: List[str]) -> int:
-    p = argparse.ArgumentParser(prog="coded sessions", description="List saved sessions.")
+    if argv[:1] == ["show"]:
+        return _sessions_show(argv[1:])
+    p = argparse.ArgumentParser(prog="coded sessions", description="List saved sessions "
+                                "(coded sessions show <id> [N] replays one).")
     p.add_argument("--cwd", help="Only sessions for this directory.")
     args = p.parse_args(argv)
     from coded.sessions_store import SessionStore
@@ -595,6 +598,36 @@ def _handle_sessions_command(argv: List[str]) -> int:
         when = _dt.datetime.fromtimestamp(m.updated).strftime("%Y-%m-%d %H:%M")
         print(f"{m.id}  {when}  {m.model:<14} {m.messages:>3} msgs  {m.cwd}")
     ui.info("Resume with: coded --resume <id>  (or --continue for the latest here)")
+    return 0
+
+
+def _sessions_show(argv: List[str]) -> int:
+    """coded sessions show <id> [N]: a saved session's timeline (view only)."""
+    from coded import timeline
+    from coded.sessions_store import SessionStore
+
+    if not argv:
+        ui.error("Usage: coded sessions show <id> [request number]")
+        return 2
+    store = SessionStore()
+    data = store._read(store.dir / f"{argv[0]}.json")
+    session = store.load(argv[0])
+    if session is None or data is None:
+        ui.error(f"No saved session '{argv[0]}'. List them with: coded sessions")
+        return 1
+    turns = timeline.build(session.messages, session.events)
+    cwd = data.get("cwd") or os.getcwd()
+    if len(argv) > 1:
+        try:
+            turn = turns[int(argv[1]) - 1]
+        except (ValueError, IndexError):
+            ui.error(f"Choose a request between 1 and {len(turns)}.")
+            return 2
+        ui.console.print(timeline.render_turn(turn, None, cwd))
+        ui.info("(A saved session keeps the conversation; its file states are only in "
+                "that project's checkpoints, so files are not shown here.)")
+        return 0
+    ui.console.print(timeline.render_list(turns))
     return 0
 
 

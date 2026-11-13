@@ -153,6 +153,8 @@ SLASH_COMMANDS = {
     "/setup": "Configure models interactively (adds, tests, roles, pools, routing).",
     "/verify": "Run the project's checks (and the verify model) over the last change.",
     "/memory": "Project memory: /memory [list|search <words>|add <note>|forget <id>|clear].",
+    "/timeline": "Time-travel: list requests, replay one step by step (/timeline N), or go "
+                 "back before one with a preview (/timeline restore N).",
     "/dashboard": "Command Center: agents, tasks, models, tool usage, errors and cost "
                   "(works mid-turn).",
     "/refactor": "Find code-quality hot spots and improve a few safely: /refactor [path].",
@@ -734,6 +736,8 @@ class Repl:
             self._cmd_memory(args)
         elif cmd == "/heal":
             self._cmd_heal(args)
+        elif cmd == "/timeline":
+            self._cmd_timeline(args)
         elif cmd == "/dashboard":
             from coded.dashboard import render
 
@@ -1064,6 +1068,39 @@ class Repl:
             return
         ui.success(summary)
         self._prefill = text  # edit it and send again, or clear it
+
+    def _cmd_timeline(self, args: List[str]) -> None:
+        """/timeline, /timeline N, /timeline restore N."""
+        from coded import timeline
+
+        turns = timeline.build_for(self.agent)
+        if not args:
+            ui.console.print(timeline.render_list(turns))
+            return
+        restore = args[0] == "restore"
+        try:
+            number = int(args[1] if restore else args[0])
+            turn = turns[number - 1]
+            if number < 1:
+                raise IndexError
+        except (ValueError, IndexError):
+            ui.warn(f"Usage: /timeline [N | restore N] with N between 1 and {len(turns)}."
+                    if turns else "Nothing in the timeline yet.")
+            return
+        if not restore:
+            ui.console.print(timeline.render_turn(turn, self.agent.checkpoints, self.agent.cwd))
+            return
+        preview = timeline.restore_preview(self.agent.checkpoints, turn.checkpoint)
+        ui.console.print(timeline.render_restore(number, preview, self.agent.cwd))
+        later = len(turns) - number + 1
+        answer = self.agent.permissions.ask(
+            f"Go back to before request #{number}?",
+            f"Drops {later} request(s) from the conversation"
+            + (f" and restores {len(preview)} file(s) as shown." if preview else "."))
+        if (answer or "").strip().lower() not in ("y", "yes", "a", "always"):
+            ui.info("Nothing changed.")
+            return
+        self._cmd_rewind([str(number)])
 
     def _cmd_budget(self, args: List[str]) -> None:
         spent = self.agent.session.estimated_cost(self.agent.model)

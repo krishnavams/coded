@@ -1067,7 +1067,7 @@ class Agent:
         start = _time.monotonic()
         content, is_error, args = self._run_tool_inner(tc, display)
         flags = classify(content) if is_error else {"denied": False, "outside": False}
-        event = {"name": tc.name, "ms": round((_time.monotonic() - start) * 1000),
+        event = {"name": tc.name, "id": tc.id, "ms": round((_time.monotonic() - start) * 1000),
                  "error": bool(is_error), **flags}
         if is_error:
             event["detail"] = (content or "").strip().splitlines()[0] if content else ""

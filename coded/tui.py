@@ -507,6 +507,18 @@ class CodedTUI(App):
         if text.split()[0] == "/dashboard":
             self.push_screen(DashboardModal(self))
             return
+        if text.split()[0] == "/timeline":
+            from coded import timeline
+
+            parts = text.split()
+            turns = timeline.build_for(self.agent)
+            if len(parts) > 1 and parts[1].isdigit() and 1 <= int(parts[1]) <= len(turns):
+                view = timeline.render_turn(turns[int(parts[1]) - 1], self.agent.checkpoints,
+                                            self.agent.cwd)
+            else:
+                view = timeline.render_list(turns)
+            self._mount(Static(view, classes="statusnote"))
+            return
         if text.split()[0] == "/refactor":
             from coded.codehealth import refactor_prompt
 

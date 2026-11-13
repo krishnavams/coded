@@ -60,6 +60,7 @@ coded/
 ├── tui.py              # full-screen Textual app (coded --tui), optional
 ├── sidebar.py          # the TUI's right panel: session, changed files, queue, sub-agents, shells
 ├── dashboard.py        # /dashboard Command Center: agents, models, tools, checks, problems
+├── timeline.py         # /timeline time-travel: turns, steps + outcomes, file states, restore preview
 ├── ui.py               # rich-based rendering helpers (single Console)
 ├── skills.py           # skill discovery, frontmatter parsing, prompt section
 ├── review.py           # /review pipeline: reviewer→qa→security sub-agents
@@ -136,6 +137,7 @@ tests/
 ├── test_trust.py       # project trust gate: what applies untrusted, remembered fingerprint, CLI
 ├── test_events.py      # event log: tool outcomes, denials, timings, saved, bounded, thread-safe
 ├── test_dashboard.py   # /dashboard render, REPL + mid-turn, TUI modal
+├── test_timeline.py    # timeline turns, per-turn file changes, restore preview + rewind, saved
 ├── test_session_autosave.py  # per-step autosave, atomic save, orphan tool calls, todos
 ├── test_memory_bounds.py  # bounded output/file reads, timeout kills the process group
 ├── test_compaction.py  # context compaction trigger + tail preservation
@@ -596,6 +598,15 @@ config.example.json     # sample configuration
   snapshot, also mid-turn via `TypeAhead(intercept=…)` (read-only); TUI:
   `DashboardModal`, refreshed every second, opened even while busy. Don't name
   a Screen method `_render` — it shadows Textual's own.
+- **Time-travel** (`timeline.py`, `/timeline [N | restore N]`, `coded sessions
+  show <id> [N]`): turns from `turn_history()` marks (live) or typed user
+  messages (saved; coded's own `[verify]`/`[memory]` feedback is skipped);
+  each step joins its tool result and its event (by tool-call `id`) for
+  outcome and timing. A file's state *after* turn k = the backup of the next
+  later checkpoint group that touched it, else the file on disk. Restore only
+  previews (`restore_preview`), confirms and then calls `/rewind` — never a
+  second undo path. Always say bash edits are not snapshotted and hidden
+  reasoning is not stored.
 - **Sessions survive a crash**: `Agent.on_step` (main agent only; the CLI sets
   it to autosave) runs after the user message, each tool step and the final
   answer, so a kill loses at most one step; the REPL also saves after Ctrl-C.
