@@ -38,6 +38,8 @@ coded/
 ├── session.py          # Session: message history + usage/cost tracking
 ├── permissions.py      # PermissionManager: approve/deny/always gate, accept-edits mode
 ├── notify.py           # Notifier: bell/desktop notification when a long turn ends or asks
+├── tasks.py            # TaskManager: running sub-agents (progress, background, stop)
+├── btw.py              # /btw: side question over a copy of the conversation (no tools)
 ├── prompts.py          # assembles main/sub-agent prompts + AGENTS.md/CODED.md/CLAUDE.md hierarchy
 ├── prompt_files.py     # prompt-file loading/overrides/profiles + `coded prompts` CLI
 ├── limits.py           # per-model limits scaled by context_window; result/step caps
@@ -51,7 +53,7 @@ coded/
 │                       # compact/ and full/ hold per-profile variants
 ├── repl.py             # interactive REPL and slash commands
 ├── tui.py              # full-screen Textual app (coded --tui), optional
-├── sidebar.py          # the TUI's right panel: session, changed files, queue, shells
+├── sidebar.py          # the TUI's right panel: session, changed files, queue, sub-agents, shells
 ├── ui.py               # rich-based rendering helpers (single Console)
 ├── skills.py           # skill discovery, frontmatter parsing, prompt section
 ├── review.py           # /review pipeline: reviewer→qa→security sub-agents
@@ -110,7 +112,7 @@ coded/
     ├── git.py          # git (read-only free, mutations gated)
     ├── github.py       # github (PR list/get/create, comment) via GITHUB_TOKEN
     ├── web.py          # web_search, web_fetch
-    ├── task.py         # task (sub-agent delegation)
+    ├── task.py         # task (sub-agent delegation, run_in_background), task_output, task_stop
     ├── skill.py        # skill (loads a SKILL.md body into context)
     └── mcp_tool.py     # wraps an MCP server tool; list_mcp_resources, read_mcp_resource
 tests/
@@ -119,6 +121,11 @@ tests/
 ├── test_tui.py         # Textual TUI via Pilot (turn, permission modal, clear)
 ├── test_sidebar.py     # the side panel: file counts, sections, width, Ctrl+B
 ├── test_review.py      # /review pipeline + coded review verdict/exit code
+├── test_tasks.py       # sub-agent tasks: activity, background, Ctrl+B, /tasks, Ctrl+O
+├── test_queue_edit.py  # ↑ edits the newest queued message (REPL reader, dock, TUI)
+├── test_btw.py         # /btw: session untouched, answered mid-turn, REPL + TUI
+├── test_session_autosave.py  # per-step autosave, atomic save, orphan tool calls, todos
+├── test_memory_bounds.py  # bounded output/file reads, timeout kills the process group
 ├── test_compaction.py  # context compaction trigger + tail preservation
 ├── test_permissions_sessions.py  # allow/deny rules, diff preview, sessions, json
 ├── test_checkpoints.py # checkpoint/undo + move/delete
@@ -322,6 +329,9 @@ config.example.json     # sample configuration
 - **Modes** (`Agent.permission_mode`/`cycle_mode`, Shift+Tab): default →
   accept-edits (`PermissionManager.accept_edits`: `EDIT_KEYS` run unasked; deny
   rules, plan mode and the strict injection guard still apply) → plan.
+  Mid-turn Shift+Tab (`typeahead.SHIFT_TAB`, `ESC [Z`; TUI while busy) calls
+  `Agent.toggle_accept_edits`: accept-edits on/off only, never plan (that swaps
+  the model, so it changes between turns). `ui.TurnDock(get_mode=…)` shows it.
   `Config.max_cost` is checked by `Agent.over_budget()` at the top of every
   loop step (main agent only), so a turn stops cleanly with a note.
 - **Per-call permission** (git/github): a tool that is safe for some inputs and
@@ -480,6 +490,22 @@ config.example.json     # sample configuration
   compaction follow it via `_sized_model`, shrinking history when it is
   smaller. Use `_sized_model`, not `self.model`, for anything window-dependent
   in the loop. `Config.model_warnings()` reports unknown aliases.
+- **Bounded memory**: never hold a command's output or a whole file of unknown
+  size. `shells.run` spools output to temp files and keeps the head and tail
+  past `max_bytes` (`MAX_CAPTURE_BYTES`); `grep` skips files over
+  `GREP_MAX_FILE_BYTES`; `read` streams text over `READ_STREAM_BYTES`;
+  background reads return at most `BG_READ_MAX_BYTES` of the newest output
+  (`tests/test_memory_bounds.py`). Unbounded reads let a sub-agent grow coded
+  until the OS SIGKILLed it.
+- **Sessions survive a crash**: `Agent.on_step` (main agent only; the CLI sets
+  it to autosave) runs after the user message, each tool step and the final
+  answer, so a kill loses at most one step; the REPL also saves after Ctrl-C.
+  `SessionStore.save` writes atomically (temp + `os.replace`). The task list
+  rides along as `Session.todos`: the CLI's autosave copies `agent.todos.items`
+  into it, and `--continue`/`--resume` put it back into `agent.todos`.
+  `sessions_store.close_tool_calls` gives unanswered tool calls an
+  `INTERRUPTED_RESULT`: applied on load and at the start of every
+  `Agent.run`, since endpoints reject a history with an orphan tool call.
 - **Cross-platform**: anything that runs a command goes through `shells.run` /
   `command_argv` (POSIX keeps the historical `shell=True` string path; Windows
   gets an argv list for the resolved shell) and `popen_kwargs`/`kill_tree` for
@@ -525,7 +551,11 @@ config.example.json     # sample configuration
   through `ui.todo_progress`/`todo_bar`/`todo_title`/`current_todo` (panel, REPL
   toolbar and TUI status line all use them), and in the REPL `ui.todo_dock` pins the
   unfinished list under the spinner and the streaming view (transient, so the
-  final answer frame drops it), and input typed mid-turn is queued
+  final answer frame drops it), and input typed mid-turn is queued. During a
+  REPL turn `ui.TurnDock` is the one rich Live (spinner, tasks, an input box
+  showing `TypeAhead.typing`); the key reader's echo is off meanwhile, and
+  `ui.thinking()`/`_call_streaming` draw into the dock (`ui.active_dock()`)
+  instead of opening their own Live — rich allows only one. Input typed mid-turn is queued
   by `typeahead.TypeAhead` (REPL) or `CodedTUI._queued` and run as the next
   message. The type-ahead reader owns stdin during a turn, so a prompt that
   needs an answer asks it via `TypeAhead.ask()` instead of reading stdin itself.
@@ -536,6 +566,42 @@ config.example.json     # sample configuration
   keys) are dropped, and `TypeAhead.stop()` must restore the terminal (`close()`).
   Esc stops the turn by sending this process SIGINT, so it behaves exactly as
   Ctrl-C.
+- **Tasks** (`tasks.py`, `Agent.tasks`, `ctx.extra["tasks"]`): every sub-agent
+  run is a `TaskEntry`; the sub-agent's `on_activity` (fired in
+  `_show_tool_call`) records its steps. `task` with `run_in_background` runs
+  `_work` on a thread and returns at once; with `TaskManager.can_detach` (set by
+  the REPL for the turn when the type-ahead reader runs) a foreground task also
+  runs on a worker so **Ctrl+B** (`entry.detach`) can return early, and Esc/
+  Ctrl-C stops it. A background thread calls `permissions.set_background`, so
+  `request` denies instead of prompting and `ask`/`question` return None
+  (the same once a task is stopped: its thread may still be finishing a step).
+  Usage is added under `session.USAGE_LOCK` (inside `Session.record_usage`).
+  Finished reports reach the agent as one user message (`report_message`): at
+  the top of each step (`_deliver_background`), before a final answer
+  (`_background_pending`, which also waits when `wait_for_background` — true
+  except in the REPL), or by the REPL waking an idle prompt (`_WAKE` via
+  `tasks.on_finish`). The REPL shows tasks in `ui.TurnDock`
+  (`ui.running_tasks`), the status bar and `/tasks`; the TUI in the side
+  panel's "Sub-agents" section (`sidebar.render`, refreshed on `task_*`
+  events and by `_tick` while one runs) and a `task_end` note in the
+  transcript. ("Tasks" in the sidebar is the todo list.) Control keys mid-turn
+  (`typeahead.CTRL_B/O/T`) go to `TypeAhead(keys=…)`; the POSIX reader clears
+  IEXTEN so ^O/^T reach it. **Ctrl+O** flips `ui.set_expanded`: `ui.tool_result`
+  then prints whole results and `show_last_cut` re-prints the newest shortened
+  one; `tool_result_text`'s defaults are unchanged (the TUI shares it).
+- **Queued messages** (`TypeAhead._queued`, a deque): **↑** mid-turn
+  (`typeahead.UP`, from `ESC [A`/`ESC OA` or Windows `\xe0H`) runs
+  `edit_last`, moving the newest one into the line being typed; Enter queues it
+  again. Messages left from earlier turns are requeued into each new turn's
+  reader so they stay visible (`ui.queued_list` in the dock) and editable. TUI:
+  the `up` binding (`action_edit_queued`) does the same when the prompt has focus.
+- **`/btw`** (`btw.py`): one `LLMClient.complete` on a fresh client
+  (`agent._make_llm`) over `side_messages` — a copy of the session with an
+  in-flight tool step dropped and orphans closed, plus `BTW_INSTRUCTION` and the
+  question — with the agent's normal tool schema (valid history, same cached
+  prefix); a reply that is only a tool call is asked again once with no tools. Never appended to the session; usage is
+  recorded. Mid-turn it is taken out of the queue by `TypeAhead(intercept=…)`
+  (REPL) or before the busy check (TUI) and answered on its own thread.
 - **`@path` mentions** (`mentions.py`) are expanded in `Agent.run` (main agent
   only) so every front-end gets them: a mention starts the message or follows
   whitespace and must name something that exists (cwd or `add_dirs`), so emails
@@ -623,6 +689,13 @@ one (e.g. `ruff`, `black`), record the commands here.
 - Clear, descriptive commit messages. Do not open a pull request unless asked.
 - Never commit real API keys. Project-level config lives in `./.coded/`, which
   is gitignored.
+
+## Releasing
+
+Bump the version in `pyproject.toml` and `coded/__init__.py` (a test keeps them
+equal), add a `## <version>` section to `CHANGELOG.md`, merge to main, then push
+a tag `v<version>` on main. `.github/workflows/release.yml` checks the tag
+against the package version and creates the GitHub Release from that section.
 
 ## Keeping this file accurate
 

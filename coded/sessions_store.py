@@ -40,6 +40,41 @@ class SessionMeta:
     messages: int
 
 
+INTERRUPTED_RESULT = "[interrupted: coded stopped before this tool call finished]"
+
+
+def close_tool_calls(messages: list) -> list:
+    """Give every assistant tool call a result, so the history is valid again.
+
+    A session saved while a step was in flight (or after Ctrl-C mid-tool) can
+    end with tool calls that have no `tool` message; endpoints reject such a
+    history, which would make a resumed session fail on its first request.
+    """
+    out: list = []
+    pending: list = []
+
+    def flush() -> None:
+        for call_id in pending:
+            out.append({"role": "tool", "tool_call_id": call_id,
+                        "content": INTERRUPTED_RESULT})
+        pending.clear()
+
+    for msg in messages:
+        role = msg.get("role") if isinstance(msg, dict) else None
+        if role == "tool":
+            if msg.get("tool_call_id") in pending:
+                pending.remove(msg.get("tool_call_id"))
+            out.append(msg)
+            continue
+        flush()
+        out.append(msg)
+        if role == "assistant":
+            pending.extend(tc.get("id") for tc in msg.get("tool_calls") or []
+                           if isinstance(tc, dict) and tc.get("id"))
+    flush()
+    return out
+
+
 class SessionStore:
     def __init__(self) -> None:
         self.dir = sessions_dir()
@@ -61,10 +96,16 @@ class SessionStore:
                 "cached_tokens": session.total_usage.cached_tokens,
                 "cost": session.cost,
             },
+            "todos": [dict(t) for t in session.todos],
             "system_prompt": session.system_prompt,
             "messages": session.messages,
         }
-        (self.dir / f"{session_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+        # Atomic: saved after every step, so a kill mid-write must not leave a
+        # truncated file in place of the last good one.
+        path = self.dir / f"{session_id}.json"
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp, path)
         return session_id
 
     # -- load ---------------------------------------------------------------
@@ -80,7 +121,7 @@ class SessionStore:
 
     def _to_session(self, data: dict) -> Session:
         s = Session(system_prompt=data.get("system_prompt", ""))
-        s.messages = data.get("messages") or s.messages
+        s.messages = close_tool_calls(data.get("messages") or s.messages)
         u = data.get("usage") or {}
         s.total_usage = Usage(u.get("prompt_tokens", 0), u.get("completion_tokens", 0),
                               u.get("cached_tokens", 0))
@@ -88,6 +129,8 @@ class SessionStore:
         s._priced = bool(u.get("cost"))
         s.turns = data.get("turns", 0)
         s.compactions = data.get("compactions", 0)
+        s.todos = [dict(t) for t in data.get("todos") or []
+                   if isinstance(t, dict) and t.get("content")]
         return s
 
     def latest(self, cwd: Optional[str] = None) -> Optional[str]:

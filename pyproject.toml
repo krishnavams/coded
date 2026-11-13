@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "coded"
-version = "0.1.0"
+version = "0.2.0"
 description = "A Claude Code-style terminal coding agent that works with any OpenAI-compatible model."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -48,5 +48,8 @@ coded = ["builtin_skills/*/SKILL.md", "builtin_prompts/*.md", "builtin_prompts/*
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Tests share helpers (`from tests.test_agent_e2e import …`), so the repo root
+# must be importable under plain `pytest`, not only `python -m pytest`.
+pythonpath = ["."]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

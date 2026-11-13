@@ -21,7 +21,8 @@ from coded.llm import Completion, LLMClient, is_context_overflow
 from coded.permissions import Decision, PermissionManager
 from coded.prompt_files import load_prompt
 from coded.prompts import _dir_instruction_files, build_subagent_prompt, build_system_prompt, read_instructions
-from coded.session import Session
+from coded.session import USAGE_LOCK, Session
+from coded.tasks import TaskEntry, TaskManager, report_message
 from coded.telemetry import Tracer, run_in_context
 from coded.tools import ToolContext, ToolRegistry, build_registry
 from coded.tools.todo import PLAN_MODE_REMINDER, TodoStore
@@ -91,6 +92,14 @@ class Agent:
         self.shells = shells or BackgroundShells()
         self.hooks = HookRunner(config.hooks, cwd)
         self.todos = TodoStore(on_change=self._show_todos)
+        # Sub-agents started by the task tool (shown and controlled by the REPL).
+        self.tasks = TaskManager()
+        # Each tool call this agent makes, as (name, args): a parent watching
+        # this sub-agent records them as the task's activity.
+        self.on_activity: Optional[Callable[[str, dict], None]] = None
+        # With nobody to wake the agent later (--print, TUI, ACP), a final
+        # answer waits for background tasks; the REPL wakes it instead.
+        self.wait_for_background = True
         self.mode = "default"
         self.limits: Limits = limits_for(model)
         self._sized_model: ModelConfig = model  # whose window limits/compaction target
@@ -112,6 +121,9 @@ class Agent:
         # (assistant/reasoning deltas, tool calls/results, diffs, todos, status)
         # instead of printing via `ui` — used by the TUI and ACP server. See _emit().
         self.on_event: Optional[Callable[[dict], None]] = None
+        # Called after each step of a main-agent turn (the CLI autosaves the
+        # session), so a crash or kill mid-turn loses at most one step.
+        self.on_step: Optional[Callable[[], None]] = None
         # One entry per request the user sent: its user message (by identity),
         # what was typed and the checkpoint group it opened (for /rewind).
         self._turn_marks: List[Dict[str, Any]] = []
@@ -200,6 +212,11 @@ class Agent:
         self._last_request = str(user_message)
         if self.checkpoints is not None:
             self.checkpoints.begin(str(user_message)[:60])
+        # A turn interrupted mid-tool left calls without results; endpoints
+        # reject that history, so close them before adding the next message.
+        from coded.sessions_store import close_tool_calls
+
+        self.session.messages[:] = close_tool_calls(self.session.messages)
         if images:
             self.session.add_user_multimodal(text, images)
         else:
@@ -211,6 +228,7 @@ class Agent:
                 "text": route_hint if route_hint is not None else str(user_message),
                 "checkpoint": current.id if current is not None else None,
             })
+            self._step_done()
         with self.tracer.span("turn", model=self.model.name, subagent=self.is_subagent,
                               cwd=self.cwd) as attrs:
             result = self._loop()
@@ -297,6 +315,15 @@ class Agent:
             self.set_mode("default", announce=False)
         return self.permission_mode
 
+    def toggle_accept_edits(self) -> Optional[bool]:
+        """Shift+Tab while a turn runs: accept edits on/off (the new state). It
+        applies from the next edit on. None in plan mode, which only changes
+        between turns (it swaps the model and the reminder)."""
+        if self.mode == "plan":
+            return None
+        self.permissions.accept_edits = not self.permissions.accept_edits
+        return self.permissions.accept_edits
+
     def over_budget(self) -> Optional[str]:
         """A message when the session's cost has passed `max_cost`, else None."""
         limit = self.config.max_cost
@@ -358,6 +385,44 @@ class Agent:
             self._status_note(note)
 
     # -- core loop ----------------------------------------------------------
+    def _deliver_background(self) -> None:
+        """Hand finished background tasks' reports to the agent (main agent only)."""
+        if self.is_subagent:
+            return
+        done = self.tasks.take_finished()
+        if not done:
+            return
+        for t in done:
+            self._show_task_done(t)
+        self.session.add_user(report_message(done))
+
+    def _background_pending(self) -> bool:
+        """Before ending a turn: is a background report waiting, or (when nobody
+        can wake the agent later) still being produced? Waits for the latter."""
+        if self.is_subagent:
+            return False
+        if self.tasks.has_undelivered():
+            return True
+        if not self.wait_for_background or not self.tasks.running():
+            return False
+        self._status_note(f"Waiting for {len(self.tasks.running())} background task(s)…")
+        while self.tasks.running() and not self._interrupted:
+            for t in self.tasks.running():
+                t.done.wait(0.2)
+        return self.tasks.has_undelivered()
+
+    def _show_task_done(self, t: TaskEntry) -> None:
+        text = f"Background task {t.id} {t.status}: {t.label} ({t.summary()})"
+        if not self._emit("status", text=text) and self.verbose:
+            ui.task_done(t)
+
+    def _step_done(self) -> None:
+        if self.on_step is not None and not self.is_subagent:
+            try:
+                self.on_step()
+            except Exception:  # noqa: BLE001 - saving must never break a turn
+                pass
+
     def _loop(self) -> str:
         final_text = ""
         stop_continuations = 0
@@ -371,6 +436,7 @@ class Agent:
                 self._status_note(stop)
                 final_text = final_text or stop
                 break
+            self._deliver_background()
             self.session.turns += 1
             self._sync_sizing()
             self._maybe_compact()
@@ -404,7 +470,10 @@ class Agent:
             self.session.add_assistant(completion.content, completion.tool_calls)
 
             if not completion.tool_calls:
+                self._step_done()
                 final_text = completion.content
+                if self._background_pending():
+                    continue  # a background task's report arrived: let the agent see it
                 feedback = self._verify_turn(final_text)
                 if feedback:
                     self.session.add_user(feedback)
@@ -433,6 +502,7 @@ class Agent:
                 paths, self._tool_images[:] = list(self._tool_images), []
                 self.session.add_user_multimodal(
                     _TOOL_IMAGES + ", ".join(ui._rel(p, self.cwd) for p in paths), paths)
+            self._step_done()
         else:
             if not self._emit("status", text=f"Reached max turns ({self.max_turns})."):
                 if self.verbose:
@@ -761,10 +831,14 @@ class Agent:
         buffer: List[str] = []
         thoughts: List[str] = []
         show_reasoning = self.config.show_reasoning
-        live = Live(console=ui.console, refresh_per_second=12, transient=False)
+        # The REPL's turn dock (spinner, tasks, input box) owns the one live
+        # region: stream into it, then print the final answer above it.
+        turn_dock = ui.active_dock()
+        live = None if turn_dock else Live(console=ui.console, refresh_per_second=12,
+                                           transient=False)
         # The task list stays docked at the bottom while the answer streams;
         # the final frame drops it, so only the answer stays in the scrollback.
-        tasks = self.todos.items if self.verbose else []
+        tasks = self.todos.items if self.verbose and not turn_dock else []
         dock = ui.todo_dock(tasks)
         status = ui.thinking(tasks=tasks)
         status.start()
@@ -784,20 +858,27 @@ class Agent:
             nonlocal started
             if not started:
                 status.stop()
-                live.start()
+                if live is not None:
+                    live.start()
                 started = True
+
+        def show() -> None:
+            if live is not None:
+                live.update(render())
+            else:
+                turn_dock.set_body(render())
 
         def on_text(chunk: str) -> None:
             begin()
             buffer.append(chunk)
-            live.update(render())
+            show()
 
         def on_reasoning(chunk: str) -> None:
             if not show_reasoning:
                 return
             begin()
             thoughts.append(chunk)
-            live.update(render())
+            show()
 
         try:
             completion = self.llm.complete(
@@ -805,15 +886,23 @@ class Agent:
                 on_reasoning=on_reasoning,
             )
         finally:
-            if started:
+            if started and live is not None:
                 live.update(render(final=True))
                 live.stop()
+            elif started:
+                turn_dock.set_body(None)
+                ui.console.print(render(final=True))
             else:
                 status.stop()
         return completion
 
     # -- display routing (ui vs. event sink) --------------------------------
     def _show_tool_call(self, name: str, args: dict, call_id: str = "") -> None:
+        if self.on_activity is not None:
+            try:
+                self.on_activity(name, args)
+            except Exception:  # noqa: BLE001 - display only
+                pass
         if not self._emit("tool_call", name=name, args=args, id=call_id) and self.verbose:
             ui.tool_call(name, args, cwd=self.cwd)
 
@@ -845,6 +934,7 @@ class Agent:
             checkpoints=self.checkpoints,
             extra={
                 "todos": self.todos,
+                "tasks": self.tasks,
                 "shells": self.shells,
                 "get_mode": lambda: self.mode,
                 "set_mode": self.set_mode,
@@ -940,6 +1030,10 @@ class Agent:
             if decision is Decision.DENY:
                 if display:
                     self._show_tool_result("Denied.", True, tc.id, tc.name)
+                if self.permissions.in_background():
+                    return ("Refused: this task runs in the background, so it cannot ask the "
+                            "user for approval. Do not retry it; finish what you can without "
+                            "it and say in your report what still needs to be done.", True, args)
                 return ("The user denied permission to run this action. Do not retry it; ask "
                         "how to proceed or try another approach.", True, args)
 
@@ -1038,7 +1132,8 @@ class Agent:
         return self._make_subagent_runner(role)(prompt, cwd=cwd, model=model)
 
     def _make_subagent_runner(self, role: str = "subagent") -> Callable[..., str]:
-        def runner(prompt: str, cwd: Optional[str] = None, model: Optional[str] = None) -> str:
+        def runner(prompt: str, cwd: Optional[str] = None, model: Optional[str] = None,
+                   task: Optional[TaskEntry] = None) -> str:
             if model:
                 if model not in self.config.models:
                     raise ValueError(f"unknown model '{model}'; configured: "
@@ -1047,7 +1142,8 @@ class Agent:
             else:
                 sub_model = self.config.model_for_role(role, self.model)
             sub_cwd = cwd or self.cwd
-            if self.verbose and self.on_event is None:
+            background = task is not None and task.background
+            if self.verbose and self.on_event is None and not background:
                 where = f" in {sub_cwd}" if cwd else ""
                 ui.info(f"  ↳ spawning sub-agent ({sub_model.name}){where}…")
             sub_system = build_subagent_prompt(sub_cwd, sub_model)
@@ -1071,12 +1167,38 @@ class Agent:
                 shells=self.shells,
                 is_subagent=True,
             )
-            with self.tracer.span("subagent", role=role, model=sub_model.name):
-                result = sub_agent.run(prompt)
-            # Roll the sub-agent's token usage up into the parent session.
-            self.session.record_usage(sub_session.total_usage)
-            self.session.cost += sub_session.cost
-            self.session._priced = self.session._priced or sub_session._priced
+            entry = task or self.tasks.start(role, sub_model.name)
+            entry.model = sub_model.name
+            entry.agent = sub_agent
+
+            def activity(name: str, args: dict) -> None:
+                label, summary = ui.tool_title(name, args, sub_cwd)
+                self.tasks.record(entry, f"{label}({summary})" if summary else label)
+                self._emit("task_activity", id=entry.id, line=entry.activity[-1])
+
+            sub_agent.on_activity = activity
+            self._emit("task_start", id=entry.id, label=entry.label, model=sub_model.name)
+            try:
+                with self.tracer.span("subagent", role=role, model=sub_model.name):
+                    result = sub_agent.run(prompt)
+            except BaseException:
+                if task is None:
+                    self.tasks.finish(entry, "", "failed")
+                self._emit("task_end", id=entry.id, status="failed", summary=entry.summary())
+                raise
+            finally:
+                # Roll the sub-agent's token usage up into the parent session
+                # (background tasks finish on their own threads).
+                with USAGE_LOCK:
+                    self.session.record_usage(sub_session.total_usage)
+                    self.session.cost += sub_session.cost
+                    self.session._priced = self.session._priced or sub_session._priced
+            if task is None:
+                self.tasks.finish(entry, result or "")
+            if self.verbose and self.on_event is None and not entry.background:
+                ui.task_finished_line(entry)
+            status = "completed" if entry.status == "running" else entry.status
+            self._emit("task_end", id=entry.id, status=status, summary=entry.summary())
             return result
 
         return runner

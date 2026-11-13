@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 from coded.config import ModelConfig
 from coded.llm import Usage
+
+# Usage is added from several threads (background sub-agents, /btw).
+USAGE_LOCK = threading.RLock()
 
 
 def usage_cost(usage: Usage, model: ModelConfig) -> float:
@@ -32,6 +36,9 @@ class Session:
     # Cost accrued per answering model (routing and pools change it mid-session).
     cost: float = 0.0
     _priced: bool = False
+    # The agent's task list (todo_write) as of the last save, so a resumed
+    # session picks up where the work stood.
+    todos: List[Dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.messages:
@@ -69,10 +76,11 @@ class Session:
         )
 
     def record_usage(self, usage: Usage, model: ModelConfig | None = None) -> None:
-        self.total_usage = self.total_usage + usage
-        if model is not None:
-            self.cost += usage_cost(usage, model)
-            self._priced = True
+        with USAGE_LOCK:
+            self.total_usage = self.total_usage + usage
+            if model is not None:
+                self.cost += usage_cost(usage, model)
+                self._priced = True
 
     def reset(self) -> None:
         self.messages = [{"role": "system", "content": self.system_prompt}]

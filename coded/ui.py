@@ -59,14 +59,191 @@ class _NoStatus:
         return False
 
 
+class _DockStatus:
+    """`thinking()` while a TurnDock is up: relabels its spinner, no new Live."""
+
+    def __init__(self, dock: "TurnDock", text: str) -> None:
+        self.dock, self.text = dock, text
+
+    def start(self):
+        self.dock.set_activity(self.text)
+        return self
+
+    def stop(self):
+        self.dock.set_activity(None)
+        return self
+
+    def __enter__(self):
+        return self.start()
+
+    def __exit__(self, *a):
+        self.stop()
+        return False
+
+
+class TurnDock:
+    """The bottom of the screen for a whole REPL turn: what the agent is doing,
+    the unfinished task list and an input box showing what is being typed.
+
+    One rich Live for the turn (rich allows only one at a time), so
+    `thinking()` and the streaming view draw into it instead of opening their
+    own; everything printed meanwhile scrolls above it. Without it the keys
+    typed mid-turn were echoed straight into the output, where the spinner's
+    redraw erased them and no input box was visible at all.
+    """
+
+    def __init__(self, get_input, get_tasks=None, get_queued=None, get_running=None,
+                 can_detach=None, get_queue=None, get_mode=None) -> None:
+        self._get_mode = get_mode or (lambda: "")
+        self._get_queue = get_queue or (lambda: [])
+        self._get_input = get_input
+        self._get_tasks = get_tasks or (lambda: [])
+        self._get_queued = get_queued or (lambda: 0)
+        self._get_running = get_running or (lambda: [])
+        self._can_detach = can_detach or (lambda: False)
+        self._activity: Optional[str] = None
+        self._body = None
+        self._question = False
+        self._live = None
+
+    # -- lifecycle ----------------------------------------------------------
+    def start(self) -> "TurnDock":
+        global _dock
+        if _quiet or self._live is not None:
+            return self
+        from rich.live import Live
+
+        self._live = Live(get_renderable=self.render, console=console,
+                          refresh_per_second=12, transient=True)
+        self._live.start()
+        _dock = self
+        return self
+
+    def stop(self) -> None:
+        global _dock
+        if _dock is self:
+            _dock = None
+        live, self._live = self._live, None
+        if live is not None:
+            try:
+                live.stop()
+            except Exception:  # noqa: BLE001 - restoring the screen is best effort
+                pass
+
+    def __enter__(self) -> "TurnDock":
+        return self.start()
+
+    def __exit__(self, *exc) -> None:
+        self.stop()
+
+    # -- content ------------------------------------------------------------
+    def set_activity(self, text: Optional[str]) -> None:
+        self._activity = text
+
+    def set_body(self, renderable) -> None:
+        """Live content above the spinner (the answer as it streams); None clears."""
+        self._body = renderable
+        if self._live is not None:
+            self._live.refresh()
+
+    def asking(self, on: bool) -> None:
+        """A prompt is waiting for a typed answer: the box says so."""
+        self._question = on
+
+    def render(self):
+        from rich.spinner import Spinner
+
+        parts = []
+        if self._body is not None:
+            parts += [self._body, Text("")]
+        if self._question:
+            parts.append(Text.from_markup(f"[{WARN}]● Waiting for your answer…[/]"))
+        else:
+            if not hasattr(self, "_spinner"):
+                self._spinner = Spinner("dots", style=ACCENT)
+            self._spinner.update(text=Text.from_markup(
+                f"[{ACCENT}]{self._activity or 'Working'}…[/] "
+                f"[{MUTED}](esc to interrupt)[/]"))
+            parts.append(self._spinner)
+        running = list(self._get_running() or [])
+        if running:
+            parts.insert(0, running_tasks(running, expanded=_expanded))
+        dock = todo_dock(list(self._get_tasks() or []))
+        if dock is not None:
+            parts.append(dock)
+        waiting = list(self._get_queue() or [])
+        if waiting and not self._question:
+            parts.append(queued_list(waiting))
+        foreground = any(not t.background for t in running) and self._can_detach()
+        parts.append(input_box(self._get_input() or "", self._get_queued() or 0,
+                               self._question, foreground_task=foreground,
+                               mode=self._get_mode()))
+        return Group(*parts)
+
+
+_dock: Optional[TurnDock] = None
+
+
+def active_dock() -> Optional[TurnDock]:
+    return _dock
+
+
+_QUEUE_SHOWN = 3
+
+
+def queued_list(items: list) -> Text:
+    """Messages waiting to run after this turn, newest last; ↑ edits the newest."""
+    t = Text()
+    t.append(f"  ⏎ queued ({len(items)})", style=ACCENT_SOFT)
+    t.append("  ↑ to edit", style=MUTED)
+    hidden = len(items) - _QUEUE_SHOWN
+    if hidden > 0:
+        t.append(f"\n     … {hidden} older", style=MUTED)
+    for i, item in enumerate(items[-_QUEUE_SHOWN:], start=max(hidden, 0) + 1):
+        t.append(f"\n    {i}. ", style=MUTED)
+        t.append(_one_line(item, 90))
+    return t
+
+
+def input_box(text: str, queued: int = 0, answering: bool = False,
+              foreground_task: bool = False, mode: str = "") -> Group:
+    """The input box drawn during a turn (the REPL's own box is not up then)."""
+    line = Text()
+    line.append("> ", style=f"bold {ACCENT}")
+    line.append(text)
+    line.append("▌", style=ACCENT)
+    if answering:
+        hint = "  enter to answer  ·  esc for no"
+    else:
+        hint = "  enter queues a message  ·  esc to interrupt"
+        if foreground_task:
+            hint += "  ·  ctrl+b run task in background"
+        hint += f"  ·  ctrl+o {'collapse' if _expanded else 'expand'}  ·  ctrl+t tasks"
+        if queued:
+            hint += "  ·  ↑ edit queued"
+    foot = Text(hint, style=MUTED)
+    if mode == "accept-edits":
+        foot.append("\n  ⏵⏵ accept edits on", style=f"bold {ACCENT2}")
+        foot.append("  ·  shift+tab to turn off", style=MUTED)
+    elif mode == "plan":
+        foot.append("\n  ⏸ plan mode (read-only)", style=f"bold {WARN}")
+    elif mode == "default":
+        foot.append("\n  shift+tab to accept edits without asking", style=MUTED)
+    return Group(Panel(line, box=ROUNDED, border_style=ACCENT_DEEP, padding=(0, 1),
+                       expand=True), foot)
+
+
 def thinking(text: str = "Thinking", tasks: Optional[list] = None):
     """A spinner shown while waiting on the model. No-op in quiet mode.
 
     With unfinished `tasks`, the task list is docked under the spinner, so it
     stays at the bottom of the screen (next to the input) instead of
-    scrolling away with tool output."""
+    scrolling away with tool output. While a TurnDock is up, its spinner is
+    relabelled instead (it already shows the tasks and the input)."""
     if _quiet:
         return _NoStatus()
+    if _dock is not None:
+        return _DockStatus(_dock, text)
     dock = todo_dock(tasks or [])
     if dock is not None:
         from rich.live import Live
@@ -187,6 +364,7 @@ _TOOL_TITLES = {
     "bash_output": ("BashOutput", "shell_id"), "kill_shell": ("KillShell", "shell_id"),
     "web_search": ("WebSearch", "query"), "web_fetch": ("Fetch", "url"),
     "task": ("Task", "description"), "skill": ("Skill", "name"),
+    "task_output": ("TaskOutput", "task_id"), "task_stop": ("TaskStop", "task_id"),
     "external_agent": ("Agent", "agent"), "apply_patch": ("Patch", None),
     "repo_map": ("Map repo", None),
     "memory": ("Memory", None),
@@ -258,21 +436,25 @@ def tool_call(name: str, args: dict, cwd: str = "") -> None:
 
 
 def tool_result_text(content: str, is_error: bool = False, name: str = "",
-                     cwd: str = "", max_lines: int = 0) -> Text:
-    """Tool output under a `⎿` elbow, shortened for display (the model sees it all)."""
+                     cwd: str = "", max_lines: int = 0, full: bool = False,
+                     expand_hint: bool = False) -> Text:
+    """Tool output under a `⎿` elbow, shortened for display (the model sees it all).
+
+    `full` shows every line (Ctrl+O); `expand_hint` says how to get there."""
     max_lines = max_lines or _MAX_RESULT_LINES
     if cwd:
         content = content.replace(cwd.rstrip("/") + "/", "")
     lines = content.splitlines()
-    if name == "read" and not is_error and len(lines) > 1:
+    if name == "read" and not is_error and len(lines) > 1 and not full:
         lines = [f"Read {len(lines)} lines"]
     elif name == "todo_write" and not is_error and lines:
         # The list itself is already on screen (panel / dock); keep the
         # headline and any nudge the tool gave the model.
         lines = [lines[0].rstrip(":")] + [ln for ln in lines[1:] if ln.startswith("Note:")]
-    shown = lines[:max_lines]
+    shown = lines if full else lines[:max_lines]
     text = "\n".join(shown)
-    if len(text) > _MAX_RESULT_CHARS:
+    cut_chars = not full and len(text) > _MAX_RESULT_CHARS
+    if cut_chars:
         text = text[:_MAX_RESULT_CHARS] + "…"
     if not text.strip():
         text = "(no output)"
@@ -282,13 +464,130 @@ def tool_result_text(content: str, is_error: bool = False, name: str = "",
         body.append("  ⎿  " if i == 0 else "     ", style=style)
         body.append(line + "\n", style=style)
     extra = len(lines) - len(shown)
+    hint = " (ctrl+o to expand)" if expand_hint else ""
     if extra > 0:
-        body.append(f"     … +{extra} lines\n", style=f"{MUTED} italic")
+        body.append(f"     … +{extra} lines{hint}\n", style=f"{MUTED} italic")
+    elif cut_chars and hint:
+        body.append(f"     …{hint}\n", style=f"{MUTED} italic")
     return body
 
 
 def tool_result(content: str, is_error: bool = False, name: str = "", cwd: str = "") -> None:
-    console.print(tool_result_text(content, is_error, name, cwd), end="")
+    """A tool result in the REPL: shortened (Ctrl+O shows it in full), or whole
+    while output is expanded."""
+    global _last_cut
+    if _expanded:
+        console.print(tool_result_text(content, is_error, name, cwd, full=True), end="")
+        return
+    text = tool_result_text(content, is_error, name, cwd, expand_hint=True)
+    if "ctrl+o to expand" in text.plain:
+        _last_cut = (content, is_error, name, cwd)
+    console.print(text, end="")
+
+
+# Ctrl+O: tool output shown whole instead of shortened (REPL), and the
+# running tasks' full activity instead of the last few steps.
+_expanded = False
+_last_cut: Optional[tuple] = None  # the newest result that was shortened
+
+
+def is_expanded() -> bool:
+    return _expanded
+
+
+def set_expanded(on: bool) -> None:
+    global _expanded
+    _expanded = bool(on)
+
+
+def show_last_cut() -> bool:
+    """Print the newest shortened tool result in full; False if there is none."""
+    if _last_cut is None:
+        return False
+    content, is_error, name, cwd = _last_cut
+    console.print(Text("  ⊕ full output of the last shortened result:", style=MUTED))
+    console.print(tool_result_text(content, is_error, name, cwd, full=True), end="")
+    return True
+
+
+# -- tasks (sub-agents) -------------------------------------------------------
+_TASK_ACTIVITY = 3  # activity lines per task in the dock, unless expanded
+
+
+def running_tasks(entries: list, expanded: bool = False) -> Text:
+    """Running sub-agents: one headline each, their latest tool calls under it."""
+    t = Text()
+    for n, e in enumerate(entries):
+        if n:
+            t.append("\n")
+        t.append("● ", style=WARN)
+        t.append("Task", style="bold")
+        t.append("(", style=MUTED)
+        t.append(_one_line(e.label, 60))
+        t.append(")", style=MUTED)
+        where = "background" if e.background else e.model
+        t.append(f"  {e.id} · {where} · {e.summary()}" if where else f"  {e.id} · {e.summary()}",
+                 style=MUTED)
+        lines = list(e.activity)
+        shown = lines if expanded else lines[-_TASK_ACTIVITY:]
+        if not shown:
+            t.append("\n  ⎿  starting…", style=MUTED)
+        hidden = len(lines) - len(shown)
+        for i, line in enumerate(shown):
+            t.append("\n  ⎿  " if i == 0 else "\n     ", style=MUTED)
+            t.append(_one_line(line, 90))
+        if hidden:
+            t.append(f"\n     … +{hidden} earlier (ctrl+o to expand)", style=f"{MUTED} italic")
+    return t
+
+
+def task_finished_line(e) -> None:
+    """Under a foreground Task(...) call once it ends: "⎿ Done (7 tool uses · 1m 2s)"."""
+    word = {"completed": "Done", "running": "Done"}.get(e.status, e.status.capitalize())
+    console.print(Text(f"  ⎿  {word} ({e.summary()})", style=MUTED))
+
+
+def task_done(e, pending: bool = False) -> None:
+    """A background task has finished (its report goes to the agent)."""
+    t = Text()
+    t.append("● ", style=ACCENT2 if e.status == "completed" else WARN)
+    t.append(f"Background task {e.id} {e.status}", style="bold")
+    t.append(f": {_one_line(e.label, 60)} ({e.summary()})", style=MUTED)
+    if pending:
+        t.append("  — its report goes with your next message", style=MUTED)
+    console.print(t)
+
+
+def task_detail(e) -> None:
+    """/tasks <id>: the task's state, every recorded step, and its report."""
+    console.print(Text.assemble(("● ", WARN if e.running else ACCENT2),
+                                (f"{e.id} ", "bold"), (e.label, "bold"),
+                                (f"  {e.status} · {e.model} · {e.summary()}", MUTED)))
+    for line in e.activity:
+        console.print(Text(f"     {_one_line(line, 110)}", style=MUTED))
+    if not e.running:
+        console.print(tool_result_text(e.result or "(no output)", max_lines=40), end="")
+
+
+def tasks_table(entries: list, shells: list) -> None:
+    """/tasks: every sub-agent and background shell of this session."""
+    from rich.table import Table
+
+    if not entries and not shells:
+        info("No tasks yet. The agent starts them with the task tool; "
+             "ctrl+b moves a running one to the background.")
+        return
+    table = Table(box=ROUNDED, border_style=MUTED, title="Tasks", title_justify="left")
+    for col in ("id", "kind", "status", "what", "time / tools", "latest"):
+        table.add_column(col, style="cyan" if col == "id" else None, overflow="fold")
+    for e in entries:
+        status = e.status + (" · bg" if e.background and e.running else "")
+        table.add_row(e.id, "agent", status, _one_line(e.label, 40), e.summary(),
+                      _one_line(e.activity[-1], 40) if e.activity else "")
+    for sid, cmd, status in shells:
+        table.add_row(sid, "shell", status, _one_line(cmd, 40), "", "")
+    console.print(table)
+    info("/tasks <id> for details · /tasks stop <id> to stop one")
 
 
 def info(msg: str) -> None:
@@ -305,6 +604,15 @@ def error(msg: str) -> None:
 
 def success(msg: str) -> None:
     _log().print(f"[{ACCENT2}]✓[/] {msg}")
+
+
+def btw_panel(question: str, answer: str) -> Panel:
+    """A /btw side answer: framed apart from the work, and not part of it."""
+    body = Group(Text(_one_line(question, 200), style=f"bold {ACCENT_SOFT}"), Text(""),
+                 Markdown(answer))
+    return Panel(body, title=f"[{ACCENT_SOFT}]btw[/]", title_align="left",
+                 subtitle=f"[{MUTED}]side answer · not added to the conversation[/]",
+                 subtitle_align="left", border_style=MUTED, box=ROUNDED, expand=True)
 
 
 def question_panel(question: str, options: list) -> None:

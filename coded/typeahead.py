@@ -19,14 +19,24 @@ from __future__ import annotations
 
 import os
 import queue
+from collections import deque
 import sys
 import threading
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 POLL_SECONDS = 0.05
 # Returned by a poll when Esc is pressed on its own (not as part of an arrow
 # key's escape sequence): the user wants the running turn stopped.
 ESCAPE = "\x1b"
+# Control keys handed to the front-end mid-turn (TypeAhead's `keys`):
+# Ctrl+B moves the running sub-agent to the background, Ctrl+O expands or
+# collapses tool output, Ctrl+T lists tasks.
+CTRL_B, CTRL_O, CTRL_T = "\x02", "\x0f", "\x14"
+# Up arrow: pull the newest queued message back into the input to edit it.
+UP = "\x00up"
+# Shift+Tab: turn accept-edits on or off while the turn runs.
+SHIFT_TAB = "\x00stab"
+CONTROL_KEYS = (CTRL_B, CTRL_O, CTRL_T, UP, SHIFT_TAB)
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +60,7 @@ class _PosixKeys:
         self.fd = sys.stdin.fileno() if fd is None else fd
         self.out = out or sys.stdout
         self.buf: List[str] = []
+        self.echo = True  # off while ui.TurnDock draws the line in its input box
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._saved = None
         self._pending = ""
@@ -61,7 +72,9 @@ class _PosixKeys:
 
         self._saved = termios.tcgetattr(self.fd)
         attrs = termios.tcgetattr(self.fd)
-        attrs[3] &= ~(termios.ICANON | termios.ECHO)
+        # IEXTEN off too: otherwise the terminal itself takes ^O (discard
+        # output) and, on macOS, ^T (status), and coded never sees them.
+        attrs[3] &= ~(termios.ICANON | termios.ECHO | termios.IEXTEN)
         attrs[6][termios.VMIN] = 0
         attrs[6][termios.VTIME] = 0
         termios.tcsetattr(self.fd, termios.TCSANOW, attrs)
@@ -77,6 +90,8 @@ class _PosixKeys:
             self._saved = None
 
     def _echo(self, text: str) -> None:
+        if not self.echo:
+            return
         try:
             self.out.write(text)
             self.out.flush()
@@ -107,7 +122,8 @@ class _PosixKeys:
                 if not rest:
                     self._pending = ""
                     return ESCAPE
-                # An escape sequence: skip it (CSI ends at a byte in @..~).
+                # An escape sequence: skip it (CSI ends at a byte in @..~),
+                # except the Up arrow, which edits the newest queued message.
                 j = 0
                 if rest[:1] in ("[", "O"):
                     j = 1
@@ -116,6 +132,12 @@ class _PosixKeys:
                     j += 1
                 else:
                     j = 1
+                if rest[:j] in ("[A", "OA"):
+                    self._pending = rest[j:]
+                    return UP
+                if rest[:j] == "[Z":
+                    self._pending = rest[j:]
+                    return SHIFT_TAB
                 chunk, i = rest[j:], 0
                 continue
             if ch in ("\r", "\n"):
@@ -132,6 +154,9 @@ class _PosixKeys:
                 self._echo("\b \b" * len(self.buf))
                 self.buf = []
                 continue
+            if ch in CONTROL_KEYS:
+                self._pending = chunk[i:]
+                return ch
             if ch < " " and ch != "\t":
                 continue
             self.buf.append(ch)
@@ -159,6 +184,12 @@ class _WindowsPoll:
 
     def __init__(self) -> None:
         self.buf: List[str] = []
+        self.echo = True  # off while ui.TurnDock draws the line in its input box
+
+    def _out(self, text: str) -> None:
+        if self.echo:
+            sys.stdout.write(text)
+            sys.stdout.flush()
 
     def __call__(self, timeout: float) -> Optional[str]:
         import msvcrt
@@ -169,27 +200,30 @@ class _WindowsPoll:
             while msvcrt.kbhit():
                 ch = msvcrt.getwch()
                 if ch in ("\r", "\n"):
-                    sys.stdout.write("\n")
-                    sys.stdout.flush()
+                    self._out("\n")
                     line, self.buf = "".join(self.buf), []
                     return line
                 if ch == "\x08":  # backspace
                     if self.buf:
                         self.buf.pop()
-                        sys.stdout.write("\b \b")
-                        sys.stdout.flush()
+                        self._out("\b \b")
                     continue
                 if ch == "\x1b":  # Esc: stop the turn
                     return ESCAPE
+                if ch in CONTROL_KEYS:
+                    return ch
                 if ch == "\x03":  # Ctrl-C: the console signals the process itself
                     self.buf = []
                     return None
                 if ch in ("\x00", "\xe0"):  # a function/arrow key: drop the pair
-                    msvcrt.getwch()
+                    second = msvcrt.getwch()
+                    if second == "H":  # ...except Up: edit a queued message
+                        return UP
+                    if ch == "\x00" and second == "\x0f":  # ...and Shift+Tab
+                        return SHIFT_TAB
                     continue
                 self.buf.append(ch)
-                sys.stdout.write(ch)
-                sys.stdout.flush()
+                self._out(ch)
             if time.monotonic() >= deadline:
                 return None
             time.sleep(0.01)
@@ -228,11 +262,20 @@ class TypeAhead:
 
     def __init__(self, poll: Optional[Callable[[float], Optional[str]]] = None,
                  on_queue: Optional[Callable[[str, int], None]] = None,
-                 on_escape: Optional[Callable[[], None]] = None):
+                 on_escape: Optional[Callable[[], None]] = None,
+                 keys: Optional[Dict[str, Callable[[], None]]] = None,
+                 intercept: Optional[Callable[[str], bool]] = None):
         self._poll = poll
         self._on_queue = on_queue
         self._on_escape = on_escape
-        self._queued: "queue.Queue[str]" = queue.Queue()
+        self._keys = dict(keys or {})
+        # A typed line the front-end handles at once instead of queueing
+        # (True = consumed), e.g. /btw, which is answered while the turn runs.
+        self._intercept = intercept
+        # Messages typed mid-turn, oldest first. A deque (not a Queue) so the
+        # Up arrow can take the newest one back to edit it.
+        self._queued: "deque[str]" = deque()
+        self._qlock = threading.Lock()
         self._answers: "queue.Queue[str]" = queue.Queue()
         self._want_answer = threading.Event()
         self._stop = threading.Event()
@@ -281,6 +324,17 @@ class TypeAhead:
             if line == ESCAPE:
                 self.escape()
                 continue
+            if line == UP and UP not in self._keys:
+                self.edit_last()
+                continue
+            if line in CONTROL_KEYS:
+                fn = self._keys.get(line)
+                if fn is not None:
+                    try:
+                        fn()
+                    except Exception:  # noqa: BLE001 - a key handler must not end type-ahead
+                        pass
+                continue
             self.feed(line)
 
     def escape(self) -> None:
@@ -301,9 +355,32 @@ class TypeAhead:
         text = line.strip()
         if not text:
             return
-        self._queued.put(text)
+        if self._intercept is not None:
+            try:
+                if self._intercept(text):
+                    return
+            except Exception:  # noqa: BLE001 - fall back to queueing it
+                pass
+        with self._qlock:
+            self._queued.append(text)
+            waiting = len(self._queued)
         if self._on_queue:
-            self._on_queue(text, self._queued.qsize())
+            self._on_queue(text, waiting)
+
+    def edit_last(self) -> Optional[str]:
+        """Up arrow: take the newest queued message back into the line being
+        typed (before anything already typed there), so it can be edited and
+        sent again with Enter. None when nothing is queued or no line is kept."""
+        buf = getattr(self._poll, "buf", None)
+        if self._want_answer.is_set() or not isinstance(buf, list):
+            return None
+        with self._qlock:
+            if not self._queued:
+                return None
+            text = self._queued.pop()
+        typed = "".join(buf)
+        buf[:] = list(text + (" " + typed if typed else ""))
+        return text
 
     # -- consumers ----------------------------------------------------------
     def ask(self, timeout: Optional[float] = None) -> Optional[str]:
@@ -325,19 +402,38 @@ class TypeAhead:
     def requeue(self, text: str) -> None:
         """Put a line back: it was typed as a message, not as an answer."""
         if text.strip():
-            self._queued.put(text.strip())
+            with self._qlock:
+                self._queued.append(text.strip())
 
     def drain(self) -> List[str]:
-        out: List[str] = []
-        while True:
-            try:
-                out.append(self._queued.get_nowait())
-            except queue.Empty:
-                return out
+        with self._qlock:
+            out = list(self._queued)
+            self._queued.clear()
+        return out
 
     @property
     def pending(self) -> int:
-        return self._queued.qsize()
+        return len(self._queued)
+
+    @property
+    def queued_items(self) -> List[str]:
+        with self._qlock:
+            return list(self._queued)
+
+    @property
+    def can_draw(self) -> bool:
+        """True when the reader collects keys itself (so a box can show them)."""
+        return isinstance(getattr(self._poll, "buf", None), list)
+
+    def set_echo(self, on: bool) -> None:
+        if self.can_draw:
+            self._poll.echo = on  # type: ignore[union-attr]
+
+    @property
+    def typing(self) -> str:
+        """The line being typed right now (not consumed)."""
+        buf = getattr(self._poll, "buf", None)
+        return "".join(buf) if buf else ""
 
     @property
     def partial(self) -> str:
