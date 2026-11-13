@@ -47,6 +47,7 @@ coded/
 ├── limits.py           # per-model limits scaled by context_window; result/step caps
 ├── repo_overview.py    # repository overview for large-context models
 ├── repomap.py          # ranked symbol map (ast + regex, PageRank over references)
+├── depgraph.py         # import graph (Python ast, JS/TS regex): dependents, impact, cycles
 ├── memory.py           # project memory store (./.coded/memory.json)
 ├── speed.py            # `coded models --speed`: first token, total, tok/s per model
 ├── verify.py           # post-turn gates: project checks + a second model
@@ -142,6 +143,7 @@ tests/
 ├── test_tools.py       # tool + config unit tests
 ├── test_routing.py     # difficulty routing, pools, endpoint reuse, per-model cost
 ├── test_repomap.py     # symbol extraction, ranking, budgets, the repo_map tool
+├── test_depgraph.py    # import resolution, impact + tests to run, cycles, repo_map operations
 ├── test_memory.py      # memory store, the permission gate, prompt injection
 ├── test_documents.py   # reading PDF/Word/Excel/PowerPoint, refusals, no-extra path
 ├── test_speed.py       # lazy SDK import, disabled_tools, compact tool schema, --speed
@@ -498,6 +500,15 @@ config.example.json     # sample configuration
   bounded (files, bytes, seconds, output) and nothing raises. It is a **tool**,
   not a prompt section: the system prompt stays names-only, and a 128k model
   must behave exactly as before.
+- **Dependency map** (`depgraph.py`, `repo_map` with `operation`): `imports`,
+  `dependents`, `impact` (reverse-transitive with depth, plus the test files
+  among them: `affected_tests`) and `cycles`. Python imports via `ast`
+  (absolute, relative, `src/`/`lib/` layouts, `from pkg import submodule`);
+  imports inside a function are recorded in `DepGraph.lazy` — they count for
+  impact but not for import-time cycles. JS/TS: relative specifiers only,
+  resolved like a bundler (extensions, `index.*`, `.js`→`.ts`). Bounded,
+  honours `.codedignore`, never raises. Same tool, not a new one: an omitted
+  `operation` is the old outline.
 - **Project memory** (`memory.py`, the `memory` tool, `/memory`): short notes in
   `./.coded/memory.json`, injected by `build_system_prompt` as labelled data
   within `limits.memory_chars`. The model writes only the **project** store and
