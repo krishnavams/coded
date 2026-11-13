@@ -497,7 +497,8 @@ class Repl:
                            get_queue=lambda: ta.queued_items,
                            get_running=self.agent.tasks.running,
                            can_detach=lambda: self.agent.tasks.can_detach,
-                           get_mode=lambda: self.agent.permission_mode).start()
+                           get_mode=lambda: self.agent.permission_mode,
+                           get_commands=self._slash_entries).start()
 
     # -- tasks (sub-agents) ---------------------------------------------------
     def _task_finished(self, entry) -> None:
@@ -547,6 +548,15 @@ class Repl:
             ui.error(explain_failure(exc))
             return
         ui.console.print(ui.btw_panel(question, answer))
+
+    def _slash_entries(self) -> list:
+        """(name, description) of the built-in and custom slash commands."""
+        entries = list(SLASH_COMMANDS.items())
+        entries += [(f"/{n}", f"command · {c.description}") for n, c in self.commands.items()]
+        return entries
+
+    def _complete_midturn(self, text: str) -> Optional[str]:
+        return ui.complete_slash(text, self._slash_entries())
 
     def _intercept_midturn(self, text: str) -> bool:
         """A line typed mid-turn: /btw is answered now, alongside the turn, and
@@ -684,7 +694,8 @@ class Repl:
                                keys={CTRL_B: self._detach_task, CTRL_O: self._toggle_expand,
                                      CTRL_T: self._cmd_tasks,
                                      SHIFT_TAB: self._toggle_edits},
-                               intercept=self._intercept_midturn) as ta:
+                               intercept=self._intercept_midturn,
+                               complete=self._complete_midturn) as ta:
                     self._typeahead = ta
                     # Messages still waiting from earlier turns go back in the
                     # reader's queue, so they are shown and ↑ can edit them.

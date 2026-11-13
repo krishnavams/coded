@@ -130,3 +130,12 @@ def test_bracketed_text_is_shown_not_swallowed(repl):
                  "tabs here [/k] [bold]", "say hi [/j]", "[name]", "sleep 30 # [/d] [bold]",
                  "search the api [/g]", "change a.py [/e] and app/[slug]/page.py"):
         assert want in text, want
+
+
+def test_mid_turn_slash_suggestions_cover_every_command(repl):
+    from coded.repl import SLASH_COMMANDS
+
+    names = [n for n, _ in repl._slash_entries()]
+    assert set(SLASH_COMMANDS) <= set(names)
+    assert repl._complete_midturn("/dashb") == "/dashboard "
+    assert repl._complete_midturn("hello") is None

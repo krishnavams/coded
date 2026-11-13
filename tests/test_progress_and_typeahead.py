@@ -5,6 +5,7 @@ while the agent is busy.
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -453,3 +454,67 @@ def test_echo_is_switched_off_only_for_readers_that_collect_keys():
     line_mode = TypeAhead(poll=lambda _t: None)
     assert not line_mode.can_draw
     line_mode.set_echo(False)  # no-op, no error
+
+
+_CMDS = [("/help", "Show this help."), ("/model", "Show or switch the active model."),
+         ("/models", "List all configured models."), ("/review", "Run the review [x] pipeline.")]
+
+
+def test_typing_a_slash_mid_turn_lists_matching_commands():
+    dock = ui.TurnDock(lambda: "/mo", get_commands=lambda: _CMDS)
+    text = _plain(dock.render())
+    assert "/model " in text and "/models" in text and "/help" not in text
+    assert "tab to complete" in text
+    # every command for a bare "/", the description shown as plain text
+    text = _plain(ui.TurnDock(lambda: "/", get_commands=lambda: _CMDS).render())
+    assert "/help" in text and "/review" in text and "[x]" in text
+    # gone once arguments are being typed, for plain text, and while answering
+    for typed in ("/model gpt", "fix the bug"):
+        text = _plain(ui.TurnDock(lambda t=typed: t, get_commands=lambda: _CMDS).render())
+        assert "Show this help" not in text and "tab to complete" not in text
+    dock = ui.TurnDock(lambda: "/mo", get_commands=lambda: _CMDS)
+    dock.asking(True)
+    assert "/models" not in _plain(dock.render())
+
+
+def test_tab_completes_the_slash_command_being_typed():
+    assert ui.complete_slash("/rev", _CMDS) == "/review "
+    assert ui.complete_slash("/m", _CMDS) == "/model"      # common prefix
+    assert ui.complete_slash("/model", _CMDS) is None      # still ambiguous
+    assert ui.complete_slash("/zzz", _CMDS) is None
+    assert ui.complete_slash("hello", _CMDS) is None
+
+    keys = _Keys()
+    keys.echo = False
+    ta = TypeAhead(poll=keys, complete=lambda t: ui.complete_slash(t, _CMDS))
+    keys.buf[:] = list("/rev")
+    assert ta.complete() == "/review " and ta.typing == "/review "
+    assert ta.pending == 0  # completing does not queue anything
+
+
+def test_the_posix_reader_hands_tab_to_the_completer():
+    import io
+    import os
+
+    if os.name == "nt":
+        pytest.skip("POSIX terminal reader")
+    import pty
+
+    from coded.typeahead import _PosixKeys
+
+    master, slave = pty.openpty()
+    reader = _PosixKeys(fd=slave, out=io.StringIO())
+    reader.echo = False
+    ta = TypeAhead(poll=reader, complete=lambda t: ui.complete_slash(t, _CMDS))
+    try:
+        with ta:
+            os.write(master, b"/rev\t")
+            for _ in range(100):
+                if ta.typing == "/review ":
+                    break
+                time.sleep(0.02)
+        assert ta.typing == "/review " and ta.pending == 0
+    finally:
+        reader.close()
+        os.close(master)
+        os.close(slave)

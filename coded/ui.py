@@ -158,7 +158,10 @@ class TurnDock:
     """
 
     def __init__(self, get_input, get_tasks=None, get_queued=None, get_running=None,
-                 can_detach=None, get_queue=None, get_mode=None) -> None:
+                 can_detach=None, get_queue=None, get_mode=None,
+                 get_commands=None) -> None:
+        # (name, description) of every slash command, for suggestions as you type.
+        self._get_commands = get_commands or (lambda: [])
         self._get_mode = get_mode or (lambda: "")
         self._get_queue = get_queue or (lambda: [])
         self._get_input = get_input
@@ -250,9 +253,13 @@ class TurnDock:
         if waiting and not self._question:
             parts.append(queued_list(waiting))
         foreground = any(not t.background for t in running) and self._can_detach()
-        parts.append(input_box(self._get_input() or "", self._get_queued() or 0,
+        typed = self._get_input() or ""
+        matches = [] if self._question else slash_matches(typed, self._get_commands() or [])
+        parts.append(input_box(typed, self._get_queued() or 0,
                                self._question, foreground_task=foreground,
-                               mode=self._get_mode()))
+                               mode=self._get_mode(), suggesting=bool(matches)))
+        if matches:
+            parts.append(slash_suggestions(matches))
         return Group(*parts)
 
 
@@ -280,8 +287,47 @@ def queued_list(items: list) -> Text:
     return t
 
 
+_SUGGEST_SHOWN = 6
+
+
+def slash_matches(text: str, commands: list) -> list:
+    """The slash commands that complete `text` (a "/word" with no space yet),
+    as (name, description) pairs in the given order; [] otherwise."""
+    if not text.startswith("/") or any(c.isspace() for c in text):
+        return []
+    return [(n, d) for n, d in commands if n.startswith(text)]
+
+
+def complete_slash(text: str, commands: list) -> Optional[str]:
+    """Tab mid-turn: one match is completed with a trailing space, several to
+    their longest common prefix; None when there is nothing to add."""
+    names = [n for n, _ in slash_matches(text, commands)]
+    if not names:
+        return None
+    if len(names) == 1:
+        return names[0] + " "
+    prefix = os.path.commonprefix(names)
+    return prefix if len(prefix) > len(text) else None
+
+
+def slash_suggestions(matches: list) -> Text:
+    """The list under the mid-turn input box while a slash command is typed."""
+    t = Text()
+    width = max(len(n) for n, _ in matches[:_SUGGEST_SHOWN])
+    for i, (name, desc) in enumerate(matches[:_SUGGEST_SHOWN]):
+        if i:
+            t.append("\n")
+        t.append(f"  {name.ljust(width)}", style=f"bold {ACCENT}" if i == 0 else ACCENT_SOFT)
+        t.append(f"  {_one_line(desc, 70)}", style=MUTED)
+    hidden = len(matches) - _SUGGEST_SHOWN
+    if hidden > 0:
+        t.append(f"\n  … {hidden} more", style=MUTED)
+    return t
+
+
 def input_box(text: str, queued: int = 0, answering: bool = False,
-              foreground_task: bool = False, mode: str = "") -> Group:
+              foreground_task: bool = False, mode: str = "",
+              suggesting: bool = False) -> Group:
     """The input box drawn during a turn (the REPL's own box is not up then)."""
     line = Text()
     line.append("> ", style=f"bold {ACCENT}")
@@ -291,6 +337,8 @@ def input_box(text: str, queued: int = 0, answering: bool = False,
         hint = "  enter to answer  ·  esc for no"
     else:
         hint = "  enter queues a message  ·  esc to interrupt"
+        if suggesting:
+            hint = "  tab to complete  ·" + hint
         if foreground_task:
             hint += "  ·  ctrl+b run task in background"
         hint += f"  ·  ctrl+o {'collapse' if _expanded else 'expand'}  ·  ctrl+t tasks"

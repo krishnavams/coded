@@ -760,6 +760,11 @@ config.example.json     # sample configuration
   under its tool call. Folded output is 3 lines (`_MAX_RESULT_LINES`), blank runs squeezed and
   long lines cut to one terminal row; the TUI's `ToolResult` folds the same way
   and a click (or Ctrl+O, `action_toggle_output`, for all) expands it.
+- **Slash commands mid-turn**: the dock lists matching commands under the
+  input box while a `/word` is typed (`ui.slash_matches`/`slash_suggestions`,
+  `TurnDock(get_commands=…)`, from `Repl._slash_entries`); Tab (`typeahead.TAB`)
+  calls `TypeAhead(complete=…)` → `ui.complete_slash`. The line is still queued
+  and run as a command after the turn (except the intercepted `/btw`, `/dashboard`).
 - **Queued messages** (`TypeAhead._queued`, a deque): **↑** mid-turn
   (`typeahead.UP`, from `ESC [A`/`ESC OA` or Windows `\xe0H`) runs
   `edit_last`, moving the newest one into the line being typed; Enter queues it

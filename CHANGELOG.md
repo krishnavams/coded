@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Changed
+- Typing `/` while a turn or tool is running lists the matching slash
+  commands under the input box, and Tab completes the one being typed (the
+  prompt between turns already did this).
 - Project memory has an `architecture` kind (which module owns what, how the
   pieces connect), recalled first: `/memory add architecture: …` or the
   agent's `memory` tool.

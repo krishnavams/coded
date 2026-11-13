@@ -985,7 +985,9 @@ the agent works, so a long turn is never a silent one.
 
 **You can type while it works.** A question or follow-up typed mid-turn is
 queued (`⏎ queued (1): …`) and run as the next message instead of being
-swallowed by the busy terminal; several queue in order. Ctrl-C drops the queue
+swallowed by the busy terminal; several queue in order. Typing `/` lists the
+matching slash commands under the input box and Tab completes one; it runs
+after the turn. Ctrl-C drops the queue
 along with the turn. The permission prompt takes the next line you type, so the
 two never fight over the same keystrokes. This works in the REPL and the TUI;
 without a terminal (piped input, `--print`) it simply stays off.
