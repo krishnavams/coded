@@ -118,8 +118,15 @@ class _TextExtractor(HTMLParser):
                 self.parts.append(text)
 
 
-def fetch_url(url: str, max_chars: int = 12_000) -> str:
-    with httpx.Client(timeout=30, follow_redirects=True,
+def fetch_url(url: str, max_chars: int = 12_000, allow=None) -> str:
+    """Fetch a page as text. `allow(url) -> bool` is asked before every request,
+    redirects included, so a public page cannot bounce the fetch to an
+    internal address."""
+    def check(request) -> None:
+        if allow is not None and not allow(str(request.url)):
+            raise PermissionError(f"not allowed to fetch {request.url}")
+
+    with httpx.Client(timeout=30, follow_redirects=True, event_hooks={"request": [check]},
                       headers={"User-Agent": "coded/0.1"}) as client:
         r = client.get(url)
         r.raise_for_status()

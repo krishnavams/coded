@@ -52,14 +52,57 @@ Use for reading documentation pages or search results."""
         "required": ["url"],
     }
 
+    def is_parallel_safe(self, args: Dict[str, Any], ctx: ToolContext) -> bool:
+        # An internal address asks first, and prompts are not run from workers.
+        from coded.netguard import internal_reason
+
+        return internal_reason(str(args.get("url", ""))) is None
+
     def run(self, args: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         from coded.websearch import fetch_url
 
         url = args["url"]
         if not url.startswith(("http://", "https://")):
             return ToolResult.error("URL must start with http:// or https://")
+        allow = url_permission(ctx, "web_fetch", "Fetch")
+        if not allow(url):
+            return ToolResult.error(
+                f"The user did not allow fetching {url} (it is on this machine or the local "
+                "network). Use a public URL, or ask the user.")
         try:
-            text = fetch_url(url, max_chars=get_limits(ctx).web_fetch_chars)
+            text = fetch_url(url, max_chars=get_limits(ctx).web_fetch_chars, allow=allow)
+        except PermissionError as exc:
+            return ToolResult.error(f"Stopped: a redirect led somewhere not allowed ({exc}).")
         except Exception as exc:  # noqa: BLE001
             return ToolResult.error(f"Could not fetch {url}: {exc}")
         return ToolResult.ok(text)
+
+
+def url_permission(ctx: ToolContext, key: str, verb: str):
+    """A check for each URL a tool is about to load: public addresses pass;
+    a local file or an internal address (localhost, the LAN, cloud metadata)
+    asks the user once per host. Non-interactive runs refuse them."""
+    from coded.netguard import internal_reason
+    from coded.permissions import Decision
+    from urllib.parse import urlparse
+
+    approved = set()
+
+    def allow(url: str) -> bool:
+        reason = internal_reason(url)
+        if reason is None:
+            return True
+        parsed = urlparse(url)
+        scope = (parsed.scheme, parsed.hostname or parsed.path)
+        if scope in approved:
+            return True
+        if ctx.permissions is None:
+            return False
+        decision = ctx.permissions.request(
+            key=key, title=f"{verb} {reason}", detail=url, target=url, always_ask=True)
+        if decision is Decision.ALLOW:
+            approved.add(scope)
+            return True
+        return False
+
+    return allow

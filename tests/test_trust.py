@@ -165,3 +165,125 @@ def test_bundled_skill_files_stay_readable(tmp_path):
     skill = next(builtin_skills_dir().glob("*/SKILL.md"))
     out, err, _ = agent._run_tool(_call("read", {"path": str(skill)}), display=False)
     assert not err
+
+
+# -- web_fetch / browser: internal addresses ask first (audit S-01/S-03) ---------
+def test_netguard_classifies_addresses():
+    from coded.netguard import file_url_inside, internal_reason
+
+    for url in ("http://127.0.0.1:8000/", "http://localhost/", "http://169.254.169.254/latest",
+                "http://10.0.0.5/", "http://[::1]/", "http://192.168.1.1/admin", "file:///etc/passwd"):
+        assert internal_reason(url), url
+    assert internal_reason("https://93.184.216.34/") is None
+    assert file_url_inside("file:///proj/a.html", ["/proj"])
+    assert not file_url_inside("file:///proj/../etc/passwd", ["/proj"])
+
+
+def test_web_fetch_asks_before_an_internal_address_and_its_redirects(tmp_path, monkeypatch):
+    from coded.config import Config
+    from coded.permissions import PermissionManager
+    from coded.tools.base import ToolContext
+    from coded.tools.web import WebFetchTool
+    from coded import websearch
+
+    asked = []
+    perms = PermissionManager()
+    perms.set_prompt(lambda title, detail: asked.append(detail) or "no")
+    ctx = ToolContext(cwd=str(tmp_path), permissions=perms, config=Config())
+    fetched = []
+    monkeypatch.setattr(websearch, "fetch_url", lambda url, max_chars=0, allow=None:
+                        fetched.append(url) or "page")
+    tool = WebFetchTool()
+    res = tool.run({"url": "http://169.254.169.254/latest/meta-data"}, ctx)
+    assert res.is_error and not fetched and "169.254.169.254" in asked[0]
+    assert not tool.is_parallel_safe({"url": "http://localhost:3000"}, ctx)
+    # Non-interactive: refused without asking.
+    ctx2 = ToolContext(cwd=str(tmp_path), permissions=PermissionManager(), config=Config())
+    assert tool.run({"url": "http://localhost:3000"}, ctx2).is_error and not fetched
+
+
+def test_web_fetch_redirect_to_an_internal_address_is_stopped(tmp_path):
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from coded.websearch import fetch_url
+
+    hits = []
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            hits.append(self.path)
+            if self.path == "/start":
+                self.send_response(302)
+                self.send_header("Location", "/secret")
+                self.end_headers()
+            else:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"secret")
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    try:
+        seen = []
+        try:
+            fetch_url(base + "/start", allow=lambda u: seen.append(u) or u.endswith("/start"))
+            raise AssertionError("redirect was followed")
+        except PermissionError:
+            pass
+        assert hits == ["/start"] and seen[-1].endswith("/secret")
+    finally:
+        srv.shutdown()
+
+
+def test_browser_blocks_a_page_reaching_an_internal_address(tmp_path):
+    import glob
+    import os
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    import pytest
+
+    pytest.importorskip("playwright")
+    from coded.config import Config
+    from coded.permissions import PermissionManager
+    from coded.tools.base import ToolContext
+    from coded.tools.browser import BrowserTool
+
+    hits = []
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            hits.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+    page = tmp_path / "app.html"
+    page.write_text(f"<html><body>hi<img src='http://127.0.0.1:{port}/meta'></body></html>")
+    found = sorted(glob.glob("/opt/pw-browsers/chromium-*/chrome-linux*/chrome"))
+    exe = os.environ.get("CODED_TEST_CHROME") or (found[-1] if found else "")
+    ctx = ToolContext(cwd=str(tmp_path), permissions=PermissionManager(), config=Config())
+    try:
+        tool = BrowserTool(exe)
+        outside = tool.run({"url": "file:///etc/hostname", "screenshot": False}, ctx)
+        res = tool.run({"url": page.as_uri(), "screenshot": False}, ctx)
+    except Exception as exc:  # pragma: no cover - no browser here
+        pytest.skip(str(exc))
+    finally:
+        srv.shutdown()
+    if res.is_error and "Chromium is not installed" in res.content:
+        pytest.skip(res.content)
+    assert outside.is_error and "did not allow" in outside.content
+    assert not res.is_error, res.content
+    assert "Blocked" in res.content and f"127.0.0.1:{port}/meta" in res.content
+    assert hits == []  # the request never left the browser

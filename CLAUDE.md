@@ -74,6 +74,7 @@ coded/
 ├── embeddings.py       # EmbeddingClient + embedding-model resolution
 ├── index.py            # CodeIndex: chunk/embed/store + cosine search
 ├── websearch.py        # web-search backends + HTML→text fetch
+├── netguard.py         # which URLs are internal (loopback/LAN/metadata/file) for web_fetch/browser
 ├── images.py           # image → base64 data URL for vision models; clipboard image grab
 ├── mentions.py         # `@path` mentions: expansion (Agent.run) + the REPL path completer
 ├── documents.py        # PDF/DOCX/XLSX/PPTX → text sections for the read tool
@@ -370,6 +371,11 @@ config.example.json     # sample configuration
   prompt ("Read file outside the project"), mutating tools reuse theirs with
   `request(always_ask=True)`, so accept-edits mode and sandbox auto-allow do
   not skip it. `--yolo`, "always" and allow rules (`read(/path/*)`) answer it.
+- **Internal addresses ask first** (`netguard.py`, `tools.web.url_permission`):
+  `web_fetch` and `browser` ask (once per host, `always_ask`) before a local
+  file, localhost, a private/link-local/metadata address, and re-check every
+  redirect (`fetch_url(allow=…)`) or browser request (`page.route`); a
+  `file://` inside the project passes. Non-interactive runs refuse them.
 - **`.codedignore`** is enforced in `Agent._run_tool` for path tools
   (`_PATH_TOOLS`, plus apply_patch's file headers via `_tool_paths`), in
   `search._walk` (grep/glob), `ls`, and `@mentions`/their completion. bash is
