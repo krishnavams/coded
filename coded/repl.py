@@ -153,6 +153,8 @@ SLASH_COMMANDS = {
     "/setup": "Configure models interactively (adds, tests, roles, pools, routing).",
     "/verify": "Run the project's checks (and the verify model) over the last change.",
     "/memory": "Project memory: /memory [list|add <note>|forget <id>|clear].",
+    "/heal": "Self-healing: after each change run the project's tests and fix failures "
+             "automatically: /heal [on|off].",
     "/exit": "Quit (also /quit).",
 }
 
@@ -722,6 +724,8 @@ class Repl:
             self._cmd_verify()
         elif cmd == "/memory":
             self._cmd_memory(args)
+        elif cmd == "/heal":
+            self._cmd_heal(args)
         elif cmd == "/model":
             self._cmd_model(args)
         elif cmd == "/tools":
@@ -1111,6 +1115,36 @@ class Repl:
             ui.warn(f"The active model '{active}' is no longer configured; "
                     "switch with /model.")
         ui.info("Config reloaded. /models shows the result.")
+
+    def _cmd_heal(self, args: List[str]) -> None:
+        """Turn self-healing on or off for this session."""
+        from coded.verify import VerifySettings, detect_checks
+
+        settings = VerifySettings.from_config(self.config.verify)
+        want = (args[0].lower() if args else ("off" if self.agent.self_heal else "on"))
+        if want == "off":
+            self.agent.self_heal = False
+            ui.info("Self-healing off.")
+            return
+        if settings.command:
+            self.agent.self_heal = True
+            ui.success(f"Self-healing on: `{settings.command}` (from your config) runs after "
+                       f"each change; failures go back to the agent for up to "
+                       f"{settings.max_rounds} round(s).")
+            return
+        if not detect_checks(self.agent.cwd):
+            ui.warn("No test command found here (pytest, npm test, cargo test, go test, make "
+                    'test). Set one: "verify": {"command": "…"} in .coded/config.json.')
+            return
+        self.agent._heal_declined = False
+        command = self.agent.auto_check_command(ask=True)
+        if not command:
+            ui.info("Self-healing stays off.")
+            return
+        self.agent.self_heal = True
+        ui.success(f"Self-healing on: `{command}` runs after each change (the affected tests "
+                   f"first); failures go back to the agent for up to {settings.max_rounds} "
+                   "round(s). /heal off to stop.")
 
     def _cmd_verify(self) -> None:
         """Run the verification gate now, on whatever the last turn changed."""

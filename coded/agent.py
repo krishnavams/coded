@@ -138,6 +138,11 @@ class Agent:
         self._turn_ran_shell = False
         self._verify_rounds = 0
         self._verify_last = ""
+        self._verify_prev_output = ""
+        # Self-healing for this session (/heal): run the project's detected
+        # checks after a change even when verify.command is not configured.
+        self.self_heal = False
+        self._heal_declined = False
         self._last_request = ""
         self._interrupted = False
         self._session_started = False
@@ -527,6 +532,10 @@ class Agent:
         if self.is_subagent or self.mode == "plan" or not self._turn_changed_things:
             return None
         settings = VerifySettings.from_config(self.config.verify)
+        auto = False
+        if not settings.command and (settings.auto or self.self_heal):
+            settings.command = self.auto_check_command(ask=True)
+            auto = bool(settings.command)
         has_reviewer = bool(self.config.model_roles.get("verify"))
         if not (settings.runs_checks() or settings.runs_review(has_reviewer)):
             return None
@@ -546,11 +555,26 @@ class Agent:
 
         checks = None
         if settings.runs_checks():
-            self._status_note(f"Verifying: {settings.command}")
-            checks = run_checks(settings.command, self.cwd, settings.timeout,
+            command = settings.command
+            if auto:
+                from coded.verify import narrow_checks
+
+                command = narrow_checks(command, self.cwd,
+                                        turn_diff(self.checkpoints, self.cwd)[1])
+            self._status_note(f"Verifying: {command}")
+            checks = run_checks(command, self.cwd, settings.timeout,
                                 limit=self.limits.tool_result_chars)
             if not checks.ok:
-                self._verify_last = f"`{settings.command}` failed"
+                from coded.verify import same_failure, stalled_note
+
+                if self._verify_rounds > 1 and same_failure(self._verify_prev_output,
+                                                            checks.output):
+                    self._status_note(stalled_note(command))
+                    self._verify_rounds = 0
+                    self._verify_prev_output = ""
+                    return None
+                self._verify_prev_output = checks.output
+                self._verify_last = f"`{command}` failed"
                 self._status_note(f"Checks failed; sending the turn back "
                                   f"(round {self._verify_rounds}/{settings.max_rounds}).")
                 return checks_feedback(checks)
@@ -568,6 +592,33 @@ class Agent:
                 return review_feedback(notes)
             self._status_note(f"Second opinion: {verdict.lower()}.")
         self._verify_rounds = 0  # this turn is clean; a later one starts fresh
+        self._verify_prev_output = ""
+        return None
+
+    def auto_check_command(self, ask: bool = False) -> Optional[str]:
+        """The project's detected test command, once the user has approved it
+        for this project (it runs the repository's own code). With `ask`, an
+        interactive session asks once; otherwise an unapproved command is None."""
+        from coded import trust
+        from coded.verify import detect_checks
+
+        command = detect_checks(self.cwd)
+        if not command:
+            return None
+        if trust.check_approved(self.cwd, command):
+            return command
+        if not ask or self._heal_declined or not self.permissions.interactive \
+                or self.permissions.in_background():
+            return None
+        answer = (self.permissions.ask(
+            "Run the project's checks after each change?",
+            f"{command}\n\nThis runs the repository's own code (its tests, conftest.py or "
+            "package scripts) after every change coded makes, and sends failures back "
+            "to fix. Remembered for this project.") or "").strip().lower()
+        if answer in ("y", "yes", "a", "always"):
+            trust.approve_check(self.cwd, command)
+            return command
+        self._heal_declined = True
         return None
 
     def _run_tool_calls(self, tool_calls) -> List[Tuple[Any, str]]:

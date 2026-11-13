@@ -118,7 +118,7 @@ def is_trusted(root: str, fp: str) -> bool:
 def remember(root: str, fp: str) -> None:
     path = store_path()
     data = _load()
-    data[_key(root)] = {"fingerprint": fp}
+    data.setdefault(_key(root), {})["fingerprint"] = fp
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
@@ -210,3 +210,28 @@ def project_plugin_contributions(cwd: Optional[str]) -> Dict[str, Any]:
             contrib = {}
         out[p.name] = {k: v for k, v in contrib.items() if v} or {"files": str(p.root)}
     return out
+
+
+# ---------------------------------------------------------------------------
+# Self-healing: the detected check command runs the repository's own code
+# ---------------------------------------------------------------------------
+def _check_fp(command: str) -> str:
+    return hashlib.sha256(command.encode("utf-8")).hexdigest()
+
+
+def check_approved(root: str, command: str) -> bool:
+    return _check_fp(command) in (_load().get(_key(root), {}).get("checks") or [])
+
+
+def approve_check(root: str, command: str) -> None:
+    data = _load()
+    entry = data.setdefault(_key(root), {})
+    checks = list(entry.get("checks") or [])
+    if _check_fp(command) not in checks:
+        checks.append(_check_fp(command))
+    entry["checks"] = checks
+    path = store_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)

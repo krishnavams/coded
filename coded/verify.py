@@ -14,6 +14,14 @@ Either gate's complaint goes back to the agent as feedback, for a bounded
 number of rounds. Both are off until configured: `verify.command` turns on the
 checks, and the second opinion needs `model_roles.verify` set, so a 7B model is
 never promoted to critic by accident.
+
+**Self-healing** (`"verify": {"auto": true}` or `/heal` for the session): with
+no `command` configured, the project's own test runner is detected
+(`detect_checks`). It runs the repository's code, so it is asked about once
+per project and command (`trust.check_approved`) and never auto-run where
+nobody can answer. The tests a change can affect run first (`narrow_checks`,
+from the dependency map), and a round whose failure matches the previous one
+stops the loop early (`same_failure`): fixing it needs a person.
 """
 
 from __future__ import annotations
@@ -39,6 +47,7 @@ class VerifySettings:
     timeout: float = 300.0
     max_rounds: int = 2                 # how many times a turn may be sent back
     second_opinion: bool = False        # needs model_roles.verify
+    auto: bool = False                  # detect the project's checks (self-healing)
 
     @classmethod
     def from_config(cls, data: Optional[Dict[str, Any]]) -> "VerifySettings":
@@ -57,6 +66,7 @@ class VerifySettings:
             timeout=timeout,
             max_rounds=max(0, rounds),
             second_opinion=bool(data.get("second_opinion", False)),
+            auto=bool(data.get("auto", False)),
         )
 
     def runs_checks(self) -> bool:
@@ -65,6 +75,78 @@ class VerifySettings:
     def runs_review(self, has_verify_model: bool) -> bool:
         return bool(self.enabled and self.second_opinion and has_verify_model
                     and self.max_rounds)
+
+
+# ---------------------------------------------------------------------------
+# Self-healing: finding the project's checks
+# ---------------------------------------------------------------------------
+_PYTEST = "python -m pytest -q -x"
+
+
+def detect_checks(cwd: str) -> Optional[str]:
+    """The project's own test command, if the layout makes it obvious."""
+    import json
+
+    root = Path(cwd)
+    pkg = root / "package.json"
+    if pkg.is_file():
+        try:
+            script = (json.loads(pkg.read_text(encoding="utf-8")).get("scripts") or {}).get("test")
+        except (OSError, ValueError, AttributeError):
+            script = None
+        if script and "no test specified" not in script:
+            return "npm test --silent"
+    if (root / "Cargo.toml").is_file():
+        return "cargo test -q"
+    if (root / "go.mod").is_file():
+        return "go test ./..."
+    py_markers = ("pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini", "conftest.py")
+    has_tests = any((root / d).is_dir() for d in ("tests", "test")) or \
+        any(root.glob("test_*.py"))
+    if has_tests and any((root / m).is_file() for m in py_markers):
+        return _PYTEST
+    mk = root / "Makefile"
+    if mk.is_file():
+        try:
+            if any(line.startswith("test:") for line in mk.read_text(errors="replace").splitlines()):
+                return "make test"
+        except OSError:
+            pass
+    return None
+
+
+def narrow_checks(command: str, cwd: str, changed: List[str], limit: int = 20) -> str:
+    """For a detected pytest run: the test files the change can affect first
+    (from the import graph), or the whole command when there are none or too
+    many to be a shortcut."""
+    if command != _PYTEST or not changed:
+        return command
+    try:
+        from coded.depgraph import affected_tests, build_for
+
+        tests = affected_tests(build_for(cwd), changed)
+    except Exception:  # noqa: BLE001 - narrowing is only a speed-up
+        return command
+    tests = [t for t in tests if t.endswith(".py")]
+    if not tests or len(tests) > limit:
+        return command
+    import shlex
+
+    return command + " " + " ".join(shlex.quote(t) for t in tests)
+
+
+def _normalized(output: str) -> str:
+    import re
+
+    out = re.sub(r"\d+(\.\d+)?s\b", "", output)        # durations
+    out = re.sub(r"0x[0-9a-f]+", "", out)                # addresses
+    out = re.sub(r"/tmp/\S+", "", out)                   # temp paths
+    return "\n".join(line.strip() for line in out.splitlines() if line.strip())[-2000:]
+
+
+def same_failure(previous: str, current: str) -> bool:
+    """The checks failed the same way twice: another round won't help."""
+    return bool(previous) and _normalized(previous) == _normalized(current)
 
 
 @dataclass
@@ -212,6 +294,12 @@ def review_feedback(notes: str) -> str:
         "instead of changing the code — the reviewer did not write this and may be "
         "mistaken."
     )
+
+
+def stalled_note(command: str) -> str:
+    return (f"`{command}` failed the same way after a fix attempt, so the loop stopped "
+            "early: the failure may predate this change or need your input. The answer "
+            "above is unverified.")
 
 
 def exhausted_note(rounds: int, what: str) -> str:

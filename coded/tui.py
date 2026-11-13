@@ -471,6 +471,20 @@ class CodedTUI(App):
         if text == "/undo":
             self.action_undo()
             return
+        if text.split()[0] == "/heal":
+            from coded.verify import detect_checks
+
+            arg = text.split()[1].lower() if len(text.split()) > 1 else ""
+            on = (arg == "on") or (arg != "off" and not self.agent.self_heal)
+            self.agent.self_heal = on
+            self.agent._heal_declined = False
+            found = detect_checks(self.agent.cwd)
+            note = ("Self-healing off." if not on else
+                    f"Self-healing on: `{found}` will run after each change (you'll be asked "
+                    "once to allow it)." if found else
+                    "Self-healing on, but no test command was found; set verify.command.")
+            self._mount(StatusNote(note))
+            return
         if text.split()[0] == "/plan":
             self.agent.set_mode("default" if self.agent.mode == "plan" else "plan")
             text = text[len("/plan"):].strip()

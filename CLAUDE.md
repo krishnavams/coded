@@ -148,6 +148,7 @@ tests/
 ├── test_documents.py   # reading PDF/Word/Excel/PowerPoint, refusals, no-extra path
 ├── test_speed.py       # lazy SDK import, disabled_tools, compact tool schema, --speed
 ├── test_verify.py      # the verification loop: checks, second opinion, rounds
+├── test_self_heal.py   # detected checks, ask-once approval, affected tests first, stall stop
 ├── test_model_chain.py # failover cooldown, sizing for a smaller fallback, stream retry,
 │                       # per-model timeout, unknown-alias warnings
 ├── test_big_models.py  # scaled limits, caps, overflow retry, max_turns, profiles, repo overview
@@ -526,6 +527,15 @@ config.example.json     # sample configuration
   Never runs for sub-agents, plan mode or an unchanged turn; an unparseable
   verdict and a reviewer outage both release the turn. The second opinion needs
   `model_roles.verify` set explicitly: never auto-assign a critic.
+- **Self-healing** (`verify.auto` or REPL/TUI `/heal`, `Agent.self_heal`):
+  with no `verify.command`, `verify.detect_checks` finds the project's runner
+  (npm test, cargo, go, pytest, make test). It runs repository code, so
+  `Agent.auto_check_command` asks once per project + command
+  (`trust.check_approved`/`approve_check`) and never runs it unapproved where
+  nobody can answer. A detected pytest runs the affected tests first
+  (`narrow_checks`, from `depgraph.affected_tests`); a failure identical to the
+  previous round's (`same_failure`, timings/addresses normalized) stops the
+  loop early with `stalled_note`.
 - **Last-resort fallback** (`Config.auto_fallback`, on): when a model's own
   chain is exhausted, `Config.last_resort_models` offers the other configured
   models (same endpoint first, then the widest window) and `LLMClient._chain`
