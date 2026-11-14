@@ -1426,8 +1426,7 @@ class Agent:
                     return ("The user denied permission to run this action and said what to do "
                             f"instead: {feedback}\nDo not retry it as it was; follow their "
                             "instruction.", True, args)
-                return ("The user denied permission to run this action. Do not retry it; ask "
-                        "how to proceed or try another approach.", True, args)
+                return (self.permissions.denial("permission to run this action"), True, args)
 
         if tool.requires_permission or getattr(tool, "mutates", False):
             # Something outside the conversation may have changed, so this turn

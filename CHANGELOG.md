@@ -76,6 +76,11 @@
   explicit `--max-turns` keeps the old hard cap.
 
 ### Fixed
+- A refused action said "The user declined/denied" even when nobody was asked
+  (a mission, `--print`, CI) or a deny rule blocked it. The message now says
+  which: refused because nobody could approve it, blocked by a rule, or denied
+  by you. A plain `sleep` while a background shell runs gets a note pointing at
+  `bash_output(wait=…)`.
 - A long background job could stop a request or a mission as "not making
   progress": checking on it with `bash_output` looked like the same call
   repeated. Polling a shell or task that is still running now counts as

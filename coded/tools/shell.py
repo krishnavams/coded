@@ -120,6 +120,7 @@ them (the user will be asked)."""
         out = _truncate((proc.stdout or "") + (proc.stderr or ""), get_limits(ctx).shell_output_chars)
         status = f"[exit {proc.returncode}]{note}"
         body = out.strip() if out.strip() else "(no output)"
+        body += _sleep_hint(command, ctx)
         return ToolResult(f"{status}\n{body}", is_error=proc.returncode != 0)
 
 
@@ -131,6 +132,23 @@ def _wait_seconds(args: Dict[str, Any]) -> float:
         return max(0.0, min(float(args.get("wait") or 0), MAX_WAIT_SECONDS))
     except (TypeError, ValueError):
         return 0.0
+
+
+_SLEEP = re.compile(r"\s*sleep\s+\d+(\.\d+)?\s*(;|&&|$)")
+
+
+def _sleep_hint(command: str, ctx: ToolContext) -> str:
+    """A bare `sleep` while a background shell runs: point at bash_output's wait,
+    which returns as soon as there is output instead of after the whole sleep."""
+    shells = ctx.extra.get("shells")
+    if not _SLEEP.match(command) or shells is None:
+        return ""
+    running = [sid for sid, _cmd, status in shells.list() if status == "running"]
+    if not running:
+        return ""
+    return (f"\n[Note: to wait for background shell {running[0]}, call "
+            f"bash_output(shell_id='{running[0]}', wait=<seconds>) instead of sleep: it returns "
+            "as soon as there is new output or the command ends.]")
 
 
 class BashOutputTool(Tool):

@@ -402,7 +402,10 @@ docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_
   loop step (main agent only), so a turn stops cleanly with a note.
 - **Per-call permission** (git/github): a tool that is safe for some inputs and
   risky for others sets `requires_permission = False` and calls
-  `ctx.permissions.request(...)` itself for the risky branch. Static-risk tools
+  `ctx.permissions.request(...)` itself for the risky branch. A refusal's text comes from
+  `PermissionManager.denial(what, next_step)` — it says *why* (user / rule /
+  plan / unattended) via `peek_deny_reason`, which leaves the reason for the
+  event log; never write "the user declined" by hand. Static-risk tools
   use the class flag instead.
 - **Checkpoints**: mutating file tools call `ctx.checkpoints.record(path)` before
   writing so `/undo` works. `/rewind` uses `Agent._turn_marks` (one per

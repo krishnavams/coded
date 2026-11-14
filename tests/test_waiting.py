@@ -141,3 +141,20 @@ def test_task_output_wait_returns_when_the_task_finishes(tmp_path):
     start = time.monotonic()
     out = TaskOutputTool().run({"task_id": running.id, "wait": 0.5}, _ctx(tmp_path, tasks=tm))
     assert "running" in out.content and 0.4 < time.monotonic() - start < 3
+
+
+@POSIX
+def test_a_bare_sleep_next_to_a_running_shell_points_at_wait(tmp_path):
+    from coded.tools.shell import BashTool
+
+    shells = BackgroundShells()
+    sid = shells.start("sleep 30", str(tmp_path), "long job")
+    try:
+        ctx = _ctx(tmp_path, shells=shells, limits=None)
+        out = BashTool().run({"command": "sleep 0.1; echo waited"}, ctx).content
+        assert f"bash_output(shell_id='{sid}', wait=" in out
+        assert "bash_output" not in BashTool().run({"command": "echo hi"}, ctx).content
+    finally:
+        shells.kill_all()
+    assert "bash_output" not in BashTool().run({"command": "sleep 0.1"},
+                                               _ctx(tmp_path, shells=shells)).content
