@@ -16,6 +16,31 @@
   writes the report; `coded mission --list` shows them.
 - `/mission <goal>` in the REPL starts a mission with the session's model
   and folder (`/mission --resume`, `/mission --list`).
+- `/resume [n | id]` (REPL and TUI): list this folder's saved conversations and
+  switch to one without restarting; the one you leave is saved first, the one
+  you open keeps saving under its own id.
+- Command suggestions as you type `/`, in the REPL prompt, the box shown while
+  the agent works and the TUI: subcommands, flags and live values (models,
+  styles, sessions, requests, tasks, shells, memory notes, permission rules,
+  files, `@paths`); fuzzy and typo-tolerant matching with the matched letters
+  highlighted; ranked by what this project uses and by what the session points
+  at next (failed checks → `/heal`, edits → `/review`, …). ↑/↓ choose, Tab or
+  Enter takes, Esc closes; a suggestion never runs by itself. Unknown commands
+  get "Did you mean …?". Mouse in the TUI; in the REPL with `"mouse": true`.
+- Messages typed while the agent works reach the *running* agent at its next
+  step (or before it would finish) instead of waiting for the turn to end;
+  read-only commands (`/btw`, `/dashboard`, `/tasks`, `/todos`, `/cost`,
+  `/context`, `/help`) answer at once, other commands run after.
+- Execution state shown apart from the input: running, running tool, waiting
+  for you, follow-up pending, interrupting, and how the last request ended
+  (completed / failed / interrupted) — in the dock, the TUI status line and the
+  REPL status bar.
+- While the agent works: ↑/↓ walk earlier messages, Ctrl+R searches them,
+  Ctrl+L clears the screen; the typed command, flags, values and `@paths` are
+  highlighted (also in the prompt between turns).
+- Esc stops a running turn in the TUI (after its current step).
+- `docs/coded-documentation.pdf`: all the documentation in one PDF
+  (`python docs/build_pdf.py` rebuilds it).
 
 ### Changed
 - The REPL spinner cycles through coded's own words while the model works
@@ -24,9 +49,13 @@
 - Every skill is also a slash command: `/prompt-master write a mail` is
   `/skill prompt-master write a mail` (REPL and TUI), and skills appear in
   slash-command completion. Built-in and custom commands win a name clash.
-- Typing `/` while a turn or tool is running lists the matching slash
-  commands under the input box, and Tab completes the one being typed (the
-  prompt between turns already did this).
+- The input box shown while the agent works is a real line editor: ←/→,
+  Home/End, Delete, word jumps (Ctrl/Option+←/→), Shift-selection, Ctrl+A/E/K/U/W,
+  and multi-line messages (`\`+Enter, Alt+Enter; Ctrl+Enter on Windows).
+- A completed command ends with a space, ready for its arguments.
+- The TUI no longer sends an unknown `/word` to the model; it suggests a
+  correction (or points REPL-only commands to the REPL). Paths such as
+  `/etc/hosts …` still go to the model.
 - Project memory has an `architecture` kind (which module owns what, how the
   pieces connect), recalled first: `/memory add architecture: …` or the
   agent's `memory` tool.
@@ -38,6 +67,16 @@
   explicit `--max-turns` keeps the old hard cap.
 
 ### Fixed
+- Arrow keys, Home/End and Delete did nothing in the input box shown while the
+  agent works: it had no cursor and dropped every escape sequence.
+- `/review`, `/redteam`, `/refactor`, `/init`, `/compact`, `/verify`,
+  `/plan <task>`, `/image … <prompt>`, skills and custom commands ran with no
+  input at all: keys echoed raw into the output, Esc did nothing and typing was
+  lost. They now keep the input box like any request.
+- Ctrl-C / Esc used to discard messages typed during the turn; they now go back
+  into the input.
+- With many sub-agents running, the input box was pushed off the screen
+  (shown as "..."); the dock now fits the terminal.
 - `/dashboard` crashed (`ValueError: too many values to unpack`) whenever the
   session had a task list.
 - Text that looks like terminal markup no longer breaks the display. A request,
