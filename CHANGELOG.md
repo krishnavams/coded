@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 ### Added
 - `coded mission "<goal>"`: an unattended run. It asks everything up front
