@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import itertools
 import json
 from collections import deque
 import os
@@ -40,17 +42,39 @@ _LOOP_REPEATS = 4   # the identical call this often in the window = stuck
 _ERROR_RUN = 10     # this many failing tool calls in a row = stuck
 
 
+# Tools that check on something running: calling them again with the same
+# arguments is waiting, not a loop — unless the thing has finished and the
+# answer is the same again.
+_POLL_TOOLS = ("bash_output", "task_output")
+_poll_ids = itertools.count()
+
+
+def call_record(name: str, args: str, is_error: bool, content: str = "") -> tuple:
+    """One entry for the loop check: (name, raw arguments, is_error, outcome).
+    A poll of something still running gets a fresh outcome every time."""
+    outcome = ""
+    if name in _POLL_TOOLS and not is_error:
+        head = (content or "").split("\n", 1)[0]
+        if head.startswith("[running]") or ": running — " in head:
+            outcome = f"running#{next(_poll_ids)}"
+        else:
+            outcome = hashlib.sha1((content or "").encode("utf-8", "replace")).hexdigest()[:12]
+    return (name, args, is_error, outcome)
+
+
 def stuck_reason(calls) -> Optional[str]:
     """Why recent tool calls look like a loop rather than progress, or None.
 
-    `calls` is a sequence of (tool name, raw arguments, is_error), oldest first.
+    `calls` is a sequence of (tool name, raw arguments, is_error[, outcome]),
+    oldest first (`call_record`).
     """
     calls = list(calls)
-    if len(calls) >= _ERROR_RUN and all(err for _, _, err in calls[-_ERROR_RUN:]):
+    if len(calls) >= _ERROR_RUN and all(c[2] for c in calls[-_ERROR_RUN:]):
         return f"the last {_ERROR_RUN} tool calls all failed"
-    counts: Dict[Tuple[str, str], int] = {}
-    for name, args, _ in calls[-_LOOP_WINDOW:]:
-        key = (name, args or "")
+    counts: Dict[Tuple[str, str, str], int] = {}
+    for call in calls[-_LOOP_WINDOW:]:
+        name, args = call[0], call[1]
+        key = (name, args or "", call[3] if len(call) > 3 else "")
         counts[key] = counts.get(key, 0) + 1
         if counts[key] >= _LOOP_REPEATS:
             return f"it repeated the same `{name}` call {counts[key]} times"
@@ -845,7 +869,8 @@ class Agent:
                     j += 1
             if len(batch) == 1:
                 content, is_error, _ = self._run_tool(batch[0])
-                self._recent_calls.append((batch[0].name, batch[0].arguments, is_error))
+                self._recent_calls.append(call_record(batch[0].name, batch[0].arguments,
+                                                      is_error, content))
                 results.append((batch[0], content))
                 i += 1
                 continue
@@ -853,7 +878,7 @@ class Agent:
                 futures = [pool.submit(run_in_context(self._run_tool, tc, False)) for tc in batch]
                 outcomes = [f.result() for f in futures]
             for tc, (content, is_error, args) in zip(batch, outcomes):
-                self._recent_calls.append((tc.name, tc.arguments, is_error))
+                self._recent_calls.append(call_record(tc.name, tc.arguments, is_error, content))
                 self._show_tool_call(tc.name, args if args is not None else {"_raw": tc.arguments}, tc.id)
                 self._show_tool_result(content, is_error, tc.id, tc.name)
                 results.append((tc, content))

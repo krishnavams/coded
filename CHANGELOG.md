@@ -76,6 +76,11 @@
   explicit `--max-turns` keeps the old hard cap.
 
 ### Fixed
+- A long background job could stop a request or a mission as "not making
+  progress": checking on it with `bash_output` looked like the same call
+  repeated. Polling a shell or task that is still running now counts as
+  progress, and `bash_output` / `task_output` take `wait` to block until there
+  is new output (or the job ends) instead of spending a step per check.
 - Arrow keys, Home/End and Delete did nothing in the input box shown while the
   agent works: it had no cursor and dropped every escape sequence.
 - `/review`, `/redteam`, `/refactor`, `/init`, `/compact`, `/verify`,

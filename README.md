@@ -1482,7 +1482,10 @@ knob, and the default is 128k.
   may take; set it per model or globally. When a request reaches it while still
   making progress, the limit grows by `max_turns` again, up to five times
   `max_turns`, with a note each time. It stops early when the agent looks stuck:
-  the same tool call 4 times in its last 30, or 10 failing calls in a row. After a
+  the same tool call 4 times in its last 30, or 10 failing calls in a row.
+  Checking on something still running (`bash_output`, `task_output`) is waiting,
+  not a loop, and those tools take `wait` (seconds) to block until there is new
+  output or the job is done, instead of using a step per check. After a
   stop, type `continue` to pick up where it left off. `"auto_extend_turns": false`
   makes `max_turns` a hard cap, and so does an explicit `--max-turns N`.
 - **Repository overview** (`repo_overview`: `auto`, `true` or `false`; auto means

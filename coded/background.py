@@ -14,6 +14,7 @@ import os
 import subprocess
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Union
 
@@ -76,6 +77,24 @@ class BackgroundShells:
         code = sh.proc.poll()
         status = "running" if code is None else f"exited {code}"
         return data.decode("utf-8", errors="replace"), status
+
+    def wait(self, shell_id: str, timeout: float, cancel=None, step: float = 0.2) -> bool:
+        """Block until the shell has new output or has exited, `timeout` passes
+        or `cancel` (a threading.Event) is set. False if the shell is unknown."""
+        sh = self._shells.get(shell_id)
+        if sh is None:
+            return False
+        deadline = time.monotonic() + max(0.0, timeout)
+        while time.monotonic() < deadline:
+            if sh.proc.poll() is not None or (cancel is not None and cancel.is_set()):
+                return True
+            try:
+                if os.path.getsize(sh.log_path) > sh.offset:
+                    return True
+            except OSError:
+                return True
+            time.sleep(min(step, max(0.0, deadline - time.monotonic())))
+        return True
 
     def kill(self, shell_id: str) -> bool:
         sh = self._shells.get(shell_id)

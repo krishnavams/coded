@@ -123,24 +123,42 @@ them (the user will be asked)."""
         return ToolResult(f"{status}\n{body}", is_error=proc.returncode != 0)
 
 
+MAX_WAIT_SECONDS = 600
+
+
+def _wait_seconds(args: Dict[str, Any]) -> float:
+    try:
+        return max(0.0, min(float(args.get("wait") or 0), MAX_WAIT_SECONDS))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 class BashOutputTool(Tool):
     name = "bash_output"
-    brief = 'Read new output from a background shell and whether it is still running. Optional `filter` regex.'
+    brief = ('Read new output from a background shell and whether it is still running. '
+             'Optional `filter` regex; `wait` seconds to block for new output.')
     description = """Read new output from a background shell started with \
 bash(run_in_background=true), plus whether it is still running. Only output produced since \
-the last read is returned. Optional `filter` keeps only lines matching a regex."""
+the last read is returned. Optional `filter` keeps only lines matching a regex. To wait for \
+a long command, pass `wait` (seconds): the call returns as soon as there is new output or the \
+command exits — use that instead of calling bash_output again and again."""
     parallel_safe = True
     parameters = {
         "type": "object",
         "properties": {
             "shell_id": {"type": "string"},
             "filter": {"type": "string", "description": "Regex; only matching lines are returned."},
+            "wait": {"type": "number", "description": "Seconds to wait for new output or "
+                     f"the exit before returning (0-{MAX_WAIT_SECONDS}, default 0)."},
         },
         "required": ["shell_id"],
     }
 
     def run(self, args: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         shells = ctx.extra.get("shells")
+        wait = _wait_seconds(args)
+        if wait and shells is not None:
+            shells.wait(args["shell_id"], wait, cancel=ctx.extra.get("cancel"))
         got = shells.read(args["shell_id"]) if shells else None
         if got is None:
             return ToolResult.error(f"No background shell '{args['shell_id']}'.")
