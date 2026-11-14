@@ -343,9 +343,12 @@ async def test_a_queued_message_actually_runs_and_a_queued_command_acts_as_one(
                 await pilot.pause()
                 if not app.busy and not app._queued:
                     break
+    from coded.agent import FOLLOWUP_HEADER
+
     assert seen[0] == "first"
-    assert seen[-1].startswith("second")  # the queued message really ran
-    assert app.agent.mode == "plan"      # and the queued command acted as a command
+    # The message reached the running turn as a follow-up (not a later turn)…
+    assert seen[-1] == f"{FOLLOWUP_HEADER}\nsecond"
+    assert app.agent.mode == "plan"      # …and the queued command acted as a command
 
 
 # -- against a real terminal --------------------------------------------------

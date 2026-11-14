@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Optional
 
@@ -12,6 +13,7 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.filters import Condition, has_completions, vi_navigation_mode
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.lexers import Lexer
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
 from rich.markup import escape
@@ -20,10 +22,12 @@ from rich.text import Text
 
 from coded import choice, ui
 from coded.choice import Chooser
+from coded.execstate import Execution, badge
 from coded.suggest import Engine, MenuState
 from coded.agent import Agent
 from coded.config import Config, ConfigError, load_config
-from coded.typeahead import CTRL_B, CTRL_O, CTRL_T, SHIFT_TAB, TypeAhead, default_poll
+from coded.typeahead import (CTRL_B, CTRL_L, CTRL_O, CTRL_T, SHIFT_TAB, TypeAhead,
+                             default_poll)
 from coded.llm import explain_failure
 
 # prompt_toolkit color theme (matches ui.py accents).
@@ -46,6 +50,12 @@ _PT_STYLE = Style.from_dict({
     "suggest.value": ui.ACCENT2,
     "suggest.path": "#8ab4f8",
     "suggest.recent": ui.MUTED,
+    # What is typed: the command word, flags, quoted values, @paths.
+    "input.command": f"{ui.ACCENT} bold",
+    "input.unknown": f"{ui.ERR} underline",
+    "input.flag": ui.WARN,
+    "input.value": ui.ACCENT2,
+    "input.path": "#8ab4f8",
     "auto-suggestion": "#5b5475",
 })
 
@@ -216,6 +226,50 @@ def _history_path() -> Path:
 # What the prompt returns when a background task finished while the user was
 # idle: the loop then hands its report to the agent.
 _WAKE = "\x00coded-wake\x00"
+# Commands that run the agent loop: the input stays alive and typed messages
+# reach the agent at its next step. (/plan <task> and /image <path> <prompt>
+# too, decided by their arguments; skills and custom commands by name.)
+_AGENT_COMMANDS = frozenset({"/init", "/refactor", "/skill"})
+# Long work that is not the agent loop (sub-agents, a summary, checks): the
+# input stays alive, typed messages are sent when it finishes.
+_WORK_COMMANDS = frozenset({"/review", "/redteam", "/compact", "/verify"})
+# Commands that only read: answered at once even while work runs.
+_READ_ONLY_MIDTURN = frozenset({"/tasks", "/todos", "/cost", "/context", "/help"})
+
+
+class InputLexer(Lexer):
+    """Colors the typed command, its flags and values, and @paths
+    (`suggest.highlight`), line by line."""
+
+    def __init__(self, engine) -> None:
+        self.engine = engine
+
+    def lex_document(self, document):
+        from coded.suggest import highlight
+
+        text = document.text
+        styles = [""] * len(text)
+        for start, end, kind in highlight(text, self.engine.registry()):
+            for i in range(start, min(end, len(text))):
+                styles[i] = f"class:input.{kind}"
+        starts = [0]
+        for line in document.lines[:-1]:
+            starts.append(starts[-1] + len(line) + 1)
+
+        def get_line(n: int):
+            if n >= len(document.lines):
+                return []
+            line, base = document.lines[n], starts[n]
+            out = []
+            for i, ch in enumerate(line):
+                style = styles[base + i]
+                if out and out[-1][0] == style:
+                    out[-1] = (style, out[-1][1] + ch)
+                else:
+                    out.append((style, ch))
+            return out
+
+        return get_line
 
 
 class SuggestCompleter(Completer):
@@ -257,7 +311,13 @@ class Repl:
         self.agent = agent
         self.sessions = sessions  # SessionKeeper: what /resume switches
         self.config = config
-        self._typeahead = None  # set while a turn runs
+        self._typeahead = None  # set while agent work runs (see _busy)
+        # Messages and commands waiting to run after the current work, oldest first.
+        self._backlog: List[str] = []
+        self._busy_kind = ""  # "agent": the agent loop runs (follow-ups reach it)
+        # What is running, kept apart from the input (status line, dock, toolbar).
+        self.execution = Execution(agent, pending=lambda: (
+            self._typeahead.followups_waiting if self._typeahead is not None else 0))
         self._prefill = ""  # a line half-typed when the last turn ended
         self._tasks_shown: list = []  # the task list as last shown above the prompt
         self._on_turn = on_turn  # called after each completed turn (autosave)
@@ -373,6 +433,7 @@ class Repl:
             bottom_toolbar=self._bottom_toolbar,
             complete_while_typing=True,
             complete_in_thread=True,  # suggestions never hold up a keystroke
+            lexer=InputLexer(self.suggest),
             mouse_support=bool(getattr(config, "mouse", False)),
             vi_mode=str(config.editing_mode).lower() == "vi",
             # Lines after the first line up under the text, not under `>`.
@@ -419,8 +480,18 @@ class Repl:
             tasks += (f"  ·  <style fg='{ui.WARN}'><b>● {len(running)} running "
                       f"task{'s' if len(running) != 1 else ''}</b></style>"
                       f" <style fg='{ui.MUTED}'>ctrl+t</style>")
+        last = ""
+        outcome = self.execution.outcome
+        if outcome is not None and not self.execution.running:
+            from html import escape as _h
+
+            from coded.execstate import _LOOK
+
+            mark, color = _LOOK[outcome]
+            last = (f"  ·  <style fg='{getattr(ui, color)}'>{mark} {outcome.value}</style>"
+                    f" <style fg='{ui.MUTED}'>{_h(self.execution.detail())}</style>")
         return HTML(
-            f"  <style fg='{ui.ACCENT}'><b>◆ {self.agent.model.name}</b></style>{mode}"
+            f"  <style fg='{ui.ACCENT}'><b>◆ {self.agent.model.name}</b></style>{mode}{last}"
             f"  ·  {s.turns} turns"
             f"  ·  {tok_str} tokens"
             f"  ·  ~${cost:.4f}{compact}{tasks}"
@@ -463,6 +534,10 @@ class Repl:
             return None
 
     def _permission_prompt(self, title: str, detail: str) -> str:
+        with self.execution.waiting():
+            return self._permission_prompt_inner(title, detail)
+
+    def _permission_prompt_inner(self, title: str, detail: str) -> str:
         self.notifier.waiting(title)
         chooser = choice.permission_chooser(title, detail)
         if self._keys_ready():
@@ -491,6 +566,10 @@ class Repl:
 
     def _questions_prompt(self, questions: list) -> Optional[List[str]]:
         """ask_user: one or more questions; the answers, or None if cancelled."""
+        with self.execution.waiting():
+            return self._questions_prompt_inner(questions)
+
+    def _questions_prompt_inner(self, questions: list) -> Optional[List[str]]:
         self.notifier.waiting("Question")
         chooser = Chooser(questions)
         if self._keys_ready():
@@ -534,6 +613,7 @@ class Repl:
 
     def _escape(self) -> None:
         """Esc during a turn: stop it, as Ctrl-C does."""
+        self.execution.interrupt()
         self.agent.interrupt()
         import os
         import signal
@@ -545,6 +625,89 @@ class Repl:
         else:
             os.kill(os.getpid(), signal.SIGINT)
 
+    def _history_strings(self) -> List[str]:
+        """Earlier messages, oldest first, for ↑/↓ and Ctrl+R during a turn."""
+        try:
+            return list(self.prompt.history.get_strings())  # oldest first
+        except Exception:  # noqa: BLE001
+            return []
+
+    def _clear_screen(self) -> None:
+        """Ctrl+L mid-turn: clear the terminal; the dock redraws at the bottom."""
+        ui.console.clear()
+
+    @contextmanager
+    def _busy(self, label: str, kind: str = "agent"):
+        """Keep the input alive while agent work runs.
+
+        Every path that runs the agent (a message, /review, /init, a skill, a
+        custom command …) goes through here, so the type-ahead reader owns the
+        keyboard and the dock shows the input box, its suggestions and the
+        execution state for the whole run. Messages typed meanwhile reach the
+        running agent at its next step (`kind="agent"`), commands run after it;
+        whatever is left when it ends goes to `_backlog` — nothing is dropped.
+        """
+        if self._typeahead is not None:  # already inside (a command that runs a turn)
+            yield self._typeahead
+            return
+        with TypeAhead(default_poll(), on_queue=self._queued_note,
+                       on_escape=self._escape,
+                       keys={CTRL_B: self._detach_task, CTRL_O: self._toggle_expand,
+                             CTRL_T: self._cmd_tasks, SHIFT_TAB: self._toggle_edits,
+                             CTRL_L: self._clear_screen},
+                       intercept=self._intercept_midturn,
+                       menu=MenuState(self.suggest),
+                       history=self._history_strings) as ta:
+            self._typeahead = ta
+            self._busy_kind = kind
+            # Messages still waiting from earlier go back in the reader's queue,
+            # so they are shown, editable (↑) and — if text — delivered.
+            for waiting in self._backlog:
+                if waiting != _WAKE:
+                    ta.requeue(waiting)
+            self._backlog[:] = [q for q in self._backlog if q == _WAKE]
+            self.notifier.start()
+            ui.reset_cuts()
+            dock = self._turn_dock(ta)
+            self.agent.tasks.can_detach = ta.available
+            if kind == "agent":
+                self.agent.followups = ta.take_followups
+            self.execution.begin(label)
+            ok, error = False, ""
+            try:
+                yield ta
+                ok = True
+            except KeyboardInterrupt:
+                self.execution.interrupt()
+                raise
+            except Exception as exc:  # noqa: BLE001 - recorded, then raised on
+                error = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+                raise
+            finally:
+                self.execution.end(ok, error)
+                self.agent.followups = None
+                self.agent.tasks.can_detach = False
+                if dock is not None:
+                    dock.stop()
+                    ta.set_echo(True)
+                self._typeahead = None
+                self._busy_kind = ""
+                self._backlog += ta.drain()
+                partial = ta.partial  # a half-typed line: back in the next prompt
+                if partial:
+                    self._prefill = partial if not self._prefill else self._prefill + "\n" + partial
+
+    def _keep_after_interrupt(self) -> None:
+        """Ctrl-C/Esc stopped the work: what was typed meanwhile is not run on its
+        own, nor dropped — it goes back into the input to send or change."""
+        kept = [q for q in self._backlog if q != _WAKE]
+        self._backlog[:] = [q for q in self._backlog if q == _WAKE]
+        if not kept:
+            return
+        self._prefill = "\n".join(kept + ([self._prefill] if self._prefill else []))
+        ui.info(f"Kept {len(kept)} message(s) you typed meanwhile in the input — "
+                "Enter sends, Ctrl-C clears.")
+
     # -- main loop ----------------------------------------------------------
     def _turn_dock(self, ta: TypeAhead) -> Optional[ui.TurnDock]:
         """Keep an input box (with the spinner and tasks) at the bottom during
@@ -553,12 +716,13 @@ class Repl:
             return None
         ta.set_echo(False)
         tasks = (lambda: self.agent.todos.items) if self.agent.verbose else None
-        return ui.TurnDock(lambda: ta.editing, tasks, lambda: ta.pending,
+        return ui.TurnDock(lambda: self._highlighted(ta.editing), tasks, lambda: ta.pending,
                            get_queue=lambda: ta.queued_items,
                            get_running=self.agent.tasks.running,
                            can_detach=lambda: self.agent.tasks.can_detach,
                            get_mode=lambda: self.agent.permission_mode,
-                           get_suggestions=lambda: self._midturn_menu(ta)).start()
+                           get_suggestions=lambda: self._midturn_menu(ta),
+                           get_state=lambda: badge(self.execution)).start()
 
     # -- tasks (sub-agents) ---------------------------------------------------
     def _task_finished(self, entry) -> None:
@@ -645,6 +809,12 @@ class Repl:
                        skills=self.agent.skills, agent=self.agent, config=self.config,
                        sessions=self.sessions)
 
+    def _highlighted(self, snap):
+        """The mid-turn box's text with the same colors as the prompt."""
+        from coded.suggest import highlight
+
+        return (snap, highlight(snap.text, self.suggest.registry()))
+
     def _midturn_menu(self, ta: TypeAhead) -> tuple:
         """The dock's dropdown: (rows, picked index) for what is typed now."""
         menu = ta.menu
@@ -655,11 +825,18 @@ class Repl:
 
     def _intercept_midturn(self, text: str) -> bool:
         """A line typed mid-turn: /btw is answered now, alongside the turn, and
-        /dashboard is shown at once (it only reads); anything else is queued."""
-        if text.split()[:1] == ["/dashboard"]:
+        the commands that only read (/dashboard, /tasks, /todos, /cost,
+        /context, /help) are shown at once; other commands wait for the turn,
+        and messages go to the running agent (see `_busy`)."""
+        word = text.split()[:1]
+        if word == ["/dashboard"]:
             from coded.dashboard import render
 
             ui.console.print(render(self.agent, busy=True))
+            return True
+        if word and word[0] in _READ_ONLY_MIDTURN:
+            self.suggest.record(text)
+            self._dispatch_slash(text)
             return True
         if not (text == "/btw" or text.startswith("/btw ")):
             return False
@@ -719,8 +896,18 @@ class Repl:
             dock.asking(on)
 
     def _queued_note(self, text: str, waiting: int) -> None:
+        """Where a line typed mid-turn went: to the running agent, or after it."""
         short = text if len(text) <= 60 else text[:57] + "…"
-        ui.console.print(f"[{ui.ACCENT_SOFT}]  ⏎ queued ({waiting}): {escape(short)}[/]")
+        if text.startswith("/"):
+            where = "runs after this one"
+        elif self._busy_kind == "agent":
+            ui.console.print(f"[{ui.ACCENT2}]  ↪ for the agent's next step: "
+                             f"{escape(short)}[/]")
+            return
+        else:
+            where = "sent when this finishes"
+        ui.console.print(f"[{ui.ACCENT_SOFT}]  ⏎ queued ({waiting}): {escape(short)}[/]"
+                         f"[{ui.MUTED}]  · {where}[/]")
 
     def _show_tasks_above_prompt(self) -> bool:
         """Show the task list right above the input, as the TUI docks it.
@@ -743,13 +930,14 @@ class Repl:
         update = notice(self.config.update_check)
         if update:
             ui.info(update)
-        queued: List[str] = [initial] if initial else []
+        if initial:
+            self._backlog.append(initial)
         self._pending_images = images
         while True:
-            if not queued and self.agent.tasks.has_undelivered():
-                queued.append(_WAKE)  # a background task finished: hand over its report
-            if queued:
-                text = queued.pop(0)
+            if not self._backlog and self.agent.tasks.has_undelivered():
+                self._backlog.append(_WAKE)  # a background task finished: hand over its report
+            if self._backlog:
+                text = self._backlog.pop(0)
                 if text == _WAKE:
                     text = self._wake_text()
                     if not text:
@@ -762,6 +950,7 @@ class Repl:
                     if not self._boxed:
                         ui.console.rule(style=ui.ACCENT_DEEP)
                     self._show_tasks_above_prompt()
+                    self.execution.ready()
                     text = self.prompt.prompt(HTML("<prompt>&gt;</prompt> "),
                                               default=self._prefill)
                     self._prefill = ""
@@ -770,6 +959,7 @@ class Repl:
                         if not text:
                             continue
                 except KeyboardInterrupt:
+                    self._prefill = ""
                     continue
                 except EOFError:
                     break
@@ -777,64 +967,66 @@ class Repl:
             if not text:
                 continue
             if text.startswith("/"):
-                if self._handle_slash(text):
-                    break
+                try:
+                    if self._handle_slash(text):
+                        break
+                except KeyboardInterrupt:
+                    ui.warn("Interrupted.")
+                    self._keep_after_interrupt()
                 continue
             try:
                 ui.user_prefix()
-                # Keep reading stdin during the turn: anything typed is queued
-                # and run next, instead of being swallowed by the busy terminal.
-                with TypeAhead(default_poll(), on_queue=self._queued_note,
-                               on_escape=self._escape,
-                               keys={CTRL_B: self._detach_task, CTRL_O: self._toggle_expand,
-                                     CTRL_T: self._cmd_tasks,
-                                     SHIFT_TAB: self._toggle_edits},
-                               intercept=self._intercept_midturn,
-                               menu=MenuState(self.suggest)) as ta:
-                    self._typeahead = ta
-                    # Messages still waiting from earlier turns go back in the
-                    # reader's queue, so they are shown and ↑ can edit them.
-                    for waiting in queued:
-                        if waiting != _WAKE:
-                            ta.requeue(waiting)
-                    queued[:] = [q for q in queued if q == _WAKE]
-                    self.notifier.start()
-                    ui.reset_cuts()
-                    dock = self._turn_dock(ta)
-                    self.agent.tasks.can_detach = ta.available
-                    try:
-                        answer = self.agent.run(text, images=self._pending_images)
-                        self.notifier.finished(answer)
-                    finally:
-                        self.agent.tasks.can_detach = False
-                        if dock is not None:
-                            dock.stop()
-                            ta.set_echo(True)
-                        self._typeahead = None
-                        queued += ta.drain()
-                        self._prefill = ta.partial  # a half-typed line (Windows)
+                # The input stays alive for the whole turn: typed messages reach
+                # the agent at its next step, commands run after it.
+                with self._busy(text):
+                    answer = self.agent.run(text, images=self._pending_images)
+                    self.notifier.finished(answer)
                 self._pending_images = None
                 if self._on_turn:
                     self._on_turn()
             except KeyboardInterrupt:
                 ui.warn("Interrupted.")
-                queued.clear()
+                self._keep_after_interrupt()
                 if self._on_turn:
                     self._on_turn()  # keep what the interrupted turn did
             except ConfigError as exc:
                 ui.error(str(exc))
             except Exception as exc:  # noqa: BLE001
                 ui.error(explain_failure(exc))
-            if queued:
-                ui.info(f"{len(queued)} queued message(s) — running the next one.")
+            waiting = [q for q in self._backlog if q != _WAKE]
+            if waiting:
+                ui.info(f"{len(waiting)} queued message(s) — running the next one.")
         ui.info("Goodbye.")
 
     # -- slash commands -----------------------------------------------------
     def _handle_slash(self, text: str) -> bool:
-        """Return True to exit the REPL."""
+        """Run a slash command; True to exit the REPL. A command that runs the
+        agent runs inside `_busy`, so the input stays alive meanwhile."""
+        self.suggest.record(text)  # learn what this project uses (known commands only)
+        kind = self._busy_kind_for(text)
+        if kind is None:
+            return self._dispatch_slash(text)
+        with self._busy(text, kind):
+            return self._dispatch_slash(text)
+
+    def _busy_kind_for(self, text: str) -> Optional[str]:
+        """"agent" for commands that run the agent loop (typed messages reach
+        it), "command" for long work that does not (they wait), None otherwise."""
         parts = text.split()
         cmd, args = parts[0], parts[1:]
-        self.suggest.record(text)  # learn what this project uses (known commands only)
+        name = cmd[1:]
+        if cmd in _AGENT_COMMANDS or name in self.commands or (
+                name in self.agent.skills and cmd not in SLASH_COMMANDS):
+            return "agent"
+        if cmd in ("/plan", "/image") and len(args) > (0 if cmd == "/plan" else 1):
+            return "agent"
+        if cmd in _WORK_COMMANDS:
+            return "command"
+        return None
+
+    def _dispatch_slash(self, text: str) -> bool:
+        parts = text.split()
+        cmd, args = parts[0], parts[1:]
 
         if cmd in ("/exit", "/quit"):
             return True

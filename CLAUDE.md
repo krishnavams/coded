@@ -43,6 +43,7 @@ coded/
 ├── notify.py           # Notifier: bell/desktop notification when a long turn ends or asks
 ├── lineedit.py         # LineEditor: the mid-turn input box's text, cursor, selection, lines
 ├── suggest.py          # command suggestions: grammar, live values, fuzzy, learning, next steps
+├── execstate.py        # Execution: running/tool/waiting/follow-up/interrupting/… apart from input
 ├── tasks.py            # TaskManager: running sub-agents (progress, background, stop)
 ├── btw.py              # /btw: side question over a copy of the conversation (no tools)
 ├── prompts.py          # assembles main/sub-agent prompts + AGENTS.md/CODED.md/CLAUDE.md hierarchy
@@ -140,6 +141,8 @@ tests/
 ├── test_queue_edit.py  # ↑ edits the newest queued message (REPL reader, dock, TUI)
 ├── test_suggest.py     # suggestion engine: matching, grammar, values, learning, context, speed
 ├── test_suggest_tui.py # the TUI dropdown: keys only while open, click, unknown commands
+├── test_persistent_input.py  # follow-ups reach the running turn, states, routing, interrupt
+│                       # keeps input, history, TUI, a real REPL in a pty
 ├── test_line_editing.py  # mid-turn box: arrows/Home/End/words/selection/lines, POSIX pty +
 │                       # Windows readers, echo redraw, drawn cursor, normal prompt untouched
 ├── test_btw.py         # /btw: session untouched, answered mid-turn, REPL + TUI
@@ -756,7 +759,8 @@ docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_
   through `ui.todo_progress`/`todo_bar`/`todo_title`/`current_todo` (panel, REPL
   toolbar and TUI status line all use them), and in the REPL `ui.todo_dock` pins the
   unfinished list under the spinner and the streaming view (transient, so the
-  final answer frame drops it), and input typed mid-turn is queued. During a
+  final answer frame drops it), and input typed mid-turn is routed (see
+  *Persistent input*). During a
   REPL turn `ui.TurnDock` is the one rich Live (spinner, tasks, an input box
   showing `TypeAhead.typing`); the key reader's echo is off meanwhile, and
   `ui.thinking()`/`_call_streaming` draw into the dock (`ui.active_dock()`)
@@ -832,6 +836,28 @@ docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_
   closed). REPL mouse is opt-in (`config.mouse`, a SAFE_KEY). Unknown commands
   get `Engine.correct` ("Did you mean"); the TUI no longer sends an unknown
   `/word` to the model (paths like `/etc/x` still go).
+- **Persistent input / routing** (`Repl._busy`, `Agent.followups`, `execstate.py`):
+  every REPL path that runs agent work goes through `Repl._busy(label, kind)`
+  — the main turn and `_handle_slash` for `_AGENT_COMMANDS`, skills, custom
+  commands, `/plan <task>`, `/image … <prompt>` (`kind="agent"`) and
+  `_WORK_COMMANDS` (`kind="command"`) — so the type-ahead reader, the dock and
+  the execution state are up for all of it (before, those commands ran with no
+  input at all). Typed messages are follow-ups: `Agent.followups` (set for the
+  turn: `TypeAhead.take_followups` / `CodedTUI._take_followups`) is read by
+  `_deliver_followups` at the top of each step and before a final answer
+  (`followup_message`, `FOLLOWUP_HEADER`; event `followup`); slash commands stay
+  queued and run after; `_READ_ONLY_MIDTURN` answer at once. What is left when
+  the work ends goes to `Repl._backlog` and runs next; on an interrupt
+  `_keep_after_interrupt` puts it back into the input instead (TUI: `_paused`,
+  the next one into the field) — never dropped, never run unasked. `Execution`
+  is separate from input: front-ends call `begin/end/interrupt/waiting()`, the
+  rest (running tools via `Agent.active_tools`, pending follow-ups) is read
+  live; `badge()` draws it (dock `get_state`, TUI status line, REPL toolbar
+  after a request). TUI Esc: priority `menu_close` while the dropdown is open,
+  else `action_interrupt` (`agent.interrupt()`, between steps). Mid-turn ↑/↓
+  (`DOWN` from the reader on the last line) walk history after the queue,
+  Ctrl+R searches it, Ctrl+L clears. `suggest.highlight` colors the typed line
+  in the prompt (`InputLexer`) and the box (`editor_text(spans=…)`).
 - **Queued messages** (`TypeAhead._queued`, a deque): **↑** mid-turn
   (`typeahead.UP`, from `ESC [A`/`ESC OA` or Windows `\xe0H`) runs
   `edit_last`, moving the newest one into the line being typed; Enter queues it

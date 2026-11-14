@@ -1069,14 +1069,33 @@ Each update shows progress — `Tasks 2/5 ▰▰▰▰▱▱▱▱▱▱ 40%`, t
 `← now` — and the status bar carries the same count and the current item while
 the agent works, so a long turn is never a silent one.
 
-**You can type while it works.** A question or follow-up typed mid-turn is
-queued (`⏎ queued (1): …`) and run as the next message instead of being
-swallowed by the busy terminal; several queue in order. Typing `/` lists the
-matching slash commands under the input box and Tab completes one; it runs
-after the turn. Ctrl-C drops the queue
-along with the turn. The permission prompt takes the next line you type, so the
-two never fight over the same keystrokes. This works in the REPL and the TUI;
-without a terminal (piped input, `--print`) it simply stays off.
+**You can type while it works.** The input never goes away: while the agent
+— or a command that runs it, like `/review`, `/init`, a skill or a custom
+command — is working, an input box stays at the bottom with the execution state
+above it (`◆ running tool  bash · 1 follow-up waiting`, `? waiting for you`,
+`■ interrupting`), and what you type is routed by what it is:
+
+- **A message** goes to the *running* agent: it is delivered at the next step
+  (`↪ follow-up delivered: …`), or just before the agent would finish, so it can
+  change course — "use port 8080", "also update the README", an answer to
+  something it said. Several are delivered together, in order.
+- **A read-only command** (`/btw`, `/dashboard`, `/tasks`, `/todos`, `/cost`,
+  `/context`, `/help`) answers at once, alongside the work.
+- **Any other command** runs right after the work finishes (`⏎ queued … · runs
+  after this one`). Commands that don't run the agent loop (`/review`,
+  `/redteam`, `/compact`, `/verify`) also keep the box; messages typed during
+  those are sent when they finish.
+- **Esc** (or Ctrl-C) stops the work. Nothing you typed is lost or run behind
+  your back: it is put back into the input to send, edit or clear.
+
+Typing `/` lists the matching commands (see *Command suggestions*). **↑/↓**
+walk your earlier messages (↑ first takes back a queued one), **Ctrl+R**
+finds the newest earlier message containing what you typed (again: older),
+**Ctrl+L** clears the screen. The permission prompt takes the next line you
+type, so the two never fight over the same keystrokes. The same routing works
+in the TUI (Esc stops a turn when no suggestion list is open); without a
+terminal (piped input, `--print`) it stays off. Between requests the status bar
+shows how the last one ended (`✓ completed 14s`, `✗ failed`, `■ interrupted`).
 
 That input box is a full line editor:
 

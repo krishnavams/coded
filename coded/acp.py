@@ -230,7 +230,7 @@ class ACPServer:
             self._update(session_id, {"sessionUpdate": "plan", "entries": [
                 {"content": t["content"], "priority": "medium", "status": t["status"]}
                 for t in ev.get("items", [])]})
-        elif kind == "status" and ev.get("text"):
+        elif kind in ("status", "followup") and ev.get("text"):
             self._update(session_id, {"sessionUpdate": "agent_thought_chunk",
                                       "content": {"type": "text", "text": f"[{ev['text']}]\n"}})
 

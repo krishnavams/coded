@@ -181,7 +181,9 @@ class TurnDock:
 
     def __init__(self, get_input, get_tasks=None, get_queued=None, get_running=None,
                  can_detach=None, get_queue=None, get_mode=None,
-                 get_suggestions=None) -> None:
+                 get_suggestions=None, get_state=None) -> None:
+        # The execution state line (execstate.badge), drawn apart from the input.
+        self._get_state = get_state
         # (suggest.Suggestion list, picked index or None) for the dropdown.
         self._get_suggestions = get_suggestions or (lambda: ([], None))
         self._get_mode = get_mode or (lambda: "")
@@ -282,6 +284,13 @@ class TurnDock:
         if waiting and not self._question:
             bottom.append(queued_list(waiting))
         foreground = any(not t.background for t in running) and self._can_detach()
+        if self._get_state is not None:
+            try:
+                state = self._get_state()
+            except Exception:  # noqa: BLE001 - the status line is cosmetic
+                state = None
+            if state is not None:
+                bottom.append(state)
         typed = self._get_input() or ""
         items, picked = ([], None) if self._question else (self._get_suggestions() or ([], None))
         bottom.append(input_box(typed, self._get_queued() or 0,
@@ -382,6 +391,12 @@ _KIND_STYLE = {"command": f"bold {ACCENT}", "next": f"bold {ACCENT2}", "subcomma
                "flag": WARN, "value": ACCENT2, "path": "#8ab4f8", "recent": MUTED}
 
 
+def followup_delivered(text: str) -> None:
+    """A message typed mid-turn has reached the running agent."""
+    gap()
+    console.print(Text(f"↪ follow-up delivered: {text}", style=ACCENT2))
+
+
 def suggestion_row(s, width: int = 0, picked: bool = False, marker: bool = True) -> Text:
     """One dropdown row (see `suggestion_rows`), shared with the TUI's list."""
     t = Text()
@@ -425,13 +440,21 @@ def suggestion_rows(items: list, picked: Optional[int] = None, shown: int = _SUG
     return t
 
 
+_INPUT_KIND = {"command": f"bold {ACCENT}", "unknown": f"{ERR} underline", "flag": WARN,
+               "value": ACCENT2, "path": "#8ab4f8"}
+
+
 def editor_text(text: str, cursor: Optional[int] = None,
-                selection: Optional[tuple] = None) -> Text:
+                selection: Optional[tuple] = None, spans: Optional[list] = None) -> Text:
     """What is being typed, as drawn in the input box: "> " before the first
     line and an indent before the others, the selection highlighted and the
     cursor as a block on the character it is before (or after the end)."""
     cursor = len(text) if cursor is None else max(0, min(cursor, len(text)))
     sel_start, sel_end = selection if selection else (cursor, cursor)
+    colors = [None] * len(text)  # syntax colors (suggest.highlight spans)
+    for start, end, kind in spans or ():
+        for i in range(max(0, start), min(end, len(text))):
+            colors[i] = _INPUT_KIND.get(kind)
     cells = []  # (text, style) per character; merged into runs below
     for i, ch in enumerate(text):
         if ch == "\n":
@@ -439,7 +462,7 @@ def editor_text(text: str, cursor: Optional[int] = None,
                 cells.append((" ", _CURSOR))
             cells.append(("\n  ", None))
             continue
-        style = _CURSOR if i == cursor else (_SELECTED if sel_start <= i < sel_end else None)
+        style = _CURSOR if i == cursor else (_SELECTED if sel_start <= i < sel_end else colors[i])
         cells.append((ch, style))
     if cursor == len(text):
         cells.append((" ", _CURSOR))
@@ -466,10 +489,13 @@ def input_box(text, queued: int = 0, answering: bool = False,
               suggesting: bool = False) -> Group:
     """The input box drawn during a turn (the REPL's own box is not up then).
     `text` is the typed string (cursor at its end) or a `lineedit.Snapshot`."""
+    spans = None
+    if isinstance(text, tuple):  # (snapshot, highlight spans)
+        text, spans = text
     if isinstance(text, str):
-        line = editor_text(text)
+        line = editor_text(text, spans=spans)
     else:
-        line = editor_text(text.text, text.cursor, text.selection)
+        line = editor_text(text.text, text.cursor, text.selection, spans)
         text = text.text
     if answering:
         hint = "  enter to answer  ·  esc for no"

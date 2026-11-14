@@ -88,6 +88,17 @@ def _is_tool_images(message: Dict[str, Any]) -> bool:
             and str(content[0].get("text", "")).startswith(_TOOL_IMAGES))
 
 
+FOLLOWUP_HEADER = ("[The user added this while you were working. Take it into account: "
+                   "adjust what you are doing, answer it, or carry on if it changes nothing.]")
+
+
+def followup_message(texts: List[str]) -> str:
+    """The user message that carries mid-turn follow-ups to the agent."""
+    if len(texts) == 1:
+        return f"{FOLLOWUP_HEADER}\n{texts[0]}"
+    return FOLLOWUP_HEADER + "\n" + "\n".join(f"{n}. {t}" for n, t in enumerate(texts, 1))
+
+
 class Agent:
     def __init__(
         self,
@@ -179,6 +190,9 @@ class Agent:
         self.event_task: Optional[str] = None  # the task id, in a sub-agent
         self._last_request = ""
         self._interrupted = False
+        # Messages the user typed while this turn runs (set by the front-end
+        # for the turn): taken at each step and before a final answer.
+        self.followups: Optional[Callable[[], List[str]]] = None
         self._session_started = False
         self._instruction_dirs: set = set()
         self._plan_intro_sent = False
@@ -481,6 +495,34 @@ class Agent:
             self._show_task_done(t)
         self.session.add_user(report_message(done))
 
+    def _deliver_followups(self) -> bool:
+        """Hand what the user typed mid-turn to the agent, at a safe point: the
+        top of a step (after any tool results) or instead of ending the turn.
+        Main agent only; True when something was delivered."""
+        if self.is_subagent or self.followups is None:
+            return False
+        try:
+            texts = [t.strip() for t in self.followups() or [] if t and t.strip()]
+        except Exception:  # noqa: BLE001 - a broken source must not end the turn
+            return False
+        if not texts:
+            return False
+        if any("@" in t for t in texts):
+            from coded.mentions import expand_mentions
+
+            texts = [expand_mentions(t, self.cwd, max_chars=self.limits.tool_result_chars,
+                                     vision=False, dirs=self.config.add_dirs).text
+                     if "@" in t else t for t in texts]
+        self.session.add_user(followup_message(texts))
+        self.events.add("followup", count=len(texts))
+        for t in texts:
+            short = " ".join(t.split())
+            short = short if len(short) <= 80 else short[:77] + "…"
+            if not self._emit("followup", text=short) and self.verbose:
+                ui.followup_delivered(short)
+        self._step_done()
+        return True
+
     def _background_pending(self) -> bool:
         """Before ending a turn: is a background report waiting, or (when nobody
         can wake the agent later) still being produced? Waits for the latter."""
@@ -532,6 +574,7 @@ class Agent:
                 final_text = final_text or stop
                 break
             self._deliver_background()
+            self._deliver_followups()
             self.session.turns += 1
             self._sync_sizing()
             self._maybe_compact()
@@ -574,6 +617,8 @@ class Agent:
             if not completion.tool_calls:
                 self._step_done()
                 final_text = completion.content
+                if self._deliver_followups():
+                    continue  # the user added something: answer that before finishing
                 if self._background_pending():
                     continue  # a background task's report arrived: let the agent see it
                 feedback = self._verify_turn(final_text)

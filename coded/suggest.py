@@ -1030,3 +1030,39 @@ class MenuState:
         with self._lock:
             self._dismissed = text
             self.index = None
+
+
+# ---------------------------------------------------------------------------
+# Highlighting what is typed
+# ---------------------------------------------------------------------------
+_MENTION = None
+
+
+def highlight(text: str, known: Iterable[str]) -> List[Tuple[int, int, str]]:
+    """(start, end, kind) spans to color in an input: the command word
+    ("command", or "unknown" for a /word that is not one), flags, quoted
+    values and @paths. `known` is the command names (Engine.registry())."""
+    import re
+
+    global _MENTION
+    if _MENTION is None:
+        _MENTION = re.compile(r'(?:(?<=\s)|^)@(?:"[^"]*"?|\S+)')
+    spans: List[Tuple[int, int, str]] = []
+    first_end = text.find("\n")
+    first = text if first_end < 0 else text[:first_end]
+    if first.startswith("/"):
+        tokens = tokenize(first)
+        if tokens:
+            head = tokens[0]
+            if head.value in known:
+                spans.append((head.start, head.end, "command"))
+            elif re.match(r"/[A-Za-z][\w:-]*$", head.value):
+                spans.append((head.start, head.end, "unknown"))
+            for tok in tokens[1:]:
+                if tok.value.startswith("--"):
+                    spans.append((tok.start, tok.end, "flag"))
+                elif tok.quoted:
+                    spans.append((tok.start, tok.end, "value"))
+    for m in _MENTION.finditer(text):
+        spans.append((m.start(), m.end(), "path"))
+    return sorted(spans)

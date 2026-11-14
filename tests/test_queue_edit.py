@@ -10,7 +10,7 @@ import pytest
 
 from coded import ui
 from coded.lineedit import LineEditor
-from coded.typeahead import UP, TypeAhead
+from coded.typeahead import DOWN, UP, TypeAhead
 
 
 class _Keys:
@@ -69,9 +69,9 @@ def test_the_up_arrow_is_recognised_from_the_terminal():
         assert reader(0) is None
         os.write(master, b"x\x1b[A")
         assert reader(0.5) == UP
-        os.write(master, b"\x1bOA\x1b[B")       # application-mode Up; Down is dropped
+        os.write(master, b"\x1bOA\x1b[B")       # application-mode Up; Down: next history
         assert reader(0.5) == UP
-        assert reader(0.3) is None and reader.editor.text == "x"
+        assert reader(0.3) == DOWN and reader.editor.text == "x"
     finally:
         reader.close()
         os.close(master)

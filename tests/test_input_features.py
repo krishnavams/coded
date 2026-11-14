@@ -128,11 +128,11 @@ def keys():
 
 
 def test_a_lone_escape_stops_but_arrow_keys_do_not(keys):
-    from coded.typeahead import ESCAPE, UP
+    from coded.typeahead import DOWN, ESCAPE, UP
 
     master, reader = keys
-    os.write(master, b"\x1b[B")      # arrow down: an escape sequence, dropped
-    assert reader(0.5) is None
+    os.write(master, b"\x1b[B")      # arrow down: the next history entry, not a stop
+    assert reader(0.5) == DOWN
     os.write(master, b"\x1b[A")      # arrow up: edits the newest queued message
     assert reader(0.5) == UP
     os.write(master, b"\x1b")

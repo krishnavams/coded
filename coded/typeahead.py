@@ -34,13 +34,19 @@ ESCAPE = "\x1b"
 # Ctrl+B moves the running sub-agent to the background, Ctrl+O expands or
 # collapses tool output, Ctrl+T lists tasks.
 CTRL_B, CTRL_O, CTRL_T = "\x02", "\x0f", "\x14"
-# Up arrow: pull the newest queued message back into the input to edit it.
+# Up arrow: pull the newest queued message back into the input to edit it
+# (with nothing queued: the previous history entry). Down: the next one.
 UP = "\x00up"
+DOWN = "\x00down"
+# Ctrl+R: the newest earlier message containing what is typed (again: older).
+CTRL_R = "\x12"
+# Ctrl+L: clear the screen (the dock redraws at the bottom).
+CTRL_L = "\x0c"
 # Shift+Tab: turn accept-edits on or off while the turn runs.
 SHIFT_TAB = "\x00stab"
 # Tab: complete the slash command being typed.
 TAB = "\t"
-CONTROL_KEYS = (CTRL_B, CTRL_O, CTRL_T, UP, SHIFT_TAB, TAB)
+CONTROL_KEYS = (CTRL_B, CTRL_O, CTRL_T, UP, DOWN, SHIFT_TAB, TAB, CTRL_R, CTRL_L)
 # Key mode (`TypeAhead.keys()`, for the choice prompts): the reader returns one
 # key at a time as KEY + a name from `coded.choice` ("up", "enter", …) or the
 # typed character itself.
@@ -155,8 +161,11 @@ class _LineEditing:
             return None
         if key == "up" and not select and self.editor.on_first_line:
             return UP
-        if key == "down" and not self.editor.multiline:
-            return None
+        if key == "down" and not select:
+            if self.editor.down():
+                self._echo_edit(before)
+                return None
+            return DOWN  # on the last line: the next history entry
         apply_edit(self.editor, key, select)
         self._echo_edit(before)
         return None
@@ -529,8 +538,14 @@ class TypeAhead:
                  keys: Optional[Dict[str, Callable[[], None]]] = None,
                  intercept: Optional[Callable[[str], bool]] = None,
                  complete: Optional[Callable[[str], Optional[str]]] = None,
-                 menu: Any = None):
+                 menu: Any = None,
+                 history: Optional[Callable[[], List[str]]] = None):
         self._poll = poll
+        # Earlier messages, oldest first (↑/↓ and Ctrl+R walk them).
+        self._history = history
+        self._hist_pos: Optional[int] = None
+        self._hist_draft = ""
+        self._search_from: Optional[int] = None
         # The suggestion dropdown (suggest.MenuState): the reader routes ↑/↓,
         # Enter and Esc to it while it is open; Tab takes its row.
         self.menu = menu
@@ -603,7 +618,13 @@ class TypeAhead:
                 self.escape()
                 continue
             if line == UP and UP not in self._keys:
-                self.edit_last()
+                self.up()
+                continue
+            if line == DOWN and DOWN not in self._keys:
+                self.down()
+                continue
+            if line == CTRL_R and CTRL_R not in self._keys:
+                self.search_history()
                 continue
             if line == TAB:
                 self.complete()
@@ -633,6 +654,7 @@ class TypeAhead:
             self._want_answer.clear()
             self._answers.put(line)
             return
+        self._hist_pos = self._search_from = None
         text = line.strip()
         if not text:
             return
@@ -693,6 +715,78 @@ class TypeAhead:
         typed = editor.text
         editor.set_text(text + (" " + typed if typed else ""))
         return text
+
+    # -- history ----------------------------------------------------------------
+    def _entries(self) -> List[str]:
+        try:
+            return [h for h in (self._history() if self._history else []) if h.strip()]
+        except Exception:  # noqa: BLE001 - no history is fine
+            return []
+
+    def up(self) -> Optional[str]:
+        """↑ on the first line: the newest queued message to edit; with nothing
+        queued, the previous history entry (what was typed is kept as a draft)."""
+        taken = self.edit_last()
+        if taken is not None:
+            return taken
+        editor, entries = self._editor(), self._entries()
+        if editor is None or not entries or self._want_answer.is_set():
+            return None
+        if self._hist_pos is None:
+            self._hist_draft = editor.text
+            self._hist_pos = len(entries)
+        if self._hist_pos == 0:
+            return None
+        self._hist_pos -= 1
+        editor.set_text(entries[self._hist_pos])
+        return entries[self._hist_pos]
+
+    def down(self) -> Optional[str]:
+        """↓ on the last line: the next history entry, then back to the draft."""
+        editor, entries = self._editor(), self._entries()
+        if editor is None or self._hist_pos is None:
+            return None
+        self._hist_pos += 1
+        if self._hist_pos >= len(entries):
+            self._hist_pos = None
+            editor.set_text(self._hist_draft)
+            return self._hist_draft
+        editor.set_text(entries[self._hist_pos])
+        return entries[self._hist_pos]
+
+    def search_history(self) -> Optional[str]:
+        """Ctrl+R: the newest earlier message containing what is typed; pressed
+        again, the next older one. None (and nothing changed) when none matches."""
+        editor, entries = self._editor(), self._entries()
+        if editor is None or not entries:
+            return None
+        if self._search_from is None or self._hist_pos is None:
+            self._hist_draft = editor.text
+            self._search_from = len(entries)
+        needle = self._hist_draft.lower()
+        for i in range(self._search_from - 1, -1, -1):
+            if needle in entries[i].lower():
+                self._search_from = self._hist_pos = i
+                editor.set_text(entries[i])
+                return entries[i]
+        return None
+
+    # -- follow-ups ----------------------------------------------------------------
+    def take_followups(self) -> List[str]:
+        """The messages (not slash commands) typed for the running agent, oldest
+        first, taken out of the queue. Commands stay: they run after the turn."""
+        with self._qlock:
+            texts = [q for q in self._queued if not q.startswith("/")]
+            if texts:
+                rest = [q for q in self._queued if q.startswith("/")]
+                self._queued.clear()
+                self._queued.extend(rest)
+        return texts
+
+    @property
+    def followups_waiting(self) -> int:
+        with self._qlock:
+            return sum(1 for q in self._queued if not q.startswith("/"))
 
     # -- consumers ----------------------------------------------------------
     def ask(self, timeout: Optional[float] = None) -> Optional[str]:

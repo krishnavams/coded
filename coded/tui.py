@@ -289,6 +289,7 @@ class CodedTUI(App):
         Binding("down", "menu_move(1)", "Next suggestion", show=False, priority=True),
         Binding("tab", "menu_take", "Take suggestion", show=False, priority=True),
         Binding("escape", "menu_close", "Close suggestions", show=False, priority=True),
+        Binding("escape", "interrupt", "Stop", show=False),
     ]
 
     busy = reactive(False)
@@ -306,8 +307,13 @@ class CodedTUI(App):
         self._thought: Optional[Static] = None
         self._thought_buf = ""
         self._queued: list = []  # messages typed while a turn was running
+        self._qlock = threading.Lock()  # the agent's thread takes follow-ups from it
+        from coded.execstate import Execution
+
+        self.execution = Execution(agent, pending=self._followups_waiting)
         self._expanded = False  # Ctrl+O: tool results shown whole
         self._panel_choice: Optional[bool] = None  # None: follow the terminal width
+        self._paused = False  # after an interrupt: the queue waits for you
         self._changes: list = []  # sidebar.FileChange, recomputed after tool results
         from coded import notify
 
@@ -385,6 +391,12 @@ class CodedTUI(App):
         t = Text(no_wrap=True, overflow="ellipsis")
         t.append("◆ ", style=ui.ACCENT)
         t.append(self.agent.model.name, style=f"bold {ui.ACCENT}")
+        from coded.execstate import badge
+
+        state = badge(self.execution)
+        if state.plain and not state.plain.startswith("○"):
+            t.append("  ·  ")
+            t.append_text(state)
         if self.busy:
             doing = ui.current_todo(self.agent.todos.items)
             done, total, _ = ui.todo_progress(self.agent.todos.items)
@@ -564,11 +576,17 @@ class CodedTUI(App):
             self.push_screen(DashboardModal(self))  # read-only: fine mid-turn
             return
         if self.busy:
-            # Don't swallow a question asked mid-turn: queue it and run it next.
-            self._queued.append(text)
-            self._mount(StatusNote(f"queued ({len(self._queued)}): {text}"))
+            # Never swallowed: a message goes to the running agent at its next
+            # step, a command runs after the turn.
+            with self._qlock:
+                self._queued.append(text)
+                n = len(self._queued)
+            note = (f"queued ({n}): {text}  · runs after this turn" if text.startswith("/")
+                    else f"↪ for the agent's next step: {text}")
+            self._mount(StatusNote(note))
             self._refresh_sidebar()
             return
+        self._paused = False
         self._submit(text)
 
     def _btw(self, question: str) -> None:
@@ -602,7 +620,10 @@ class CodedTUI(App):
             return
         if not self._queued or self.focused is not prompt:
             return
-        text = self._queued.pop()
+        with self._qlock:
+            if not self._queued:
+                return
+            text = self._queued.pop()
         typed = prompt.value.strip()
         prompt.value = text + (" " + typed if typed else "")
         prompt.cursor_position = len(prompt.value)
@@ -720,11 +741,15 @@ class CodedTUI(App):
     @work(thread=True, exclusive=True)
     def _run_agent(self, text: str) -> None:
         self.notifier.start()
+        ok, error = False, ""
         try:
             self.notifier.finished(self.agent.run(text))
+            ok = True
         except Exception as exc:  # noqa: BLE001
+            error = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
             self.call_from_thread(self._mount, StatusNote(explain_failure(exc)))
         finally:
+            self.execution.end(ok, error)
             if self._on_turn:
                 try:
                     self._on_turn()
@@ -732,20 +757,65 @@ class CodedTUI(App):
                     pass
             self.call_from_thread(self._turn_done)
 
+    def _take_followups(self) -> list:
+        """The agent's thread, at a step boundary: messages typed for it."""
+        with self._qlock:
+            texts = [q for q in self._queued if not q.startswith("/")]
+            self._queued[:] = [q for q in self._queued if q.startswith("/")]
+        if texts:
+            self.call_from_thread(self._refresh_sidebar)
+        return texts
+
+    def _followups_waiting(self) -> int:
+        with self._qlock:
+            return sum(1 for q in self._queued if not q.startswith("/"))
+
+    def action_interrupt(self) -> None:
+        """Esc (no dropdown open): stop the running turn after its current step."""
+        if not self.busy or self.screen is not self.screen_stack[0]:
+            return
+        self.execution.interrupt()
+        self.agent.interrupt()
+        self._mount(StatusNote("Stopping after the current step…"))
+        self._refresh_sidebar()
+
     def _turn_done(self) -> None:
         self.busy = False
+        self.agent.followups = None
         self._finalize_assistant()
         self._refresh_sidebar(files=True)
-        self.query_one("#prompt", Input).focus()
+        prompt = self.query_one("#prompt", Input)
+        prompt.focus()
+        from coded.execstate import ExecState
+
+        if self.execution.outcome is ExecState.INTERRUPTED and self._queued:
+            # Stopped on purpose: what was typed meanwhile is neither run on its
+            # own nor dropped — the next one goes back into the input.
+            self._paused = True
+            with self._qlock:
+                first = self._queued.pop(0) if not prompt.value else None
+                left = len(self._queued)
+            if first is not None:
+                prompt.value = first
+                prompt.cursor_position = len(first)
+            self._mount(StatusNote(
+                "Kept what you typed meanwhile: Enter sends it"
+                + (f"; {left} more queued (↑ to edit)." if left else ".")))
+            self._refresh_sidebar()
+            return
         # Queued text takes the same path as typed text, so a slash command
         # typed mid-turn still acts as a command, not as a prompt — and a
         # command that starts no turn does not stall the rest of the queue.
-        while self._queued and not self.busy:
-            self._submit(self._queued.pop(0))
+        while self._queued and not self.busy and not self._paused:
+            with self._qlock:
+                nxt = self._queued.pop(0)
+            self._submit(nxt)
 
     def _start_turn(self, text: str) -> None:
         self._mount(UserMessage(text))
         self.busy = True
+        self.agent.followups = self._take_followups
+        self.execution.begin(text)
         self._run_agent(text)
 
     # -- agent events (called from worker thread) ---------------------------
@@ -789,6 +859,9 @@ class CodedTUI(App):
             self._mount(DiffView(ev.get("diff", "")))
         elif kind == "status":
             self._mount(StatusNote(ev.get("text", "")))
+        elif kind == "followup":
+            self._mount(StatusNote(f"↪ follow-up delivered: {ev.get('text', '')}"))
+            self._refresh_sidebar()
         elif kind == "task_end":
             word = "Done" if ev.get("status") == "completed" else str(ev.get("status", "")).capitalize()
             self._mount(StatusNote(f"⎿ {ev.get('id', '')} {word} ({ev.get('summary', '')})"))
@@ -803,6 +876,10 @@ class CodedTUI(App):
 
     # -- permission prompt (blocks the worker thread) -----------------------
     def _permission_prompt(self, title: str, detail: str) -> str:
+        with self.execution.waiting():
+            return self._permission_prompt_inner(title, detail)
+
+    def _permission_prompt_inner(self, title: str, detail: str) -> str:
         done = threading.Event()
         result = {"v": "no"}
         self.notifier.waiting(title)
@@ -818,6 +895,10 @@ class CodedTUI(App):
         return result["v"]
 
     def _questions_prompt(self, questions: list):
+        with self.execution.waiting():
+            return self._questions_prompt_inner(questions)
+
+    def _questions_prompt_inner(self, questions: list):
         done = threading.Event()
         result = {"v": None}
         self.notifier.waiting("Question")
