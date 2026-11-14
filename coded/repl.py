@@ -8,7 +8,7 @@ from typing import List, Optional
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-from prompt_toolkit.completion import WordCompleter, merge_completers
+from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.filters import Condition, has_completions, vi_navigation_mode
 from prompt_toolkit.history import FileHistory
@@ -20,6 +20,7 @@ from rich.text import Text
 
 from coded import choice, ui
 from coded.choice import Chooser
+from coded.suggest import Engine, MenuState
 from coded.agent import Agent
 from coded.config import Config, ConfigError, load_config
 from coded.typeahead import CTRL_B, CTRL_O, CTRL_T, SHIFT_TAB, TypeAhead, default_poll
@@ -36,6 +37,15 @@ _PT_STYLE = Style.from_dict({
     "completion-menu.completion.current": f"bg:{ui.ACCENT} #120f1d bold",
     "completion-menu.meta.completion": "bg:#1c1830 #7d7699",
     "completion-menu.meta.completion.current": f"bg:{ui.ACCENT_DEEP} #f3efff",
+    # Suggestion rows: the matched letters, and each kind in its own color.
+    "suggest.match": "bold underline",
+    "suggest.command": ui.ACCENT,
+    "suggest.next": f"{ui.ACCENT2} bold",
+    "suggest.subcommand": ui.ACCENT_SOFT,
+    "suggest.flag": ui.WARN,
+    "suggest.value": ui.ACCENT2,
+    "suggest.path": "#8ab4f8",
+    "suggest.recent": ui.MUTED,
     "auto-suggestion": "#5b5475",
 })
 
@@ -208,6 +218,40 @@ def _history_path() -> Path:
 _WAKE = "\x00coded-wake\x00"
 
 
+class SuggestCompleter(Completer):
+    """The REPL's completer: `suggest.Engine` rows as prompt_toolkit completions,
+    the matched letters highlighted and each kind colored; the description,
+    syntax, why it is suggested and where it comes from on the right."""
+
+    def __init__(self, engine) -> None:
+        self.engine = engine
+
+    def get_completions(self, document, complete_event):
+        text, cursor = document.text, document.cursor_position
+        for s in self.engine.suggest(text, cursor):
+            if s.end != cursor:  # only words ending at the cursor are replaced
+                continue
+            yield Completion(s.text, start_position=s.start - cursor,
+                             display=suggestion_display(s), display_meta=suggestion_meta(s))
+
+
+def suggestion_display(s) -> list:
+    """FormattedText for one row: kind color, matched letters underlined."""
+    style = f"class:suggest.{s.kind}"
+    marks = set(s.match)
+    return [(style + (" class:suggest.match" if i in marks else ""), ch)
+            for i, ch in enumerate(s.display)]
+
+
+def suggestion_meta(s) -> str:
+    parts = [f"↳ {s.reason}" if s.reason else s.description]
+    if s.usage and s.usage != s.display.strip() and s.kind in ("command", "next"):
+        parts.append(s.usage)
+    if s.source and s.source != "built-in":
+        parts.append(s.source)
+    return "  ·  ".join(p for p in parts if p)[:110]
+
+
 class Repl:
     def __init__(self, agent: Agent, config: Config, on_turn=None, sessions=None):
         self.agent = agent
@@ -236,20 +280,8 @@ class Repl:
 
         self.commands = discover_commands(agent.cwd)
 
-        words = (list(SLASH_COMMANDS) + [f"/{n}" for n in self.commands]
-                 + list(config.models) + list(agent.skills))
-        meta = dict(SLASH_COMMANDS)
-        meta.update({f"/{n}": f"command · {c.description}"[:60] for n, c in self.commands.items()})
-        meta.update({name: f"model · {mc.model}" for name, mc in config.models.items()})
-        meta.update({name: "skill" for name in agent.skills})
-        skill_cmds = [f"/{n}" for n in agent.skills if f"/{n}" not in meta]
-        words += skill_cmds
-        meta.update({c: f"skill · {agent.skills[c[1:]].description}"[:60] for c in skill_cmds})
-        from coded.mentions import MentionCompleter
-
-        self.mentions = MentionCompleter(agent.cwd)
-        completer = merge_completers([WordCompleter(words, meta_dict=meta, sentence=True),
-                                      self.mentions])
+        self.suggest = Engine(self._suggest_context())
+        completer = SuggestCompleter(self.suggest)
 
         bindings = KeyBindings()
 
@@ -272,6 +304,24 @@ class Repl:
         def _accept_suggestion(event) -> None:
             buf = event.current_buffer
             buf.insert_text(buf.suggestion.text)
+
+        # The suggestion menu: Enter takes the highlighted item into the line
+        # (it never runs it; a second Enter does), Esc closes the menu.
+        @Condition
+        def _item_selected() -> bool:
+            from prompt_toolkit.application.current import get_app
+
+            state = get_app().current_buffer.complete_state
+            return bool(state and state.current_completion)
+
+        @bindings.add("enter", filter=has_completions & _item_selected)
+        def _take_suggestion(event) -> None:
+            buf = event.current_buffer
+            buf.apply_completion(buf.complete_state.current_completion)
+
+        @bindings.add("escape", filter=has_completions, eager=True)
+        def _close_menu(event) -> None:
+            event.current_buffer.cancel_completion()
 
         # A new line without sending: Alt+Enter, Ctrl+J, or `\` then Enter.
         @bindings.add("escape", "enter")
@@ -322,6 +372,8 @@ class Repl:
             style=_PT_STYLE,
             bottom_toolbar=self._bottom_toolbar,
             complete_while_typing=True,
+            complete_in_thread=True,  # suggestions never hold up a keystroke
+            mouse_support=bool(getattr(config, "mouse", False)),
             vi_mode=str(config.editing_mode).lower() == "vi",
             # Lines after the first line up under the text, not under `>`.
             prompt_continuation=lambda width, line, wrapped: " " * min(width, 2),
@@ -506,7 +558,7 @@ class Repl:
                            get_running=self.agent.tasks.running,
                            can_detach=lambda: self.agent.tasks.can_detach,
                            get_mode=lambda: self.agent.permission_mode,
-                           get_commands=self._slash_entries).start()
+                           get_suggestions=lambda: self._midturn_menu(ta)).start()
 
     # -- tasks (sub-agents) ---------------------------------------------------
     def _task_finished(self, entry) -> None:
@@ -583,17 +635,23 @@ class Repl:
         except KeyboardInterrupt:
             ui.warn("Mission stopped. `/mission --resume` carries on.")
 
-    def _slash_entries(self) -> list:
-        """(name, description) of the built-in and custom slash commands."""
-        entries = list(SLASH_COMMANDS.items())
-        entries += [(f"/{n}", f"command · {c.description}") for n, c in self.commands.items()]
-        taken = {n for n, _ in entries}
-        entries += [(f"/{n}", f"skill · {getattr(s, 'description', '')}")
-                    for n, s in self.agent.skills.items() if f"/{n}" not in taken]
-        return entries
+    def _suggest_context(self):
+        """What the suggestion engine reads: commands, skills, the live agent."""
+        from coded.suggest import Context
 
-    def _complete_midturn(self, text: str) -> Optional[str]:
-        return ui.complete_slash(text, self._slash_entries())
+        commands = {name: (desc, "built-in") for name, desc in SLASH_COMMANDS.items()}
+        commands["/quit"] = ("Quit (also /exit).", "built-in")
+        return Context(cwd=self.agent.cwd, commands=commands, custom=self.commands,
+                       skills=self.agent.skills, agent=self.agent, config=self.config,
+                       sessions=self.sessions)
+
+    def _midturn_menu(self, ta: TypeAhead) -> tuple:
+        """The dock's dropdown: (rows, picked index) for what is typed now."""
+        menu = ta.menu
+        if menu is None:
+            return [], None
+        snap = ta.editing
+        return menu.items(snap.text, snap.cursor), menu.index
 
     def _intercept_midturn(self, text: str) -> bool:
         """A line typed mid-turn: /btw is answered now, alongside the turn, and
@@ -732,7 +790,7 @@ class Repl:
                                      CTRL_T: self._cmd_tasks,
                                      SHIFT_TAB: self._toggle_edits},
                                intercept=self._intercept_midturn,
-                               complete=self._complete_midturn) as ta:
+                               menu=MenuState(self.suggest)) as ta:
                     self._typeahead = ta
                     # Messages still waiting from earlier turns go back in the
                     # reader's queue, so they are shown and ↑ can edit them.
@@ -776,6 +834,7 @@ class Repl:
         """Return True to exit the REPL."""
         parts = text.split()
         cmd, args = parts[0], parts[1:]
+        self.suggest.record(text)  # learn what this project uses (known commands only)
 
         if cmd in ("/exit", "/quit"):
             return True
@@ -923,7 +982,9 @@ class Repl:
         elif cmd[1:] in self.agent.skills:  # /<skill> [task] = /skill <skill> [task]
             self._cmd_skill([cmd[1:]] + args)
         else:
-            ui.warn(f"Unknown command: {cmd}. Try /help.")
+            close = self.suggest.correct(cmd)
+            hint = f" Did you mean {' or '.join(close)}?" if close else " Try /help."
+            ui.warn(f"Unknown command: {cmd}.{hint}")
         return False
 
     def _run_custom_command(self, name: str, arguments: str) -> None:

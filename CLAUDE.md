@@ -42,6 +42,7 @@ coded/
 ├── choice.py           # Chooser: arrow-key selector for permission prompts + ask_user (review page)
 ├── notify.py           # Notifier: bell/desktop notification when a long turn ends or asks
 ├── lineedit.py         # LineEditor: the mid-turn input box's text, cursor, selection, lines
+├── suggest.py          # command suggestions: grammar, live values, fuzzy, learning, next steps
 ├── tasks.py            # TaskManager: running sub-agents (progress, background, stop)
 ├── btw.py              # /btw: side question over a copy of the conversation (no tools)
 ├── prompts.py          # assembles main/sub-agent prompts + AGENTS.md/CODED.md/CLAUDE.md hierarchy
@@ -137,6 +138,8 @@ tests/
 ├── test_review.py      # /review pipeline + coded review verdict/exit code
 ├── test_tasks.py       # sub-agent tasks: activity, background, Ctrl+B, /tasks, Ctrl+O
 ├── test_queue_edit.py  # ↑ edits the newest queued message (REPL reader, dock, TUI)
+├── test_suggest.py     # suggestion engine: matching, grammar, values, learning, context, speed
+├── test_suggest_tui.py # the TUI dropdown: keys only while open, click, unknown commands
 ├── test_line_editing.py  # mid-turn box: arrows/Home/End/words/selection/lines, POSIX pty +
 │                       # Windows readers, echo redraw, drawn cursor, normal prompt untouched
 ├── test_btw.py         # /btw: session untouched, answered mid-turn, REPL + TUI
@@ -811,11 +814,24 @@ docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_
   under its tool call. Folded output is 3 lines (`_MAX_RESULT_LINES`), blank runs squeezed and
   long lines cut to one terminal row; the TUI's `ToolResult` folds the same way
   and a click (or Ctrl+O, `action_toggle_output`, for all) expands it.
-- **Slash commands mid-turn**: the dock lists matching commands under the
-  input box while a `/word` is typed (`ui.slash_matches`/`slash_suggestions`,
-  `TurnDock(get_commands=…)`, from `Repl._slash_entries`); Tab (`typeahead.TAB`)
-  calls `TypeAhead(complete=…)` → `ui.complete_slash`. The line is still queued
-  and run as a command after the turn (except the intercepted `/btw`, `/dashboard`).
+- **Command suggestions** (`suggest.py`): one `Engine` for the REPL prompt
+  (`repl.SuggestCompleter`, threaded), the mid-turn dock (`MenuState`, drawn by
+  `ui.suggestion_rows`) and the TUI (`#suggest` OptionList). Commands come from
+  `SLASH_COMMANDS` (TUI: `tui_commands()`, the ones it runs), custom commands
+  and skills; arguments from `GRAMMAR` (keep it in step with a command's
+  handler) whose slots name live `PROVIDERS` (models, styles, sessions, turns,
+  tasks, shells, memory, rules, paths …) — never a canned list of values.
+  Matching is `fuzzy` (prefix > substring > letters in order > typos); ranking
+  adds `UsageStore` (per project, `$CODED_USAGE_STORE` in tests via an autouse
+  fixture) and `next_steps` (from the last request's events, `Agent.active_tools`
+  and agent state; only commands in this front-end's registry). Ties keep the
+  source's order. Providers are cached (`_TTL`), a failing one yields nothing,
+  `suggest()` never raises. A taken row only edits the input (`Suggestion.apply`):
+  Enter takes a row only after ↑/↓ picked it, else it sends; Esc closes the
+  list (mid-turn: the reader's `_escape` — Esc stops the turn only with the list
+  closed). REPL mouse is opt-in (`config.mouse`, a SAFE_KEY). Unknown commands
+  get `Engine.correct` ("Did you mean"); the TUI no longer sends an unknown
+  `/word` to the model (paths like `/etc/x` still go).
 - **Queued messages** (`TypeAhead._queued`, a deque): **↑** mid-turn
   (`typeahead.UP`, from `ESC [A`/`ESC OA` or Windows `\xe0H`) runs
   `edit_last`, moving the newest one into the line being typed; Enter queues it

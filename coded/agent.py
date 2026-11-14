@@ -155,6 +155,7 @@ class Agent:
         # One entry per request the user sent: its user message (by identity),
         # what was typed and the checkpoint group it opened (for /rewind).
         self._turn_marks: List[Dict[str, Any]] = []
+        self._active_tools: Dict[str, str] = {}  # tool-call id → name, while it runs
         # This request's recent tool calls (name, raw args, is_error), for the
         # progress check when it reaches max_turns.
         self._recent_calls: deque = deque(maxlen=_LOOP_WINDOW)
@@ -1141,6 +1142,11 @@ class Agent:
             },
         )
 
+    @property
+    def active_tools(self) -> List[str]:
+        """Names of the tool calls running right now (parallel ones included)."""
+        return list(dict(self._active_tools).values())
+
     def _run_tool(self, tc, display: bool = True) -> Tuple[str, bool, Optional[dict]]:
         """Run one tool call and record it in the event log (timing, outcome)."""
         import time as _time
@@ -1149,7 +1155,11 @@ class Agent:
 
         start = _time.monotonic()
         self.permissions.take_deny_reason()  # start clean
-        content, is_error, args = self._run_tool_inner(tc, display)
+        self._active_tools[tc.id] = tc.name
+        try:
+            content, is_error, args = self._run_tool_inner(tc, display)
+        finally:
+            self._active_tools.pop(tc.id, None)
         flags = classify(content) if is_error else {"denied": False, "outside": False}
         if flags["denied"]:
             if content.startswith("Plan mode is on"):

@@ -137,10 +137,12 @@ def test_bracketed_text_is_shown_not_swallowed(repl):
 def test_mid_turn_slash_suggestions_cover_every_command(repl):
     from coded.repl import SLASH_COMMANDS
 
-    names = [n for n, _ in repl._slash_entries()]
-    assert set(SLASH_COMMANDS) <= set(names)
-    assert repl._complete_midturn("/dashb") == "/dashboard "
-    assert repl._complete_midturn("hello") is None
+    names = set(repl.suggest.registry())
+    assert set(SLASH_COMMANDS) <= names and "/hello" in names and "/planner" in names
+    for name in SLASH_COMMANDS:
+        assert name in [s.display for s in repl.suggest.suggest(name, limit=50)], name
+    assert repl.suggest.suggest("/dashb")[0].text == "/dashboard "
+    assert repl.suggest.suggest("hello") == []
 
 
 def test_a_skill_runs_as_its_own_slash_command(repl, monkeypatch):
@@ -149,8 +151,8 @@ def test_a_skill_runs_as_its_own_slash_command(repl, monkeypatch):
     repl._handle_slash("/planner write a mail")
     assert sent and sent[0].startswith("Apply the skill 'planner'")
     assert "for this task: write a mail" in sent[0]
-    assert ("/planner", ) == tuple(n for n, _ in repl._slash_entries() if n == "/planner")
-    assert repl._complete_midturn("/plann") == "/planner "
+    top = repl.suggest.suggest("/plann")[0]
+    assert top.text == "/planner " and top.source == "skill"
 
 
 def test_slash_mission_runs_a_mission_for_this_session(repl, monkeypatch):

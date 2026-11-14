@@ -22,7 +22,7 @@ import queue
 from collections import deque
 import sys
 import threading
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from coded.lineedit import MOVES as MOVE_KEYS, LineEditor, Snapshot, apply as apply_edit
 
@@ -123,14 +123,36 @@ class _LineEditing:
 
     editor: LineEditor
     echo: bool
+    # A suggestion dropdown (`suggest.MenuState`), set by TypeAhead. While it
+    # is open, ↑/↓ move in it, Enter takes a picked row and Esc closes it.
+    menu: Any = None
 
     def _write(self, text: str) -> None:  # pragma: no cover - per reader
         raise NotImplementedError
+
+    def _menu_open(self) -> bool:
+        if self.menu is None:
+            return False
+        snap = self.editor.snapshot()
+        try:
+            return self.menu.is_open(snap.text, snap.cursor)
+        except Exception:  # noqa: BLE001 - a broken menu must not block typing
+            return False
+
+    def _escape(self) -> Optional[str]:
+        """A lone Esc: close an open dropdown, else hand ESCAPE on (stop the turn)."""
+        if self._menu_open():
+            self.menu.dismiss(self.editor.text)
+            return None
+        return ESCAPE
 
     def _edit(self, key: str, select: bool = False) -> Optional[str]:
         """Apply one editing key; the reader's return value (UP on ↑ in the
         first line, which edits a queued message), else None."""
         before = self.editor.snapshot()
+        if key in ("up", "down") and not select and self._menu_open():
+            self.menu.move(before.text, before.cursor, -1 if key == "up" else 1)
+            return None
         if key == "up" and not select and self.editor.on_first_line:
             return UP
         if key == "down" and not self.editor.multiline:
@@ -147,6 +169,10 @@ class _LineEditing:
     def _enter(self) -> Optional[str]:
         """Enter: hand the text over, or — after a backslash — start a new line."""
         snap = self.editor.snapshot()
+        if self.menu is not None and self._menu_open():
+            if self.menu.accept(self.editor, explicit=True) is not None:
+                self._echo_edit(snap)
+                return None  # a picked suggestion goes into the line, never runs
         if snap.selection is None and snap.text[:snap.cursor].endswith("\\"):
             self.editor.backspace()
             self.editor.newline()
@@ -298,7 +324,10 @@ class _PosixKeys(_LineEditing):
                 rest = chunk[i:] or self._read(0.03)
                 if not rest:
                     self._pending = ""
-                    return ESCAPE
+                    result = self._escape()
+                    if result is None:
+                        continue
+                    return result
                 j = self._sequence_length(rest)
                 seq, chunk, i = rest[:j], rest[j:], 0
                 if seq == "[Z":
@@ -431,8 +460,11 @@ class _WindowsPoll(_LineEditing):
                 if ch == "\x7f":  # Ctrl+Backspace
                     self._edit("delete_word_back")
                     continue
-                if ch == "\x1b":  # Esc: stop the turn
-                    return ESCAPE
+                if ch == "\x1b":  # Esc: close the dropdown, else stop the turn
+                    result = self._escape()
+                    if result is None:
+                        continue
+                    return result
                 if ch in _EDIT_CTRL:
                     self._edit(_EDIT_CTRL[ch])
                     continue
@@ -496,8 +528,14 @@ class TypeAhead:
                  on_escape: Optional[Callable[[], None]] = None,
                  keys: Optional[Dict[str, Callable[[], None]]] = None,
                  intercept: Optional[Callable[[str], bool]] = None,
-                 complete: Optional[Callable[[str], Optional[str]]] = None):
+                 complete: Optional[Callable[[str], Optional[str]]] = None,
+                 menu: Any = None):
         self._poll = poll
+        # The suggestion dropdown (suggest.MenuState): the reader routes ↑/↓,
+        # Enter and Esc to it while it is open; Tab takes its row.
+        self.menu = menu
+        if menu is not None and poll is not None and hasattr(poll, "editor"):
+            poll.menu = menu
         # Tab: the line being typed -> its completion (None: leave it).
         self._complete = complete
         self._on_queue = on_queue
@@ -615,11 +653,21 @@ class TypeAhead:
         return editor if isinstance(editor, LineEditor) else None
 
     def complete(self) -> Optional[str]:
-        """Tab: replace the line being typed with its completion, if any."""
+        """Tab: take the dropdown's row (picked, else the first) or, without a
+        dropdown, replace the line with the completer's completion."""
         editor = self._editor()
-        if self._complete is None or editor is None:
+        if editor is None:
             return None
         before = editor.snapshot()
+        echo = getattr(self._poll, "_echo_edit", None)
+        if self.menu is not None:
+            chosen = self.menu.accept(editor)
+            if chosen is not None:
+                if echo is not None:
+                    echo(before)
+                return editor.text
+        if self._complete is None:
+            return None
         try:
             new = self._complete(before.text)
         except Exception:  # noqa: BLE001 - a completer must not end type-ahead
@@ -627,7 +675,6 @@ class TypeAhead:
         if not new or new == before.text:
             return None
         editor.set_text(new)
-        echo = getattr(self._poll, "_echo_edit", None)
         if echo is not None:
             echo(before)
         return new

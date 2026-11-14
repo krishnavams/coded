@@ -458,43 +458,54 @@ def test_echo_is_switched_off_only_for_readers_that_collect_keys():
     line_mode.set_echo(False)  # no-op, no error
 
 
-_CMDS = [("/help", "Show this help."), ("/model", "Show or switch the active model."),
-         ("/models", "List all configured models."), ("/review", "Run the review [x] pipeline.")]
+_CMDS = {"/help": ("Show this help.", "built-in"),
+         "/model": ("Show or switch the active model.", "built-in"),
+         "/models": ("List all configured models.", "built-in"),
+         "/review": ("Run the review [x] pipeline.", "built-in")}
 
 
-def test_typing_a_slash_mid_turn_lists_matching_commands():
-    dock = ui.TurnDock(lambda: "/mo", get_commands=lambda: _CMDS)
-    text = _plain(dock.render())
+def _menu(tmp_path):
+    from coded.suggest import Context, Engine, MenuState, UsageStore
+
+    engine = Engine(Context(cwd=str(tmp_path), commands=dict(_CMDS)),
+                    UsageStore(str(tmp_path), tmp_path / "usage.json"))
+    return MenuState(engine)
+
+
+def _dock_for(menu, typed):
+    return ui.TurnDock(lambda: typed, get_suggestions=lambda: (
+        menu.items(typed, len(typed)), menu.index))
+
+
+def test_typing_a_slash_mid_turn_lists_matching_commands(tmp_path):
+    menu = _menu(tmp_path)
+    text = _plain(_dock_for(menu, "/mo").render())
     assert "/model " in text and "/models" in text and "/help" not in text
-    assert "tab to complete" in text
+    assert "tab/enter take" in text and "esc close" in text
     # every command for a bare "/", the description shown as plain text
-    text = _plain(ui.TurnDock(lambda: "/", get_commands=lambda: _CMDS).render())
+    text = _plain(_dock_for(menu, "/").render())
     assert "/help" in text and "/review" in text and "[x]" in text
-    # gone once arguments are being typed, for plain text, and while answering
-    for typed in ("/model gpt", "fix the bug"):
-        text = _plain(ui.TurnDock(lambda t=typed: t, get_commands=lambda: _CMDS).render())
-        assert "Show this help" not in text and "tab to complete" not in text
-    dock = ui.TurnDock(lambda: "/mo", get_commands=lambda: _CMDS)
+    # plain text has none; a full command alone has none; asking hides them
+    for typed in ("fix the bug", "/review"):
+        text = _plain(_dock_for(menu, typed).render())
+        assert "Show this help" not in text and "tab/enter take" not in text
+    dock = _dock_for(menu, "/mo")
     dock.asking(True)
     assert "/models" not in _plain(dock.render())
 
 
-def test_tab_completes_the_slash_command_being_typed():
-    assert ui.complete_slash("/rev", _CMDS) == "/review "
-    assert ui.complete_slash("/m", _CMDS) == "/model"      # common prefix
-    assert ui.complete_slash("/model", _CMDS) is None      # still ambiguous
-    assert ui.complete_slash("/zzz", _CMDS) is None
-    assert ui.complete_slash("hello", _CMDS) is None
-
+def test_tab_takes_the_best_suggestion_mid_turn(tmp_path):
     keys = _Keys()
     keys.echo = False
-    ta = TypeAhead(poll=keys, complete=lambda t: ui.complete_slash(t, _CMDS))
-    keys.editor.set_text("/rev")
+    ta = TypeAhead(poll=keys, menu=_menu(tmp_path))
+    keys.editor.set_text("/rvw")                     # fuzzy: letters in order
     assert ta.complete() == "/review " and ta.typing == "/review "
     assert ta.pending == 0  # completing does not queue anything
+    keys.editor.set_text("hello")
+    assert ta.complete() is None and ta.typing == "hello"
 
 
-def test_the_posix_reader_hands_tab_to_the_completer():
+def test_the_posix_reader_routes_keys_to_an_open_dropdown(tmp_path):
     import io
     import os
 
@@ -507,15 +518,33 @@ def test_the_posix_reader_hands_tab_to_the_completer():
     master, slave = pty.openpty()
     reader = _PosixKeys(fd=slave, out=io.StringIO())
     reader.echo = False
-    ta = TypeAhead(poll=reader, complete=lambda t: ui.complete_slash(t, _CMDS))
+    escaped = []
+    ta = TypeAhead(poll=reader, menu=_menu(tmp_path), on_escape=lambda: escaped.append(1))
+
+    def wait_for(cond):
+        for _ in range(100):
+            if cond():
+                return True
+            time.sleep(0.02)
+        return False
+
     try:
         with ta:
-            os.write(master, b"/rev\t")
-            for _ in range(100):
-                if ta.typing == "/review ":
-                    break
-                time.sleep(0.02)
-        assert ta.typing == "/review " and ta.pending == 0
+            os.write(master, b"/rev\t")                       # Tab takes the first row
+            assert wait_for(lambda: ta.typing == "/review ")
+            reader.editor.set_text("")
+            os.write(master, b"/mo\x1b[B\x1b[B\r")           # ↓ ↓ picks the 2nd, Enter takes it
+            assert wait_for(lambda: ta.typing == "/models ")
+            assert ta.pending == 0                            # ...and did not send it
+            os.write(master, b"\r")                           # Enter again sends it
+            assert wait_for(lambda: ta.pending == 1)
+            os.write(master, b"/he\x1b")                      # Esc closes the dropdown...
+            assert wait_for(lambda: ta.typing == "/he")
+            time.sleep(0.1)
+            assert escaped == []                              # ...without stopping the turn
+            os.write(master, b"\x1b")                         # closed now: Esc stops the turn
+            assert wait_for(lambda: escaped == [1])
+        assert ta.drain() == ["/models"]
     finally:
         reader.close()
         os.close(master)

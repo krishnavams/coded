@@ -125,6 +125,13 @@ def _sessions_dir(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _usage_store(tmp_path_factory, monkeypatch):
+    """What the suggestions learn is kept per user; keep tests out of it."""
+    monkeypatch.setenv("CODED_USAGE_STORE",
+                       str(tmp_path_factory.mktemp("usage") / "command_usage.json"))
+
+
+@pytest.fixture(autouse=True)
 def _twin_cache(tmp_path_factory, monkeypatch):
     """The project twin caches in the user's cache dir; keep tests out of it."""
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("cache")))

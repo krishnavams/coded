@@ -181,9 +181,9 @@ class TurnDock:
 
     def __init__(self, get_input, get_tasks=None, get_queued=None, get_running=None,
                  can_detach=None, get_queue=None, get_mode=None,
-                 get_commands=None) -> None:
-        # (name, description) of every slash command, for suggestions as you type.
-        self._get_commands = get_commands or (lambda: [])
+                 get_suggestions=None) -> None:
+        # (suggest.Suggestion list, picked index or None) for the dropdown.
+        self._get_suggestions = get_suggestions or (lambda: ([], None))
         self._get_mode = get_mode or (lambda: "")
         self._get_queue = get_queue or (lambda: [])
         self._get_input = get_input
@@ -283,13 +283,12 @@ class TurnDock:
             bottom.append(queued_list(waiting))
         foreground = any(not t.background for t in running) and self._can_detach()
         typed = self._get_input() or ""
-        plain = typed if isinstance(typed, str) else typed.text
-        matches = [] if self._question else slash_matches(plain, self._get_commands() or [])
+        items, picked = ([], None) if self._question else (self._get_suggestions() or ([], None))
         bottom.append(input_box(typed, self._get_queued() or 0,
                                 self._question, foreground_task=foreground,
-                                mode=self._get_mode(), suggesting=bool(matches)))
-        if matches:
-            bottom.append(slash_suggestions(matches))
+                                mode=self._get_mode(), suggesting=bool(items)))
+        if items:
+            bottom.append(suggestion_rows(items, picked))
         return _fit_height(running, body, bottom)
 
 
@@ -379,38 +378,50 @@ def queued_list(items: list) -> Text:
 _SUGGEST_SHOWN = 6
 
 
-def slash_matches(text: str, commands: list) -> list:
-    """The slash commands that complete `text` (a "/word" with no space yet),
-    as (name, description) pairs in the given order; [] otherwise."""
-    if not text.startswith("/") or any(c.isspace() for c in text):
-        return []
-    return [(n, d) for n, d in commands if n.startswith(text)]
+_KIND_STYLE = {"command": f"bold {ACCENT}", "next": f"bold {ACCENT2}", "subcommand": ACCENT_SOFT,
+               "flag": WARN, "value": ACCENT2, "path": "#8ab4f8", "recent": MUTED}
 
 
-def complete_slash(text: str, commands: list) -> Optional[str]:
-    """Tab mid-turn: one match is completed with a trailing space, several to
-    their longest common prefix; None when there is nothing to add."""
-    names = [n for n, _ in slash_matches(text, commands)]
-    if not names:
-        return None
-    if len(names) == 1:
-        return names[0] + " "
-    prefix = os.path.commonprefix(names)
-    return prefix if len(prefix) > len(text) else None
-
-
-def slash_suggestions(matches: list) -> Text:
-    """The list under the mid-turn input box while a slash command is typed."""
+def suggestion_row(s, width: int = 0, picked: bool = False, marker: bool = True) -> Text:
+    """One dropdown row (see `suggestion_rows`), shared with the TUI's list."""
     t = Text()
-    width = max(len(n) for n, _ in matches[:_SUGGEST_SHOWN])
-    for i, (name, desc) in enumerate(matches[:_SUGGEST_SHOWN]):
-        if i:
+    if marker:
+        t.append(" › " if picked else "   ", style=f"bold {ACCENT}")
+    base = _KIND_STYLE.get(s.kind, ACCENT_SOFT) + (" reverse" if picked else "")
+    label = _one_line(s.display, width or 34)
+    marks = set(s.match)
+    for j, ch in enumerate(label):
+        t.append(ch, style=base + (" underline" if j in marks else ""))
+    t.append(" " * max(0, (width or len(label)) - len(label)))
+    info = f"↳ {s.reason}" if s.reason else s.description
+    if s.kind in ("command", "next") and s.usage and s.usage != s.display.strip():
+        info = f"{info}  ·  {s.usage}" if info else s.usage
+    t.append(f"  {_one_line(info, 76)}", style=MUTED)
+    if s.source and s.source != "built-in":
+        t.append(f"  [{s.source}]", style=f"{MUTED} italic")
+    return t
+
+
+def suggestion_rows(items: list, picked: Optional[int] = None, shown: int = _SUGGEST_SHOWN) -> Text:
+    """The dropdown under the mid-turn input box: one row per `suggest.Suggestion`
+    — the label in its kind's color with the matched letters underlined, the
+    syntax for commands, then why it is suggested (or what it does) and where
+    it comes from. The picked row is marked and reversed; the window scrolls to
+    keep it visible."""
+    t = Text()
+    if not items:
+        return t
+    top = 0 if picked is None else max(0, min(picked - shown + 1, len(items) - shown))
+    window = items[top:top + shown]
+    width = min(max(len(s.display) for s in window), 34)
+    for row, s in enumerate(window):
+        if row:
             t.append("\n")
-        t.append(f"  {name.ljust(width)}", style=f"bold {ACCENT}" if i == 0 else ACCENT_SOFT)
-        t.append(f"  {_one_line(desc, 70)}", style=MUTED)
-    hidden = len(matches) - _SUGGEST_SHOWN
-    if hidden > 0:
-        t.append(f"\n  … {hidden} more", style=MUTED)
+        t.append_text(suggestion_row(s, width, top + row == picked))
+    hidden = len(items) - top - len(window)
+    if hidden > 0 or top:
+        t.append(f"\n   {'… ' + str(top) + ' above  ' if top else ''}"
+                 f"{'… ' + str(hidden) + ' more' if hidden > 0 else ''}", style=MUTED)
     return t
 
 
@@ -465,7 +476,7 @@ def input_box(text, queued: int = 0, answering: bool = False,
     else:
         hint = "  enter queues a message  ·  esc to interrupt"
         if suggesting:
-            hint = "  tab to complete  ·" + hint
+            hint = "  ↑↓ choose  ·  tab/enter take  ·  esc close"
         if foreground_task:
             hint += "  ·  ctrl+b run task in background"
         hint += f"  ·  ctrl+o {'collapse' if _expanded else 'expand'}  ·  ctrl+t tasks"

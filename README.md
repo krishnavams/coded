@@ -473,6 +473,38 @@ pip install -e '.[tui]'      # adds Textual
 
 Set `"editing_mode": "vi"` in your config for vi key bindings (or toggle with `/vim`).
 
+### Command suggestions
+
+Type `/` and a dropdown lists the commands — the same in the REPL prompt, in the
+input box while the agent works, and in the TUI. It completes as you go:
+
+- **Commands, subcommands, flags and values**: `/permissions ` offers
+  `allow deny remove mode save`, `/permissions mode ` the three modes,
+  `/mission --` its flags, `/model ` your configured models and pools,
+  `/style ` the output styles, `/resume ` this folder's saved sessions,
+  `/rewind ` and `/timeline ` this conversation's requests, `/tasks stop `
+  what is running, `/memory forget ` the notes, `/permissions allow ` a rule
+  for each tool (and `bash(<cmd> *)` for the commands the agent ran),
+  `/review `, `/export `, `/add-dir `, `/image ` files and folders, `@` any
+  path. Custom commands show their `argument-hint`, plugins and skills their source.
+- **Forgiving**: prefix, letters in order (`/rvw` → `/review`) and typos
+  (`/reveiw` → `/review`). An unknown command answers "Did you mean …?".
+- **Ranked for you**: commands you use in this project come first, and whole
+  lines you ran before come back (`/model fast`). Learned per project in
+  `~/.config/coded/command_usage.json`.
+- **What next**: a bare `/` puts first what the session points at — failed
+  checks → `/heal`, `/timeline`; edits → `/review`, `/undo`; sub-agents
+  running → `/tasks`; a full context window → `/compact`; a call you denied →
+  `/permissions` — each with the reason.
+
+Keys: **↑/↓** choose, **Tab** takes the highlighted (or first) row, **Enter**
+takes a row you moved to (otherwise it sends the line), **Esc** closes the list.
+Taking a row only edits the line — nothing runs until you press Enter. During a
+turn, ↑ and Esc keep their usual meaning (edit queued message, stop) whenever
+the list is closed. The TUI's list can be clicked; in the REPL set
+`"mouse": true` to click it too (off by default: while the prompt owns the
+mouse, your terminal's own text selection does not work there).
+
 ### Permissions
 
 Tools that change files (`write`, `edit`, `move`, `delete`) or run commands

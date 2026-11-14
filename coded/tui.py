@@ -33,6 +33,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import (
     Input,
+    OptionList,
     Markdown,
     Static,
 )
@@ -214,6 +215,32 @@ class QuestionModal(ChoiceModal):
 # ---------------------------------------------------------------------------
 # The app
 # ---------------------------------------------------------------------------
+# Commands the TUI runs itself (CodedTUI._submit); the rest of the REPL's
+# commands are not offered here. Descriptions come from the REPL's list.
+_TUI_COMMANDS = ("/btw", "/clear", "/dashboard", "/exit", "/heal", "/mission", "/plan",
+                 "/quit", "/redteam", "/refactor", "/reset", "/resume", "/timeline", "/twin",
+                 "/undo")
+
+
+def tui_commands() -> dict:
+    from coded.repl import SLASH_COMMANDS
+
+    out = {}
+    for name in _TUI_COMMANDS:
+        desc = SLASH_COMMANDS.get(name) or ("Quit." if name == "/quit" else "")
+        if name == "/mission":
+            desc = "Missions start in the REPL or `coded mission` (they ask questions first)."
+        out[name] = (desc, "built-in")
+    return out
+
+
+def _looks_like_command(text: str) -> bool:
+    """`/word …` (letters, digits, - and :), not a path such as /etc/hosts."""
+    import re
+
+    return bool(re.match(r"/[A-Za-z][\w:-]*(\s|$)", text))
+
+
 class CodedTUI(App):
     CSS = f"""
     Screen {{ background: #100d1a; }}
@@ -238,6 +265,10 @@ class CodedTUI(App):
     #tasks {{ height: auto; max-height: 12; padding: 0 2; margin: 1 1 0 1; display: none; }}
     #tasks.shown {{ display: block; }}
     #prompt {{ border: round #3b3260; background: #100d1a; margin: 0 1; }}
+    #suggest {{ height: auto; max-height: 10; margin: 0 1; display: none;
+                border: round #3b3260; background: #151124; }}
+    #suggest.shown {{ display: block; }}
+    #suggest > .option-list--option-highlighted {{ background: #2a2342; }}
     #prompt:focus {{ border: round {ui.ACCENT}; }}
     #statusline {{ height: 1; padding: 0 2; color: {ui.MUTED}; }}
     #perm-box {{ width: 96; max-width: 95%; height: auto; padding: 0; background: #100d1a; }}
@@ -254,6 +285,10 @@ class CodedTUI(App):
         Binding("ctrl+b", "toggle_sidebar", "Side panel", priority=True),
         Binding("ctrl+o", "toggle_output", "Expand output", priority=True),
         Binding("up", "edit_queued", "Edit queued", show=False),
+        # The suggestion dropdown (only while it is open; see check_action).
+        Binding("down", "menu_move(1)", "Next suggestion", show=False, priority=True),
+        Binding("tab", "menu_take", "Take suggestion", show=False, priority=True),
+        Binding("escape", "menu_close", "Close suggestions", show=False, priority=True),
     ]
 
     busy = reactive(False)
@@ -293,6 +328,13 @@ class CodedTUI(App):
         from coded.commands import discover_commands
 
         self.commands = discover_commands(agent.cwd)
+        from coded.suggest import Context, Engine, MenuState
+
+        self.suggest = Engine(Context(
+            cwd=agent.cwd, commands=tui_commands(), custom=self.commands, skills=agent.skills,
+            agent=agent, config=agent.config, sessions=sessions))
+        self.menu = MenuState(self.suggest)
+        self._menu_items: list = []
 
     # -- layout -------------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -303,6 +345,7 @@ class CodedTUI(App):
                 yield Static("", id="side-body")
         # Docked by the input, panel open or not, so progress stays in view.
         yield Static("", id="tasks")
+        yield OptionList(id="suggest")
         yield Input(placeholder="Ask coded to build, fix, explain…", id="prompt")
         yield Static(self._status_text(), id="statusline")
 
@@ -438,12 +481,82 @@ class CodedTUI(App):
         self._thought = None
         self._thought_buf = ""
 
+    # -- suggestions ------------------------------------------------------------
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "prompt":
+            self._refresh_menu()
+
+    def _refresh_menu(self) -> None:
+        """Fill the dropdown for what is typed at the cursor (or hide it)."""
+        prompt = self.query_one("#prompt", Input)
+        box = self.query_one("#suggest", OptionList)
+        items = self.menu.items(prompt.value, prompt.cursor_position)
+        self._menu_items = items
+        box.clear_options()
+        if not items:
+            box.remove_class("shown")
+            return
+        width = min(max(len(s.display) for s in items), 34)
+        box.add_options([ui.suggestion_row(s, width, marker=False) for s in items])
+        box.highlighted = self.menu.index
+        box.add_class("shown")
+
+    def _menu_open(self) -> bool:
+        return bool(self._menu_items) and self.query_one("#suggest", OptionList).has_class("shown")
+
+    def check_action(self, action: str, parameters: tuple) -> Optional[bool]:
+        """The dropdown keys act only while it is open, and only on the main
+        screen; otherwise Tab moves focus and Esc closes a dialog as before."""
+        if action in ("menu_move", "menu_take", "menu_close"):
+            return self.screen is self.screen_stack[0] and self._menu_open()
+        return True
+
+    def action_menu_move(self, step: int) -> None:
+        prompt = self.query_one("#prompt", Input)
+        self.menu.move(prompt.value, prompt.cursor_position, step)
+        self.query_one("#suggest", OptionList).highlighted = self.menu.index
+
+    def _take(self, explicit: bool = False) -> bool:
+        """Put the picked (or first) row into the input. Never submits."""
+        from coded.lineedit import LineEditor
+
+        prompt = self.query_one("#prompt", Input)
+        editor = LineEditor(prompt.value)
+        editor.set_text(prompt.value, prompt.cursor_position)
+        if self.menu.accept(editor, explicit=explicit) is None:
+            return False
+        prompt.value = editor.text
+        prompt.cursor_position = editor.cursor
+        prompt.focus()
+        self._refresh_menu()
+        return True
+
+    def action_menu_take(self) -> None:
+        self._take()
+
+    def action_menu_close(self) -> None:
+        self.menu.dismiss(self.query_one("#prompt", Input).value)
+        self._refresh_menu()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        """A click (or Enter in the list) takes that row."""
+        if event.option_list.id != "suggest":
+            return
+        prompt = self.query_one("#prompt", Input)
+        self.menu.index = event.option_index
+        self.menu._key = (prompt.value, prompt.cursor_position)
+        self._take(explicit=True)
+
     # -- input --------------------------------------------------------------
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        if self._menu_open() and self.menu.index is not None and self._take(explicit=True):
+            return  # Enter on a picked suggestion takes it; the next Enter sends
         text = event.value.strip()
         if not text:
             return
         event.input.value = ""
+        if text.startswith("/"):
+            self.suggest.record(text)
         if text == "/btw" or text.startswith("/btw "):
             self._btw(text[len("/btw"):].strip())  # answered now, even mid-turn
             return
@@ -484,6 +597,9 @@ class CodedTUI(App):
         """Up in the prompt: take the newest queued message back to edit it
         (Enter queues it again). Elsewhere Up keeps its usual meaning."""
         prompt = self.query_one("#prompt", Input)
+        if self._menu_open() and self.screen is self.screen_stack[0]:
+            self.action_menu_move(-1)
+            return
         if not self._queued or self.focused is not prompt:
             return
         text = self._queued.pop()
@@ -576,7 +692,23 @@ class CodedTUI(App):
                 self._mount(StatusNote(f"Could not read skill: {exc}"))
                 return
             text = skill_message(name, body, text[len(name) + 1:])
+        elif _looks_like_command(text) and not self._known_command(text.split()[0]):
+            self._mount(StatusNote(self._unknown_command(text.split()[0])))
+            return
         self._start_turn(text)
+
+    def _known_command(self, word: str) -> bool:
+        return word in self.suggest.registry()
+
+    def _unknown_command(self, word: str) -> str:
+        from coded.repl import SLASH_COMMANDS
+
+        if word in SLASH_COMMANDS:
+            return (f"{word} works in the REPL (coded without --tui); "
+                    "here: " + ", ".join(sorted(tui_commands())) + ".")
+        close = self.suggest.correct(word)
+        return (f"Unknown command: {word}. "
+                + (f"Did you mean {' or '.join(close)}?" if close else "Type / to see them."))
 
     @work(thread=True)
     def _run_redteam(self, target) -> None:

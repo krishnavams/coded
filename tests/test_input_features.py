@@ -286,4 +286,5 @@ def test_tab_accepts_the_history_suggestion(tmp_path):
 
 
 def test_tab_still_completes_from_the_menu(tmp_path):
-    assert _type_into_prompt(tmp_path, "/he\tZ\r") == "/helpZ"
+    # A completed command ends with a space, ready for its arguments.
+    assert _type_into_prompt(tmp_path, "/he\tZ\r") == "/help Z"
