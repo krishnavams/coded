@@ -754,7 +754,12 @@ docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_
   REPL turn `ui.TurnDock` is the one rich Live (spinner, tasks, an input box
   showing `TypeAhead.typing`); the key reader's echo is off meanwhile, and
   `ui.thinking()`/`_call_streaming` draw into the dock (`ui.active_dock()`)
-  instead of opening their own Live — rich allows only one. Input typed mid-turn is queued
+  instead of opening their own Live — rich allows only one. The dock never grows
+  past the terminal (`ui._fit_height`): a Live taller than the screen is cut at
+  the bottom, hiding the input box, so the spinner, todos, queue and input box
+  always show and running sub-agents (`fit_running_tasks`: fewer steps, then
+  headlines, then a count) and a streaming answer (newest lines) get the rest.
+  Input typed mid-turn is queued
   by `typeahead.TypeAhead` (REPL) or `CodedTUI._queued` and run as the next
   message. The type-ahead reader owns stdin during a turn, so a prompt that
   needs an answer asks it via `TypeAhead.ask()` instead of reading stdin itself.

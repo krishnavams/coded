@@ -256,13 +256,12 @@ class TurnDock:
     def render(self):
         from rich.spinner import Spinner
 
-        parts = []
-        if self._body is not None:
-            parts += [self._body, Text("")]
+        body = [self._body, Text("")] if self._body is not None else []
         if self._prompt is not None:
-            return Group(*parts, self._prompt)
+            return _fit_height([], body, [self._prompt])
+        bottom = []
         if self._question:
-            parts.append(Text.from_markup(f"[{WARN}]● Waiting for your answer…[/]"))
+            bottom.append(Text.from_markup(f"[{WARN}]● Waiting for your answer…[/]"))
         else:
             if not hasattr(self, "_spinner"):
                 self._spinner = Spinner("dots", style=ACCENT)
@@ -274,25 +273,82 @@ class TurnDock:
             self._spinner.update(text=Text.from_markup(
                 f"[{ACCENT}]{escape(label)}…[/] "
                 f"[{MUTED}]({_elapsed(elapsed)} · esc to interrupt)[/]"))
-            parts.append(self._spinner)
+            bottom.append(self._spinner)
         running = list(self._get_running() or [])
-        if running:
-            parts.insert(0, running_tasks(running, expanded=_expanded))
         dock = todo_dock(list(self._get_tasks() or []))
         if dock is not None:
-            parts.append(dock)
+            bottom.append(dock)
         waiting = list(self._get_queue() or [])
         if waiting and not self._question:
-            parts.append(queued_list(waiting))
+            bottom.append(queued_list(waiting))
         foreground = any(not t.background for t in running) and self._can_detach()
         typed = self._get_input() or ""
         matches = [] if self._question else slash_matches(typed, self._get_commands() or [])
-        parts.append(input_box(typed, self._get_queued() or 0,
-                               self._question, foreground_task=foreground,
-                               mode=self._get_mode(), suggesting=bool(matches)))
+        bottom.append(input_box(typed, self._get_queued() or 0,
+                                self._question, foreground_task=foreground,
+                                mode=self._get_mode(), suggesting=bool(matches)))
         if matches:
-            parts.append(slash_suggestions(matches))
-        return Group(*parts)
+            bottom.append(slash_suggestions(matches))
+        return _fit_height(running, body, bottom)
+
+
+class _Lines:
+    """Already-rendered lines (rich `Segment` rows) as a renderable."""
+
+    def __init__(self, lines: list) -> None:
+        self.lines = lines
+
+    def __rich_console__(self, console, options):
+        from rich.segment import Segment
+
+        for line in self.lines:
+            yield from line
+            yield Segment.line()
+
+
+def _height(renderables: list, options) -> int:
+    return len(console.render_lines(Group(*renderables), options, pad=False)) if renderables else 0
+
+
+def _fit_height(running: list, body: list, bottom: list):
+    """The dock, never taller than the terminal: the spinner, task list, queue
+    and input box (`bottom`) always show; running sub-agents get what is left
+    (fewer steps each, then headlines, then a count), and a streaming answer
+    (`body`) shows its newest lines. A Live taller than the screen is cut at
+    the bottom, which hid the input box behind "..."."""
+    options = console.options
+    room = max(1, console.size.height - 1 - _height(bottom, options))
+    top = []
+    if running:
+        tasks = fit_running_tasks(running, room, options)
+        top.append(tasks)
+        room -= _height([tasks], options)
+    if body:
+        lines = console.render_lines(Group(*body), options, pad=False)
+        if len(lines) > room:
+            lines = lines[len(lines) - max(room, 0):] if room > 0 else []
+        if lines:
+            top.append(_Lines(lines))
+    return Group(*top, *bottom)
+
+
+def fit_running_tasks(entries: list, max_lines: int, options=None) -> Text:
+    """`running_tasks`, shortened until it fits in `max_lines` rows."""
+    options = options or console.options
+    candidates = [running_tasks(entries, expanded=_expanded)]
+    if _expanded:
+        candidates.append(running_tasks(entries))
+    candidates.append(running_tasks(entries, activity=0))
+    for t in candidates:
+        if _height([t], options) <= max_lines:
+            return t
+    for keep in range(len(entries) - 1, 0, -1):
+        t = running_tasks(entries[:keep], activity=0)
+        t.append(f"\n… +{len(entries) - keep} more running (ctrl+t or /tasks)",
+                 style=f"{MUTED} italic")
+        if _height([t], options) <= max_lines:
+            return t
+    return Text(f"● {len(entries)} sub-agents running (ctrl+t or /tasks)", style=WARN)
 
 
 _dock: Optional[TurnDock] = None
@@ -735,8 +791,10 @@ def show_last_cut() -> bool:
 _TASK_ACTIVITY = 3  # activity lines per task in the dock, unless expanded
 
 
-def running_tasks(entries: list, expanded: bool = False) -> Text:
-    """Running sub-agents: one headline each, their latest tool calls under it."""
+def running_tasks(entries: list, expanded: bool = False,
+                  activity: Optional[int] = None) -> Text:
+    """Running sub-agents: one headline each, their latest tool calls under it
+    (`activity` of them; 0 = headlines only)."""
     t = Text()
     for n, e in enumerate(entries):
         if n:
@@ -750,14 +808,15 @@ def running_tasks(entries: list, expanded: bool = False) -> Text:
         t.append(f"  {e.id} · {where} · {e.summary()}" if where else f"  {e.id} · {e.summary()}",
                  style=MUTED)
         lines = list(e.activity)
-        shown = lines if expanded else lines[-_TASK_ACTIVITY:]
-        if not shown:
+        keep = _TASK_ACTIVITY if activity is None else activity
+        shown = lines if expanded else (lines[-keep:] if keep else [])
+        if not shown and keep:
             t.append("\n  ⎿  starting…", style=MUTED)
         hidden = len(lines) - len(shown)
         for i, line in enumerate(shown):
             t.append("\n  ⎿  " if i == 0 else "\n     ", style=MUTED)
             t.append(_one_line(line, 90))
-        if hidden:
+        if hidden and shown:
             t.append(f"\n     … +{hidden} earlier (ctrl+o to expand)", style=f"{MUTED} italic")
     return t
 
