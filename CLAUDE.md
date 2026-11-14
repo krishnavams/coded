@@ -71,7 +71,7 @@ coded/
 ├── builtin_skills/     # bundled roles: planner, reviewer, debugger (bodies from prompt files), qa,
 │                       # security, refactor, adversary
 ├── compaction.py       # context auto-compaction (summarize old messages)
-├── sessions_store.py   # persist/restore sessions (--continue/--resume)
+├── sessions_store.py   # persist/restore sessions (--continue/--resume, /resume: SessionKeeper)
 ├── checkpoints.py      # CheckpointManager: per-turn file snapshots for /undo and /rewind
 ├── transcript.py       # /context breakdown and /export Markdown
 ├── ignore.py           # .codedignore (gitignore syntax): rules_for(cwd), cached by mtime
@@ -149,6 +149,7 @@ tests/
 ├── test_turn_limit.py  # max_turns grows with progress, stops a loop, ceiling, hard-cap switches
 ├── test_mission.py     # restarts/stops, open tasks, budget, branch + report, up-front questions
 ├── test_session_autosave.py  # per-step autosave, atomic save, orphan tool calls, todos
+├── test_resume.py      # /resume: list this folder's sessions, switch, keep saving under its id
 ├── test_memory_bounds.py  # bounded output/file reads, timeout kills the process group
 ├── test_compaction.py  # context compaction trigger + tail preservation
 ├── test_permissions_sessions.py  # allow/deny rules, diff preview, sessions, json
@@ -697,6 +698,11 @@ config.example.json     # sample configuration
   `sessions_store.close_tool_calls` gives unanswered tool calls an
   `INTERRUPTED_RESULT`: applied on load and at the start of every
   `Agent.run`, since endpoints reject a history with an orphan tool call.
+  The saved id lives in a `SessionKeeper` (CLI autosave, `--resume`, and the
+  REPL/TUI `/resume` via `resume_command`), so a session opened with `/resume`
+  saves under its own id; the one left is saved first only if it has content.
+  Checkpoints are not touched (`/undo` still reverts this run's edits). Tests
+  get a private `CODED_SESSIONS_DIR` (autouse fixture).
 - **Cross-platform**: anything that runs a command goes through `shells.run` /
   `command_argv` (POSIX keeps the historical `shell=True` string path; Windows
   gets an argv list for the resolved shell) and `popen_kwargs`/`kill_tree` for

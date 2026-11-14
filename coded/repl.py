@@ -16,6 +16,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
 from rich.markup import escape
 from rich.table import Table
+from rich.text import Text
 
 from coded import choice, ui
 from coded.choice import Chooser
@@ -150,6 +151,7 @@ SLASH_COMMANDS = {
     "/checkpoints": "List saved checkpoints.",
     "/compact": "Summarize the conversation now to free up context.",
     "/cost": "Show token usage and estimated cost this session.",
+    "/resume": "Reopen a saved conversation from this folder: /resume [n | id].",
     "/clear": "Clear conversation history (keep the system prompt).",
     "/reset": "Alias for /clear.",
     "/config": "Show which config files are loaded.",
@@ -207,8 +209,9 @@ _WAKE = "\x00coded-wake\x00"
 
 
 class Repl:
-    def __init__(self, agent: Agent, config: Config, on_turn=None):
+    def __init__(self, agent: Agent, config: Config, on_turn=None, sessions=None):
         self.agent = agent
+        self.sessions = sessions  # SessionKeeper: what /resume switches
         self.config = config
         self._typeahead = None  # set while a turn runs
         self._prefill = ""  # a line half-typed when the last turn ended
@@ -882,6 +885,8 @@ class Repl:
             self._cmd_permissions(args)
         elif cmd == "/budget":
             self._cmd_budget(args)
+        elif cmd == "/resume":
+            self._cmd_resume(args)
         elif cmd in ("/clear", "/reset"):
             self.agent.session.reset()
             ui.success("Conversation cleared.")
@@ -1152,6 +1157,18 @@ class Repl:
             return
         ui.success(summary)
         self._prefill = text  # edit it and send again, or clear it
+
+    def _cmd_resume(self, args: List[str]) -> None:
+        from coded.sessions_store import resume_command
+
+        note, table, resumed = resume_command(self.agent, self.sessions, " ".join(args))
+        if table is not None:
+            ui.console.print(table)
+            ui.console.print(Text(note, style=ui.MUTED))
+        elif resumed:
+            ui.success(note)
+        else:
+            ui.info(note)
 
     def _cmd_timeline(self, args: List[str]) -> None:
         """/timeline, /timeline N, /timeline restore N."""

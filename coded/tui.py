@@ -258,10 +258,11 @@ class CodedTUI(App):
 
     busy = reactive(False)
 
-    def __init__(self, agent: Agent, on_turn=None):
+    def __init__(self, agent: Agent, on_turn=None, sessions=None):
         super().__init__()
         self.agent = agent
         self._on_turn = on_turn
+        self.sessions = sessions  # SessionKeeper: what /resume switches
         self.agent.on_event = self._agent_event  # called from the worker thread
         self.agent.permissions.set_prompt(self._permission_prompt, threadsafe=True)
         self.agent.permissions.set_questions(self._questions_prompt)
@@ -504,6 +505,9 @@ class CodedTUI(App):
         if text == "/undo":
             self.action_undo()
             return
+        if text.split()[0] == "/resume":
+            self._resume(text[len("/resume"):])
+            return
         if text.split()[0] == "/dashboard":
             self.push_screen(DashboardModal(self))
             return
@@ -697,6 +701,18 @@ class CodedTUI(App):
         return result["v"]
 
     # -- actions ------------------------------------------------------------
+    def _resume(self, arg: str) -> None:
+        from coded.sessions_store import resume_command
+
+        note, table, resumed = resume_command(self.agent, self.sessions, arg)
+        if resumed:
+            self.query_one("#transcript", VerticalScroll).remove_children()
+            self._finalize_assistant()
+            self._refresh_sidebar(files=True)
+        if table is not None:
+            self._mount(Static(table, classes="statusnote"))
+        self._mount(StatusNote(note))
+
     def action_clear(self) -> None:
         self.agent.session.reset()
         self.query_one("#transcript", VerticalScroll).remove_children()
@@ -724,5 +740,5 @@ class CodedTUI(App):
         self._refresh_sidebar(files=True)
 
 
-def run_tui(agent: Agent, on_turn=None) -> None:
-    CodedTUI(agent, on_turn=on_turn).run()
+def run_tui(agent: Agent, on_turn=None, sessions=None) -> None:
+    CodedTUI(agent, on_turn=on_turn, sessions=sessions).run()

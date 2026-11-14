@@ -121,7 +121,7 @@ runtime.
 - **Context auto-compaction** — long sessions are summarized automatically as
   they approach the model's context window (`/compact` to force it).
 - **Session save/resume** — conversations persist to disk; `--continue` /
-  `--resume <id>` pick up where you left off.
+  `--resume <id>`, or `/resume` inside coded, pick up where you left off.
 - **Permission rules** — allow/deny tool actions by pattern in config, plus a
   colored diff preview before every `write`/`edit`.
 - **Cost tracking** — `/cost` shows token usage and an estimated dollar cost;
@@ -428,6 +428,7 @@ pip install -e '.[tui]'      # adds Textual
 | `/vim` | Toggle vi key bindings in the input |
 | `/undo` | Revert the last turn's file changes |
 | `/rewind [n] [--keep-files]` | Go back to before request *n*: conversation and its file changes |
+| `/resume [n \| id]` | List this folder's saved conversations, or reopen one (the current one stays saved) |
 | `/context` | What fills the context window |
 | `/add-dir [path]` | Let the agent work in another folder too |
 | `/style [name\|off]` | List or switch output styles |
@@ -588,6 +589,12 @@ coded --continue        # resume the most recent session for this directory
 coded --resume <id>     # resume a specific one
 coded sessions          # list them
 ```
+
+Inside coded, **`/resume`** lists this folder's other saved conversations
+(newest first, with their first request) and `/resume 2` — or `/resume <id>`,
+or an id prefix — switches to one without restarting. The conversation you
+leave is saved first, and the one you open keeps saving under its own id.
+File changes are not touched: `/undo` still reverts this run's edits.
 
 ### More folders, excluded paths
 

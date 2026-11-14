@@ -119,6 +119,12 @@ def _trust_store(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _sessions_dir(tmp_path_factory, monkeypatch):
+    """Saved sessions live in the user's config dir; keep tests out of it."""
+    monkeypatch.setenv("CODED_SESSIONS_DIR", str(tmp_path_factory.mktemp("sessions")))
+
+
+@pytest.fixture(autouse=True)
 def _twin_cache(tmp_path_factory, monkeypatch):
     """The project twin caches in the user's cache dir; keep tests out of it."""
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("cache")))
