@@ -1093,7 +1093,8 @@ walk your earlier messages (↑ first takes back a queued one), **Ctrl+R**
 finds the newest earlier message containing what you typed (again: older),
 **Ctrl+L** clears the screen. The permission prompt takes the next line you
 type, so the two never fight over the same keystrokes. The same routing works
-in the TUI (Esc stops a turn when no suggestion list is open); without a
+in the TUI (Esc stops a turn at once — a reply still streaming, a running shell
+command and its children — when no suggestion list is open); without a
 terminal (piped input, `--print`) it stays off. Between requests the status bar
 shows how the last one ended (`✓ completed 14s`, `✗ failed`, `■ interrupted`).
 

@@ -8,7 +8,7 @@ from typing import Any, Dict
 
 from coded.limits import get_limits
 from coded.sandbox import sandbox_state, wrap_command
-from coded.shells import active_shell, run as run_command
+from coded.shells import CommandCancelled, active_shell, run as run_command
 from coded.tools.base import Tool, ToolContext, ToolResult
 
 _DEFAULT_TIMEOUT = 120
@@ -102,7 +102,10 @@ them (the user will be asked)."""
         timeout = int(args.get("timeout", _DEFAULT_TIMEOUT))
         try:
             proc = run_command(argv, cwd=ctx.cwd, timeout=timeout,
-                               shell=active_shell(ctx.config))
+                               shell=active_shell(ctx.config), cancel=ctx.extra.get("cancel"))
+        except CommandCancelled:
+            return ToolResult.error(f"Stopped: the user interrupted this command (it was "
+                                    f"killed): {command}")
         except subprocess.TimeoutExpired:
             hint = "For long-running processes use run_in_background=true."
             if re.match(r"\s*(grep|egrep|rg|ag|find|ack)\b", command):

@@ -38,7 +38,9 @@
 - While the agent works: ↑/↓ walk earlier messages, Ctrl+R searches them,
   Ctrl+L clears the screen; the typed command, flags, values and `@paths` are
   highlighted (also in the prompt between turns).
-- Esc stops a running turn in the TUI (after its current step).
+- Esc stops a running turn in the TUI at once: a model reply that is still
+  coming (or slow to start) is cut off and a running shell command is killed
+  with its child processes, as well as a sub-agent the turn waits on.
 - `docs/coded-documentation.pdf`: all the documentation in one PDF
   (`python docs/build_pdf.py` rebuilds it).
 

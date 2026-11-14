@@ -298,7 +298,8 @@ async def test_tui_escape_interrupts_and_keeps_the_queue(tmp_path, fake_server):
             await pilot.press("enter")                 # a command: waits for the turn
             await pilot.press("escape")                # no dropdown open: stop
             await pilot.pause()
-            assert app.execution.state() is ExecState.INTERRUPTING
+            # Stopping is immediate now (Agent.cancellable), so it may be done already.
+            assert app.execution.state() in (ExecState.INTERRUPTING, ExecState.INTERRUPTED)
             await app.workers.wait_for_complete()
             await pilot.pause()
             assert not app.busy and app.execution.outcome is ExecState.INTERRUPTED

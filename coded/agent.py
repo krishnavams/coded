@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections import deque
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -86,6 +87,12 @@ def _is_tool_images(message: Dict[str, Any]) -> bool:
     content = message.get("content")
     return (isinstance(content, list) and bool(content) and isinstance(content[0], dict)
             and str(content[0].get("text", "")).startswith(_TOOL_IMAGES))
+
+
+class TurnCancelled(BaseException):
+    """The user stopped the turn while the model was answering (see
+    Agent.cancellable). A BaseException, so retry/fallback code that catches
+    Exception never mistakes it for an endpoint failure."""
 
 
 FOLLOWUP_HEADER = ("[The user added this while you were working. Take it into account: "
@@ -193,6 +200,11 @@ class Agent:
         # Messages the user typed while this turn runs (set by the front-end
         # for the turn): taken at each step and before a final answer.
         self.followups: Optional[Callable[[], List[str]]] = None
+        # True where the turn runs off the main thread (TUI): interrupt() then
+        # cancels a model call or a shell command at once, not between steps.
+        # (The REPL stops the main thread with SIGINT instead.)
+        self.cancellable = False
+        self._cancel = threading.Event()
         self._session_started = False
         self._instruction_dirs: set = set()
         self._plan_intro_sent = False
@@ -239,6 +251,7 @@ class Agent:
         skill body, /init) rather than something the user typed.
         """
         self._interrupted = False
+        self._cancel.clear()
         if not self.is_subagent and isinstance(user_message, str) and "@" in user_message:
             from coded.mentions import expand_mentions
 
@@ -342,7 +355,12 @@ class Agent:
     def interrupt(self) -> None:
         """Ask the running turn to stop at the next checkpoint (between steps)."""
         self._interrupted = True
+        self._cancel.set()
         self.events.add("interrupt")
+        tasks = getattr(self, "tasks", None)
+        fg = tasks.foreground() if tasks is not None else None
+        if fg is not None:  # the sub-agent this turn waits on stops too
+            tasks.stop(fg.id)
 
     def switch_model(self, model: ModelConfig, pool: Optional[str] = None,
                      pin: bool = True) -> None:
@@ -580,6 +598,9 @@ class Agent:
             self._maybe_compact()
             try:
                 completion = self._call_model()
+            except TurnCancelled:
+                self._status_note("Interrupted.")
+                break
             except Exception as exc:  # noqa: BLE001
                 if context_retry or not is_context_overflow(exc):
                     raise
@@ -595,7 +616,11 @@ class Agent:
                     self._shrink_recent_tool_results()
                     self._maybe_compact(force=True)
                     self._compact_until_fits()
-                completion = self._call_model()
+                try:
+                    completion = self._call_model()
+                except TurnCancelled:
+                    self._status_note("Interrupted.")
+                    break
             else:
                 context_retry = False
             answered = self.config.models.get(completion.model) or self.model
@@ -1035,6 +1060,42 @@ class Agent:
             exclude=self.config.disabled_tools_for(self.model))
 
     def _call_model(self) -> Completion:
+        if self.cancellable and not self.is_subagent:
+            return self._call_cancellable(self._call_model_now)
+        return self._call_model_now()
+
+    def _call_cancellable(self, fn: Callable[[], Completion]) -> Completion:
+        """Run a model call on a helper thread and wait for it, so an interrupt
+        ends the wait at once (TurnCancelled). The stream callbacks stop the
+        abandoned call at its next chunk; its result is dropped."""
+        box: Dict[str, Any] = {}
+        done = threading.Event()
+
+        def work() -> None:
+            try:
+                box["v"] = fn()
+            except BaseException as exc:  # noqa: BLE001 - handed to the waiting thread
+                box["e"] = exc
+            finally:
+                done.set()
+
+        threading.Thread(target=work, daemon=True, name="coded-model-call").start()
+        while not done.wait(0.05):
+            if self._cancel.is_set():
+                raise TurnCancelled()
+        if "e" in box:
+            raise box["e"]
+        return box["v"]
+
+    def _cancel_guard(self, fn: Callable[[str], None]) -> Callable[[str], None]:
+        """A stream callback that ends the stream once the turn is cancelled."""
+        def guarded(chunk: str) -> None:
+            if self._cancel.is_set():
+                raise TurnCancelled()
+            fn(chunk)
+        return guarded
+
+    def _call_model_now(self) -> Completion:
         tools = self._tool_schema()
         with self.tracer.span("llm", model=self.model.name, model_id=self.model.model,
                               messages=len(self.session.messages)) as attrs:
@@ -1055,8 +1116,9 @@ class Agent:
         self._emit("assistant_start")
         completion = self.llm.complete(
             self.session.messages, tools, stream=True,
-            on_text=lambda chunk: self._emit("assistant_delta", text=chunk),
-            on_reasoning=lambda chunk: self._emit("reasoning_delta", text=chunk),
+            on_text=self._cancel_guard(lambda chunk: self._emit("assistant_delta", text=chunk)),
+            on_reasoning=self._cancel_guard(
+                lambda chunk: self._emit("reasoning_delta", text=chunk)),
         )
         self._emit("assistant_end", text=completion.content)
         return completion
@@ -1184,6 +1246,7 @@ class Agent:
                 "limits": self.limits,
                 "model": self.model,
                 "attach_image": self._tool_images.append,
+                "cancel": self._cancel,  # shell commands stop when it is set
             },
         )
 

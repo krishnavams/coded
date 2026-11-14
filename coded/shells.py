@@ -315,18 +315,25 @@ def _read_capped(fh, limit: int) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
+class CommandCancelled(Exception):
+    """`run(cancel=…)` was told to stop; the command's process tree was killed."""
+
+
 def run(command: Union[str, Sequence[str]], *, cwd: Optional[str] = None,
         timeout: Optional[float] = None, env: Optional[Dict[str, str]] = None,
         input: Optional[str] = None, shell: Optional[Shell] = None,
-        max_bytes: int = MAX_CAPTURE_BYTES) -> subprocess.CompletedProcess:
+        max_bytes: int = MAX_CAPTURE_BYTES, cancel: Any = None) -> subprocess.CompletedProcess:
     """Run a shell command and capture its output as UTF-8 text.
 
     `command` is a command string (run through the platform's shell) or an argv
     list (run directly). A timed-out command takes its children with it (it
     runs in its own process group). Output goes to temporary files, not pipes,
     so memory stays bounded: past `max_bytes` a stream keeps its head and tail.
+    `cancel` (a threading.Event) is polled while it runs: once set, the tree is
+    killed and CommandCancelled raised.
     """
     import tempfile
+    import time
 
     if isinstance(command, str):
         argv: Union[str, List[str]] = command_argv(command, shell)
@@ -342,7 +349,23 @@ def run(command: Union[str, Sequence[str]], *, cwd: Optional[str] = None,
             argv, shell=use_shell, cwd=cwd, env=child_env(env), stdin=stdin,
             stdout=out_f, stderr=err_f, **popen_kwargs(new_group=True))
         try:
-            proc.communicate(input=data, timeout=timeout)
+            if cancel is None:
+                proc.communicate(input=data, timeout=timeout)
+            else:
+                deadline = None if timeout is None else time.monotonic() + timeout
+                send = data
+                while True:
+                    left = None if deadline is None else max(0.0, deadline - time.monotonic())
+                    try:
+                        proc.communicate(input=send, timeout=0.2 if left is None
+                                         else min(0.2, left))
+                        break
+                    except subprocess.TimeoutExpired:
+                        send = None  # input goes once; later calls only wait
+                        if cancel.is_set():
+                            raise CommandCancelled() from None
+                        if deadline is not None and time.monotonic() >= deadline:
+                            raise
         except BaseException as exc:  # timeout, Ctrl-C, anything: never leave a tree behind
             kill_tree(proc)
             try:

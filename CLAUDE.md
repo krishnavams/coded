@@ -143,6 +143,7 @@ tests/
 ├── test_suggest_tui.py # the TUI dropdown: keys only while open, click, unknown commands
 ├── test_persistent_input.py  # follow-ups reach the running turn, states, routing, interrupt
 │                       # keeps input, history, TUI, a real REPL in a pty
+├── test_cancel.py      # Agent.cancellable: Esc cuts a slow model call / kills a shell, TUI
 ├── test_line_editing.py  # mid-turn box: arrows/Home/End/words/selection/lines, POSIX pty +
 │                       # Windows readers, echo redraw, drawn cursor, normal prompt untouched
 ├── test_btw.py         # /btw: session untouched, answered mid-turn, REPL + TUI
@@ -854,7 +855,15 @@ docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_
   rest (running tools via `Agent.active_tools`, pending follow-ups) is read
   live; `badge()` draws it (dock `get_state`, TUI status line, REPL toolbar
   after a request). TUI Esc: priority `menu_close` while the dropdown is open,
-  else `action_interrupt` (`agent.interrupt()`, between steps). Mid-turn ↑/↓
+  else `action_interrupt` → `agent.interrupt()`. With `Agent.cancellable` (TUI
+  only; the REPL stops its main thread with SIGINT) that is immediate: the
+  model call runs on a helper thread (`_call_cancellable`) and the wait raises
+  `TurnCancelled` (a BaseException, so retry/fallback never catches it; the
+  loop ends the turn with nothing half-added); stream callbacks
+  (`_cancel_guard`) end the abandoned stream at its next chunk; `bash` gets
+  `ctx.extra["cancel"]` → `shells.run(cancel=…)` kills the tree
+  (`CommandCancelled`, the tool result says so); a foreground sub-agent task
+  is stopped too. Without a cancel event `shells.run` is unchanged. Mid-turn ↑/↓
   (`DOWN` from the reader on the last line) walk history after the queue,
   Ctrl+R searches it, Ctrl+L clears. `suggest.highlight` colors the typed line
   in the prompt (`InputLexer`) and the box (`editor_text(spans=…)`).

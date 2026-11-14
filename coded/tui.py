@@ -300,6 +300,7 @@ class CodedTUI(App):
         self._on_turn = on_turn
         self.sessions = sessions  # SessionKeeper: what /resume switches
         self.agent.on_event = self._agent_event  # called from the worker thread
+        self.agent.cancellable = True  # Esc stops a reply or a command at once
         self.agent.permissions.set_prompt(self._permission_prompt, threadsafe=True)
         self.agent.permissions.set_questions(self._questions_prompt)
         self._assistant_md: Optional[Markdown] = None
