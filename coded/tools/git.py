@@ -70,7 +70,7 @@ Pass the arguments after `git`, e.g. "status", "diff HEAD~1", "log --oneline -10
                 key="git", title="Run git command", detail=f"git {raw}", target=raw,
             )
             if decision is Decision.DENY:
-                return ToolResult.error("The user denied this git command. Do not retry it.")
+                return ToolResult.error(ctx.permissions.denial("this git command"))
 
         try:
             proc = subprocess.run(

@@ -43,6 +43,7 @@ class Prompter:
     ask: Callable[[str, str], str]  # (question, default) -> answer
     secret: Callable[[str], str]  # (question) -> answer, not echoed
     out: Callable[[str], None]
+    panel: bool = False  # yes/no in the choice panel (a real terminal)
 
     def text(self, question: str, default: str = "") -> str:
         suffix = f" [{default}]" if default else ""
@@ -50,6 +51,10 @@ class Prompter:
         return answer or default
 
     def yes(self, question: str, default: bool = False) -> bool:
+        if self.panel:
+            from coded.confirm import yes_no
+
+            return yes_no("Setup", question, default=default)
         answer = self.text(f"{question} ({'Y/n' if default else 'y/N'})").strip().lower()
         if not answer or answer in ("y/n", "yes/no"):
             return default
@@ -109,7 +114,7 @@ def console_prompter() -> Prompter:
         except (EOFError, KeyboardInterrupt):
             raise Abort from None
 
-    return Prompter(ask=ask, secret=secret, out=ui.console.print)
+    return Prompter(ask=ask, secret=secret, out=ui.console.print, panel=True)
 
 
 # ---------------------------------------------------------------------------

@@ -160,6 +160,27 @@ class PermissionManager:
         self._local.deny_reason = None
         return reason
 
+    def peek_deny_reason(self) -> Optional[str]:
+        """Like take_deny_reason, without clearing it (the event log reads it later)."""
+        return getattr(self._local, "deny_reason", None)
+
+    def denial(self, what: str = "this action",
+               next_step: str = "ask how to proceed or try another approach") -> str:
+        """The refusal to hand the model, true to why: the person said no, a deny
+        rule, plan mode, or nobody could be asked (a mission, --print, CI).
+        Starts with a phrase `events.classify` counts as a denial."""
+        reason = self.peek_deny_reason()
+        if reason == "unattended":
+            return (f"Refused: nobody can approve {what} in this run (it is unattended: a "
+                    "mission, --print or CI). Do not retry it; finish what you can without "
+                    "it and say in your summary what still needs it.")
+        if reason == "rule":
+            return (f"Refused: a deny rule in the configuration blocks {what}. Do not retry "
+                    "it; find another way or say what is blocked.")
+        if reason == "plan":
+            return f"Refused: plan mode is on, so {what} cannot run yet."
+        return f"The user denied {what}. Do not retry it; {next_step}."
+
     def take_feedback(self) -> str:
         """What the user said with their last "no" on this thread (once)."""
         text = getattr(self._local, "feedback", "") or ""

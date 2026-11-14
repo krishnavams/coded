@@ -112,3 +112,28 @@ def test_session_list_and_latest(tmp_path, monkeypatch):
     assert {m.id for m in metas} == {id1, id2}
     assert store.latest() == id2  # most recently updated
     assert store.latest("/proj-a") == id1
+
+
+def test_a_refusal_says_why_it_happened():
+    """'The user denied' only when a person said no: a mission or --print run
+    (nobody to ask) and a deny rule say so instead."""
+    from coded.events import classify
+    from coded.permissions import Decision, PermissionManager
+
+    unattended = PermissionManager()                     # no prompt: nobody can answer
+    assert unattended.request(key="memory", title="Remember", detail="x") is Decision.DENY
+    text = unattended.denial("saving this note")
+    assert text.startswith("Refused: nobody can approve saving this note")
+    assert "user" not in text.split(".")[0]
+    ruled = PermissionManager(rules={"deny": ["bash(rm *)"]})
+    ruled.set_prompt(lambda t, d: "yes")
+    assert ruled.request(key="bash", title="Run", detail="rm -rf x",
+                         target="rm -rf x") is Decision.DENY
+    assert "deny rule" in ruled.denial("this command")
+    person = PermissionManager()
+    person.set_prompt(lambda t, d: "no")
+    assert person.request(key="memory", title="Remember", detail="x") is Decision.DENY
+    assert person.denial("saving this note").startswith("The user denied saving this note")
+    assert person.take_deny_reason() == "user"           # peeking left it for the event log
+    for t in (text, ruled.denial("x"), person.denial("x")):
+        assert classify(t)["denied"]                     # all counted as denials

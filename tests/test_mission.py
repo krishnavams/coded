@@ -4,7 +4,10 @@ resumes after a kill, and never touches the user's checkout."""
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
+import time
 
 import pytest
 
@@ -327,6 +330,12 @@ def test_questions_are_asked_up_front_and_a_no_is_respected(repo, tmp_path, fake
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "make")
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    import io
+
+    from coded import ui
+
+    con = ui.TranscriptConsole(width=120, record=True, file=io.StringIO(), color_system=None)
+    monkeypatch.setattr(ui, "console", con)
     asked = []
 
     def read(prompt):
@@ -338,10 +347,132 @@ def test_questions_are_asked_up_front_and_a_no_is_respected(repo, tmp_path, fake
                                      "--config", _config(tmp_path, server),
                                      "--notify", "off", "--budget", "5"], read=read)
     assert code == 0
-    assert any("make test" in q for q in asked) and any("shell commands" in q for q in asked)
+    shown = con.export_text()
+    # Both asked in the choice panel (the same as every other prompt), answered "n".
+    assert len(asked) == 2 and all("Answer (1-2)" in q for q in asked)
+    assert "Mission · checks" in shown and "make test" in shown
+    assert "Mission · shell commands" in shown and "No, no shell commands" in shown
     assert not trust.check_approved(str(repo), "make test")
     assert "No checks ran" in _report(repo)
 
 
 def test_a_mission_needs_a_goal():
     assert mission.mission_main(["--yes"]) == 2
+
+
+# -- steering a running mission -------------------------------------------------------
+
+class _StubKeys:
+    """A key reader stand-in that hands over typed lines when asked."""
+
+    def __init__(self, lines=()):
+        from coded.lineedit import LineEditor
+
+        self.editor, self.echo, self.keys_mode = LineEditor(), True, False
+        self.lines = list(lines)
+
+    def __call__(self, _t):
+        time.sleep(0.01)
+        return self.lines.pop(0) if self.lines else None
+
+
+def test_steering_routes_commands_and_keeps_what_it_cannot_run(monkeypatch, tmp_path,
+                                                                fake_server):
+    import io
+
+    from coded import typeahead, ui
+    from tests.test_agent_e2e import _make_agent
+
+    con = ui.TranscriptConsole(width=120, record=True, file=io.StringIO(), color_system=None)
+    monkeypatch.setattr(ui, "console", con)
+    keys = _StubKeys(["/cost", "/review", "go faster"])
+    monkeypatch.setattr(typeahead, "default_poll", lambda: keys)
+    with fake_server(lambda b: ({"role": "assistant", "content": "ok"}, None)) as server:
+        agent = _make_agent(tmp_path, server.base_url)
+        with mission._steering(agent, "mission: x") as left:
+            assert agent.followups is not None          # the input box is up
+            time.sleep(0.4)
+            assert agent.followups() == ["go faster"]   # a message: for the mission
+        assert agent.followups is None
+    shown = con.export_text()
+    assert "so far" in shown                            # /cost answered at once
+    assert "/review cannot run during a mission" in shown
+    assert left == ["/review"]                          # put back, then reported, not dropped
+    assert "not delivered" in shown
+
+
+def test_no_terminal_means_no_input_box(monkeypatch, tmp_path, fake_server):
+    from coded import typeahead
+    from tests.test_agent_e2e import _make_agent
+
+    monkeypatch.setattr(typeahead, "default_poll", lambda: None)
+    with fake_server(lambda b: ({"role": "assistant", "content": "ok"}, None)) as server:
+        agent = _make_agent(tmp_path, server.base_url)
+        with mission._steering(agent, "x") as left:
+            assert agent.followups is None
+    assert left == []
+
+
+@pytest.mark.skipif(os.name == "nt" or not hasattr(os, "openpty"), reason="POSIX pty")
+def test_a_real_mission_takes_a_message_typed_while_it_works(repo, tmp_path):
+    import pty
+    import re
+    import select
+    import subprocess
+
+    from coded.agent import FOLLOWUP_HEADER
+    from tests.conftest import FakeServer
+
+    seen = {"followup": False}
+
+    def call(name, args, cid):
+        return {"role": "assistant", "content": "", "tool_calls": [{"id": cid, "type": "function",
+                "function": {"name": name, "arguments": json.dumps(args)}}]}
+
+    def script(body):
+        msgs = body["messages"]
+        text = json.dumps(msgs)
+        seen["followup"] = seen["followup"] or FOLLOWUP_HEADER in text
+        users = [m for m in msgs if m.get("role") == "user"]
+        if users and "Phase 1" in str(users[-1].get("content")):   # planning
+            if msgs[-1].get("role") == "tool":
+                return {"role": "assistant", "content": "Plan written."}, None
+            return call("todo_write", {"todos": [{"content": "build", "status": "in_progress",
+                                                  "activeForm": "building"}]}, "t1"), None
+        if '"name": "bash"' not in text:
+            return call("bash", {"command": "sleep 4"}, "b1"), None
+        if seen["followup"] and '"t2"' not in text:
+            return call("todo_write", {"todos": [{"content": "build", "status": "completed",
+                                                  "activeForm": "building"}]}, "t2"), None
+        return {"role": "assistant", "content": "Done, on port 8080."}, None
+
+    def read(fd, secs):
+        out, end = b"", time.time() + secs
+        while time.time() < end:
+            if select.select([fd], [], [], 0.05)[0]:
+                try:
+                    out += os.read(fd, 65536)
+                except OSError:
+                    break
+        return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", out.decode("utf-8", "replace"))
+
+    with FakeServer(script) as srv:
+        master, slave = pty.openpty()
+        env = dict(os.environ, CODED_NO_UPDATE_CHECK="1", TERM="xterm-256color",
+                   HOME=str(tmp_path))
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "coded", "mission", "build it", "--config",
+             _config(tmp_path, srv), "--yolo", "--no-checks", "--notify", "off", "--budget", "5"],
+            stdin=slave, stdout=slave, stderr=slave, cwd=str(repo), env=env, close_fds=True)
+        try:
+            screen = read(master, 2.5)                  # planned; the 4 s command runs now
+            os.write(master, b"use port 8080\r")
+            screen += read(master, 10)
+            proc.wait(timeout=20)
+        finally:
+            proc.kill()
+            os.close(master)
+            os.close(slave)
+    assert seen["followup"]                             # the model got the message
+    assert "follow-up delivered: use port 8080" in screen
+    assert "What you told it during the run" in screen and "Done, on port 8080." in screen

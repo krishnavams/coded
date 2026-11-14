@@ -71,7 +71,7 @@ Repo is auto-detected from the git remote unless you pass repo='owner/name'."""
                 detail=f"{action} on {repo}", target=action,
             )
             if decision is Decision.DENY:
-                return ToolResult.error("The user denied this GitHub action. Do not retry it.")
+                return ToolResult.error(ctx.permissions.denial("this GitHub action"))
 
         base_url = os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
         headers = {

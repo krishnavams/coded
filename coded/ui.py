@@ -106,6 +106,10 @@ def set_quiet(enabled: bool) -> None:
     _quiet = enabled
 
 
+def is_quiet() -> bool:
+    return _quiet
+
+
 def _log() -> Console:
     return _err_console if _quiet else console
 

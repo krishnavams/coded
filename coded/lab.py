@@ -234,7 +234,7 @@ def apply_proposal(cwd: str, p: Proposal) -> str:
     return "unknown proposal kind; nothing changed"
 
 
-def apply_interactive(cwd: str, report: Report, ask: Callable[[str], str],
+def apply_interactive(cwd: str, report: Report, ask: Optional[Callable[[str], str]],
                       say: Callable[[str], None]) -> int:
     """Ask about each proposal on its own; loosening ones get an extra warning.
     Returns how many were applied."""
@@ -246,8 +246,10 @@ def apply_interactive(cwd: str, report: Report, ask: Callable[[str], str],
         say(f"\n{f.title}\n  {p.preview}")
         if p.loosens:
             say("  ⚠ This lets the agent do more than it can now.")
-        answer = (ask("  Apply this change? [y/N] ") or "").strip().lower()
-        if answer in ("y", "yes"):
+        from coded.confirm import yes_no
+
+        if yes_no("Lab proposal", "Apply this change?", detail=p.preview,
+                  yes="Yes, apply it", no="No, skip it", default=False, read=ask):
             say("  " + apply_proposal(cwd, p))
             applied += 1
         else:

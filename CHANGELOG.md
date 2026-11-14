@@ -38,6 +38,14 @@
 - While the agent works: ↑/↓ walk earlier messages, Ctrl+R searches them,
   Ctrl+L clears the screen; the typed command, flags, values and `@paths` are
   highlighted (also in the prompt between turns).
+- Missions show the input box while they work: type a message and it reaches
+  the mission at its next step; `/btw`, `/dashboard`, `/todos`, `/cost`, `/help`
+  answer at once; Esc stops it (resumable). The report lists what you told it.
+- Long work says how it ended: "Task completed" or "Task stopped: <reason>"
+  (you stopped it, an error, the step limit, not making progress, the spending
+  limit) by desktop notification, voice, bell and/or a line in the transcript
+  (`"notify": "desktop,voice,bell,line"` or `"all"`). `/notify on|off|all|test`
+  switches it for the session; missions always announce.
 - Esc stops a running turn in the TUI at once: a model reply that is still
   coming (or slow to start) is cut off and a running shell command is killed
   with its child processes, as well as a sub-agent the turn waits on.
@@ -55,6 +63,10 @@
   Home/End, Delete, word jumps (Ctrl/Option+←/→), Shift-selection, Ctrl+A/E/K/U/W,
   and multi-line messages (`\`+Enter, Alt+Enter; Ctrl+Enter on Windows).
 - A completed command ends with a space, ready for its arguments.
+- The questions asked before work starts — trust this project, a mission's
+  checks and shell commands, installing a skill or plugin, `/lab apply`, the
+  setup wizard's yes/no — use the same panel as permission prompts (↑/↓,
+  Enter, Esc = no) instead of a bare `[y/N]` line.
 - The TUI no longer sends an unknown `/word` to the model; it suggests a
   correction (or points REPL-only commands to the REPL). Paths such as
   `/etc/hosts …` still go to the model.
@@ -69,6 +81,16 @@
   explicit `--max-turns` keeps the old hard cap.
 
 ### Fixed
+- A refused action said "The user declined/denied" even when nobody was asked
+  (a mission, `--print`, CI) or a deny rule blocked it. The message now says
+  which: refused because nobody could approve it, blocked by a rule, or denied
+  by you. A plain `sleep` while a background shell runs gets a note pointing at
+  `bash_output(wait=…)`.
+- A long background job could stop a request or a mission as "not making
+  progress": checking on it with `bash_output` looked like the same call
+  repeated. Polling a shell or task that is still running now counts as
+  progress, and `bash_output` / `task_output` take `wait` to block until there
+  is new output (or the job ends) instead of spending a step per check.
 - Arrow keys, Home/End and Delete did nothing in the input box shown while the
   agent works: it had no cursor and dropped every escape sequence.
 - `/review`, `/redteam`, `/refactor`, `/init`, `/compact`, `/verify`,

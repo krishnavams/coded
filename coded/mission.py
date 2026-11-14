@@ -24,9 +24,12 @@ import os
 import shutil
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+
+from rich.markup import escape
 
 from coded import ui
 
@@ -287,7 +290,7 @@ def _checks_line(events: List[dict], command: Optional[str]) -> str:
 def build_report(*, goal: str, result: MissionResult, agent, branch: str = "",
                  worktree: str = "", root: str = "", base: str = "",
                  check_command: Optional[str] = None, commit_note: str = "",
-                 mission_id: str = "") -> str:
+                 mission_id: str = "", undelivered: Optional[List[str]] = None) -> str:
     status = STATUS_TEXT.get(result.status, result.status)
     icon = "✅" if result.status == "done" else "⚠️"
     events = agent.events.snapshot()
@@ -333,6 +336,16 @@ def build_report(*, goal: str, result: MissionResult, agent, branch: str = "",
             names = sorted({str(e.get('name')) for e in denied})
             lines.append(f"- {len(denied)} action(s) were refused because nobody could approve "
                          f"them ({', '.join(names)}).")
+        lines.append("")
+
+    told = [e for e in events if e.get("kind") == "followup"]
+    if told or undelivered:
+        lines += ["## What you told it during the run", ""]
+        if told:
+            n = sum(int(e.get("count") or 1) for e in told)
+            lines.append(f"- {n} message(s) reached the mission while it worked.")
+        for text in undelivered or []:
+            lines.append(f"- Not delivered (the mission ended first): {' '.join(text.split())}")
         lines.append("")
 
     if result.final:
@@ -457,8 +470,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--yolo", action="store_true",
                    help="Approve every action (deny rules still win).")
     p.add_argument("--no-checks", action="store_true", help="Do not run the project's checks.")
-    p.add_argument("--notify", choices=("bell", "desktop", "off"),
-                   help="How to tell you it is over (default: config notify, else desktop).")
+    p.add_argument("--notify", metavar="CHANNELS",
+                   help="How to tell you it is over: desktop, voice, bell, line (comma-"
+                        "separated), all or off (default: config notify plus desktop).")
     p.add_argument("--notify-url", help="Also POST the summary here (e.g. https://ntfy.sh/<topic>).")
     p.add_argument("--trust-project", action="store_true",
                    help="Apply this project's full .coded/config.json without asking.")
@@ -469,12 +483,13 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _yes(question: str, read=input, default: bool = True) -> bool:
-    try:
-        answer = read(f"{question} [{'Y/n' if default else 'y/N'}] ").strip().lower()
-    except EOFError:
-        return False
-    return default if not answer else answer in ("y", "yes")
+def _yes(title: str, question: str, detail: str = "", read=input, default: bool = True,
+         yes: str = "Yes", no: str = "No") -> bool:
+    """An up-front question, in the same panel as every other prompt."""
+    from coded.confirm import yes_no
+
+    return yes_no(title, question, detail=detail, yes=yes, no=no, default=default,
+                  read=None if read is input else read)
 
 
 def _list(root: str) -> int:
@@ -552,15 +567,23 @@ def _start(args, cwd: str, read) -> int:
         configured = VerifySettings.from_config(cfg.verify).command
         check_command = configured or detect_checks(cwd)
         if check_command and not configured and not trust.check_approved(cwd, check_command):
-            if asking and _yes(f"Run the project's checks after each change?\n  "
-                               f"{check_command}\n(This runs the repository's own code.)", read):
+            if asking and _yes("Mission · checks", "Run the project's checks after each change?",
+                               f"{check_command}\n\nThis runs the repository's own code.",
+                               read, yes="Yes, run them after each change",
+                               no="No, no checks"):
                 trust.approve_check(cwd, check_command)
             else:
                 check_command = None
     allow_bash = args.allow_bash or args.yolo
     if not allow_bash and asking:
-        allow_bash = _yes("Let the mission run shell commands (tests, builds) without asking?"
-                          + ("" if args.here else " It works in a separate worktree."), read)
+        allow_bash = _yes(
+            "Mission · shell commands",
+            "Let the mission run shell commands (tests, builds) without asking?",
+            ("" if args.here else "It works in a separate worktree, but commands run as you, "
+             "unsandboxed: they can reach files outside it and the network.\n")
+            + "Nobody can approve anything during the run: with No, every shell command "
+              "is refused.", read, yes="Yes, run shell commands",
+            no="No, no shell commands")
     if args.budget is None and cfg.max_cost is None:
         ui.warn("No budget set: the mission can spend until it is done. "
                 "Pass --budget <dollars> to cap it.")
@@ -596,6 +619,137 @@ def _start(args, cwd: str, read) -> int:
         "seconds": 0.0, "runs": 0,
     }
     return _run(state, args, resume=False)
+
+
+# Commands that answer at once while a mission runs (it can run no other).
+STEERING_COMMANDS = {
+    "/btw": "Quick side question, answered from the conversation: /btw <question>.",
+    "/dashboard": "Tools, tasks, models, errors and cost so far.",
+    "/todos": "The mission's task list.",
+    "/cost": "Tokens and cost so far.",
+    "/help": "What you can type during a mission.",
+}
+
+
+@contextmanager
+def _steering(agent, label: str):
+    """The input box while a mission runs on a terminal.
+
+    The same dock as a REPL turn: what you type is a follow-up for the mission
+    (`Agent.followups`, delivered at its next step, across its restarts),
+    `STEERING_COMMANDS` answer at once, any other command goes back into the
+    box (a mission cannot run it), Esc stops the mission like Ctrl-C (its
+    state is saved; `--resume` carries on). Yields the list that collects what
+    was typed but never delivered. Without a terminal it does nothing.
+    """
+    from coded.typeahead import CTRL_L, CTRL_O, TypeAhead, default_poll
+
+    undelivered: List[str] = []
+    poll = default_poll()
+    if poll is None or not hasattr(poll, "editor") or ui.is_quiet():
+        yield undelivered
+        return
+    from coded.execstate import Execution, badge
+    from coded.suggest import Context, Engine, MenuState
+
+    holder: Dict[str, Any] = {}
+    execution = Execution(agent, pending=lambda: (
+        holder["ta"].followups_waiting if "ta" in holder else 0))
+
+    def on_queue(text: str, _n: int) -> None:
+        short = text if len(text) <= 70 else text[:67] + "…"
+        ui.console.print(f"[{ui.ACCENT2}]  ↪ for the mission's next step: "
+                         f"{escape(short)}[/]")
+
+    def intercept(text: str) -> bool:
+        word = text.split()[0]
+        if not word.startswith("/"):
+            return False
+        if word == "/btw":
+            _btw(agent, text[len("/btw"):].strip())
+        elif word == "/dashboard":
+            from coded.dashboard import render
+
+            ui.console.print(render(agent, busy=True))
+        elif word == "/todos":
+            ui.todos(agent.todos.items)
+        elif word == "/cost":
+            u = agent.session.total_usage
+            ui.info(f"{u.prompt_tokens + u.completion_tokens} tokens, about "
+                    f"${agent.session.estimated_cost(agent.model):.4f} so far.")
+        elif word == "/help":
+            for name, desc in STEERING_COMMANDS.items():
+                ui.console.print(f"  {name:<11} {desc}", markup=False)
+            ui.console.print("  Anything else you type goes to the mission at its next step;"
+                             " Esc stops it.", markup=False)
+        else:
+            # A mission cannot run it; put it back rather than drop it.
+            holder["ta"]._editor().set_text(text)
+            ui.warn(f"{word} cannot run during a mission (it is unattended); type a message "
+                    "to steer it, /help for what works, or Esc to stop it.")
+        return True
+
+    def stop() -> None:
+        execution.interrupt()
+        agent.interrupt()
+        import signal
+
+        if os.name == "nt":
+            import _thread
+
+            _thread.interrupt_main()
+        else:
+            os.kill(os.getpid(), signal.SIGINT)
+
+    engine = Engine(Context(cwd=agent.cwd, commands={n: (d, "mission")
+                                                     for n, d in STEERING_COMMANDS.items()},
+                            agent=agent))
+    with TypeAhead(poll, on_queue=on_queue, on_escape=stop,
+                   keys={CTRL_O: lambda: ui.set_expanded(not ui.is_expanded()),
+                         CTRL_L: ui.console.clear},
+                   intercept=intercept, menu=MenuState(engine)) as ta:
+        holder["ta"] = ta
+        ta.set_echo(False)
+        dock = ui.TurnDock(lambda: ta.editing, lambda: agent.todos.items, lambda: ta.pending,
+                           get_queue=lambda: ta.queued_items, get_running=agent.tasks.running,
+                           get_suggestions=lambda: (
+                               ta.menu.items(ta.editing.text, ta.editing.cursor), ta.menu.index),
+                           get_state=lambda: badge(execution)).start()
+        agent.followups = ta.take_followups
+        execution.begin(label)
+        ok = False
+        try:
+            yield undelivered
+            ok = True
+        finally:
+            execution.end(ok)
+            agent.followups = None
+            dock.stop()
+            ta.set_echo(True)
+            undelivered += [q for q in ta.drain()] + ([ta.partial] if ta.typing else [])
+            if undelivered:
+                ui.warn("Typed during the mission but not delivered (it ended first): "
+                        + " | ".join(" ".join(t.split())[:80] for t in undelivered))
+
+
+def _btw(agent, question: str) -> None:
+    import threading
+
+    from coded.llm import explain_failure
+
+    if not question:
+        ui.info("/btw <question>")
+        return
+
+    def answer() -> None:
+        from coded import btw
+
+        try:
+            ui.console.print(ui.btw_panel(question, btw.ask(agent, question)))
+        except Exception as exc:  # noqa: BLE001
+            ui.error(f"/btw failed: {explain_failure(exc)}")
+
+    threading.Thread(target=answer, daemon=True).start()
 
 
 def _run(state: Dict[str, Any], args, resume: bool) -> int:
@@ -653,7 +807,8 @@ def _run(state: Dict[str, Any], args, resume: bool) -> int:
     save_state(state)
     where = f" on branch {state['branch']}" if state.get("branch") else ""
     ui.info(f"Mission {state['id']} {'resumed' if resume else 'started'}{where}. "
-            "You can walk away; Ctrl-C stops it, `coded mission --resume` carries on.")
+            "You can walk away, or type to steer it (Esc or Ctrl-C stops it; "
+            "`coded mission --resume` carries on).")
 
     def note(attempt: Attempt) -> None:
         state["runs"] = int(state.get("runs") or 0) + 1
@@ -666,9 +821,13 @@ def _run(state: Dict[str, Any], args, resume: bool) -> int:
                     + ".")
 
     # 3. The work, then the report.
+    undelivered: List[str] = []
     try:
-        result = run_mission(agent, state["goal"], max_restarts=max(0, state["max_restarts"]),
-                             resume=resume, on_attempt=note)
+        with _steering(agent, "mission: " + " ".join(state["goal"].split())[:60]) as left:
+            result = run_mission(agent, state["goal"],
+                                 max_restarts=max(0, state["max_restarts"]),
+                                 resume=resume, on_attempt=note)
+        undelivered = left
     finally:
         if mcp_manager is not None:
             mcp_manager.stop()
@@ -682,17 +841,27 @@ def _run(state: Dict[str, Any], args, resume: bool) -> int:
     report = build_report(goal=state["goal"], result=result, agent=agent, branch=branch,
                           worktree=worktree, root=state["root"], base=state.get("base") or "",
                           check_command=state.get("check_command"), commit_note=commit_note,
-                          mission_id=state["id"])
+                          mission_id=state["id"], undelivered=undelivered)
     path = save_report(state["root"], report, stamp=state["id"])
     ui.rule("Mission report")
     ui.assistant_markdown(report)
     ui.info(f"Report saved to {path}")
 
     title = f"coded mission: {STATUS_TEXT.get(result.status, result.status)}"
-    summary = f"{' '.join(state['goal'].split())[:80]} — report: {path}"
-    # A mission's end is worth more than a bell: desktop unless notify is off.
-    mode = state.get("notify") or ("off" if cfg.notify == "off" else "desktop")
-    notify.send(title, summary, mode)
+    # A mission always says how it ended, however long it ran; its end is worth
+    # a desktop notification unless notifications are off.
+    chosen = state.get("notify")
+    channels = notify.parse_channels(chosen if chosen else cfg.notify)
+    if channels and not chosen and "desktop" not in channels:
+        channels.insert(0, "desktop")
+    announcer = notify.Notifier(channels or "off", after=0)
+    announcer.start()
+    reason = "" if result.status == "done" else STATUS_TEXT.get(result.status, result.status)
+    if reason.startswith("Stopped: "):
+        reason = reason[len("Stopped: "):]
+    announcer.outcome("completed" if result.status == "done" else "stopped",
+                      reason.rstrip("."), "mission: " + " ".join(state["goal"].split()),
+                      force=True)
     url = state.get("notify_url")
     if url and not post_notification(url, title, report):
         ui.warn(f"Could not reach {url} to send the notification.")

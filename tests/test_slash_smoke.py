@@ -45,7 +45,7 @@ COMMANDS = [
     "/dashboard", "/timeline", "/timeline restore 2", "/rewind 2 --keep-files",
     "/rewind 1", "/undo", "/undo", "/nope", "/memory clear", "/clear",
     "/dashboard", "/timeline", "/cost", "/context", "/tasks", "/todos", "/checkpoints",
-    "/rewind", "/export", "/compact", "/undo", "/resume", "/resume 1", "/resume no[/m]",
+    "/rewind", "/export", "/compact", "/undo", "/resume", "/resume 1", "/resume no[/m]", "/notify", "/notify off", "/notify on", "/notify all", "/notify voice line", "/notify bogus[/x]",
 ]
 
 

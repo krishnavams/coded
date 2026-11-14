@@ -217,7 +217,7 @@ class QuestionModal(ChoiceModal):
 # ---------------------------------------------------------------------------
 # Commands the TUI runs itself (CodedTUI._submit); the rest of the REPL's
 # commands are not offered here. Descriptions come from the REPL's list.
-_TUI_COMMANDS = ("/btw", "/clear", "/dashboard", "/exit", "/heal", "/mission", "/plan",
+_TUI_COMMANDS = ("/btw", "/clear", "/dashboard", "/exit", "/heal", "/mission", "/notify", "/plan",
                  "/quit", "/redteam", "/refactor", "/reset", "/resume", "/timeline", "/twin",
                  "/undo")
 
@@ -329,9 +329,13 @@ class CodedTUI(App):
         self.statusline = StatusLine(
             getattr(agent.config, "statusline", None), lambda: status_data(self.agent),
             on_change=lambda: self.call_from_thread(self._refresh_sidebar))
+        def _line(kind: str, text: str) -> None:  # the worker thread: into the transcript
+            self.call_from_thread(self._mount, StatusNote(("✓ " if kind == "completed"
+                                                           else "■ ") + text))
+
         self.notifier = notify.Notifier(getattr(agent.config, "notify", "bell"),
                                         getattr(agent.config, "notify_after", 30.0),
-                                        sender=_send)
+                                        sender=_send, liner=_line)
         from coded.commands import discover_commands
 
         self.commands = discover_commands(agent.cwd)
@@ -643,6 +647,16 @@ class CodedTUI(App):
         if text == "/undo":
             self.action_undo()
             return
+        if text.split()[0] == "/notify":
+            args = text.split()[1:]
+            if args[:1] == ["test"]:
+                self.notifier.start()
+                used = self.notifier.outcome("completed", label="a test notification",
+                                             force=True)
+                self._mount(StatusNote("Sent: " + (", ".join(used) or "nothing (off)")))
+            else:
+                self._mount(StatusNote(self.notifier.set(args)))
+            return
         if text.split()[0] == "/resume":
             self._resume(text[len("/resume"):])
             return
@@ -744,13 +758,17 @@ class CodedTUI(App):
         self.notifier.start()
         ok, error = False, ""
         try:
-            self.notifier.finished(self.agent.run(text))
+            self.agent.run(text)
             ok = True
         except Exception as exc:  # noqa: BLE001
             error = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
             self.call_from_thread(self._mount, StatusNote(explain_failure(exc)))
         finally:
             self.execution.end(ok, error)
+            from coded.notify import outcome_of
+
+            kind, reason = outcome_of(self.agent, ok, error)
+            self.notifier.outcome(kind, reason, text)
             if self._on_turn:
                 try:
                     self._on_turn()

@@ -120,27 +120,63 @@ them (the user will be asked)."""
         out = _truncate((proc.stdout or "") + (proc.stderr or ""), get_limits(ctx).shell_output_chars)
         status = f"[exit {proc.returncode}]{note}"
         body = out.strip() if out.strip() else "(no output)"
+        body += _sleep_hint(command, ctx)
         return ToolResult(f"{status}\n{body}", is_error=proc.returncode != 0)
+
+
+MAX_WAIT_SECONDS = 600
+
+
+def _wait_seconds(args: Dict[str, Any]) -> float:
+    try:
+        return max(0.0, min(float(args.get("wait") or 0), MAX_WAIT_SECONDS))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+_SLEEP = re.compile(r"\s*sleep\s+\d+(\.\d+)?\s*(;|&&|$)")
+
+
+def _sleep_hint(command: str, ctx: ToolContext) -> str:
+    """A bare `sleep` while a background shell runs: point at bash_output's wait,
+    which returns as soon as there is output instead of after the whole sleep."""
+    shells = ctx.extra.get("shells")
+    if not _SLEEP.match(command) or shells is None:
+        return ""
+    running = [sid for sid, _cmd, status in shells.list() if status == "running"]
+    if not running:
+        return ""
+    return (f"\n[Note: to wait for background shell {running[0]}, call "
+            f"bash_output(shell_id='{running[0]}', wait=<seconds>) instead of sleep: it returns "
+            "as soon as there is new output or the command ends.]")
 
 
 class BashOutputTool(Tool):
     name = "bash_output"
-    brief = 'Read new output from a background shell and whether it is still running. Optional `filter` regex.'
+    brief = ('Read new output from a background shell and whether it is still running. '
+             'Optional `filter` regex; `wait` seconds to block for new output.')
     description = """Read new output from a background shell started with \
 bash(run_in_background=true), plus whether it is still running. Only output produced since \
-the last read is returned. Optional `filter` keeps only lines matching a regex."""
+the last read is returned. Optional `filter` keeps only lines matching a regex. To wait for \
+a long command, pass `wait` (seconds): the call returns as soon as there is new output or the \
+command exits — use that instead of calling bash_output again and again."""
     parallel_safe = True
     parameters = {
         "type": "object",
         "properties": {
             "shell_id": {"type": "string"},
             "filter": {"type": "string", "description": "Regex; only matching lines are returned."},
+            "wait": {"type": "number", "description": "Seconds to wait for new output or "
+                     f"the exit before returning (0-{MAX_WAIT_SECONDS}, default 0)."},
         },
         "required": ["shell_id"],
     }
 
     def run(self, args: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         shells = ctx.extra.get("shells")
+        wait = _wait_seconds(args)
+        if wait and shells is not None:
+            shells.wait(args["shell_id"], wait, cancel=ctx.extra.get("cancel"))
         got = shells.read(args["shell_id"]) if shells else None
         if got is None:
             return ToolResult.error(f"No background shell '{args['shell_id']}'.")

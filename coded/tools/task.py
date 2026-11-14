@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any, Dict
 
 from coded.tools.base import Tool, ToolContext, ToolResult
@@ -146,10 +147,13 @@ class TaskOutputTool(Tool):
     brief = "Check a background task: its status, recent activity, and its report once done."
     description = """Check on a background task started with task(run_in_background=true): \
 its status, tool uses, running time and latest activity, and its report once it has \
-finished. Without task_id, lists every task."""
+finished. Without task_id, lists every task. Pass `wait` (seconds) to block until the task \
+finishes (or the time is up) instead of checking again and again."""
     parameters = {
         "type": "object",
-        "properties": {"task_id": {"type": "string", "description": "e.g. t2"}},
+        "properties": {"task_id": {"type": "string", "description": "e.g. t2"},
+                       "wait": {"type": "number", "description": "Seconds to wait for the "
+                                "task to finish before answering (0-600, default 0)."}},
     }
 
     def run(self, args: Dict[str, Any], ctx: ToolContext) -> ToolResult:
@@ -164,6 +168,13 @@ finished. Without task_id, lists every task."""
         if t is None:
             return ToolResult.error(f"No task '{task_id}'. Call task_output without an id "
                                     "to list them.")
+        from coded.tools.shell import _wait_seconds
+
+        wait = _wait_seconds(args)
+        cancel = ctx.extra.get("cancel")
+        deadline = time.monotonic() + wait
+        while t.running and time.monotonic() < deadline and not (cancel and cancel.is_set()):
+            t.done.wait(min(0.25, max(0.0, deadline - time.monotonic())))
         lines = [f"{t.id} \"{t.label}\": {t.status} — {t.summary()}"]
         if t.running:
             lines += ["Recent activity:"] + [f"  {a}" for a in list(t.activity)[-8:]]

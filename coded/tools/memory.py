@@ -77,7 +77,8 @@ actions: "remember" (needs `text`), "search" (needs `query`), "forget" (needs `i
                 detail=f"Remove note {entry_id} from this project's memory.",
                 target=f"forget {entry_id}")
             if decision is Decision.DENY:
-                return ToolResult.error("The user declined. Leave the note in place.")
+                return ToolResult.error(ctx.permissions.denial(
+                    "forgetting this note", "leave the note in place"))
             return (ToolResult.ok(f"Forgot {entry_id}.") if store.forget(entry_id)
                     else ToolResult.error(f"No note '{entry_id}'. Use action='list' to see them."))
 
@@ -103,7 +104,8 @@ actions: "remember" (needs `text`), "search" (needs `query`), "forget" (needs `i
             key="memory", title="Remember for this project",
             detail=f"({kind}) {text}", target=text)
         if decision is Decision.DENY:
-            return ToolResult.error("The user declined; the note was not saved. Carry on.")
+            return ToolResult.error(ctx.permissions.denial(
+                "saving this note", "the note was not saved; carry on with the task"))
 
         entry = store.add(text, kind, source="agent")
         if entry is None:

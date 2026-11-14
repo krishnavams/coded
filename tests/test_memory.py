@@ -111,7 +111,7 @@ def test_the_tool_asks_before_writing_and_respects_a_refusal(tmp_path):
     perms.set_prompt(prompt)
     out = MemoryTool().run({"action": "remember", "text": "Builds need Node 20 or newer."},
                            _ctx(tmp_path, perms))
-    assert out.is_error and "declined" in out.content
+    assert out.is_error and "The user denied saving this note" in out.content
     assert MemoryStore.for_project(tmp_path).load() == []
     assert "Builds need Node 20 or newer." in asked[0][1]  # the exact text is shown
 

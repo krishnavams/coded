@@ -552,11 +552,24 @@ it, and `/budget` shows what has been spent.
 
 ### Notifications
 
-On a turn that runs longer than `notify_after` seconds (default 30), coded
-rings the terminal bell when it finishes or stops to ask you something, so
-you can work in another window. `"notify": "desktop"` shows a desktop
-notification instead (osascript on macOS, `notify-send` on Linux; the bell
-elsewhere); `"notify": "off"` turns it off.
+When work that ran longer than `notify_after` seconds (default 30) ends,
+coded tells you how: **Task completed**, or **Task stopped** with the reason —
+you stopped it, an error, the step limit, it was not making progress, the
+spending limit. It also calls you over when a long request waits for your
+answer. Choose the channels with `"notify"` (one or several, comma-separated):
+
+| Channel | What you get |
+|---|---|
+| `desktop` | A notification banner (osascript on macOS, `notify-send` on Linux; else the bell) |
+| `voice` | Said aloud (`say` on macOS, `spd-say`/`espeak` on Linux, PowerShell speech on Windows) |
+| `bell` | The terminal bell (the default) |
+| `line` | `✓ Task completed (2m 05s) — …` / `■ Task stopped: … — …` in the transcript |
+
+`"notify": "all"` uses every channel, `"off"` none. In the REPL or TUI,
+**`/notify off`** and **`/notify on`** switch it for the session (also while the
+agent works), `/notify desktop voice` picks channels, `/notify test` sends one
+now. A mission always announces how it ended, however long it ran
+(`coded mission … --notify desktop,voice`).
 
 ### Missions: work while you're away
 
@@ -584,6 +597,14 @@ asking? — and then works alone until the goal is done:
   step limit or left tasks open is sent back to finish (up to
   `--max-restarts`, default 3). It stops when it is clearly stuck, the
   `--budget` runs out, or you press Ctrl-C.
+- **Steer it if you are watching.** On a terminal the input box stays at the
+  bottom while it works, with what it is doing (`◆ running tool  bash · 1
+  follow-up waiting`). Type a message and it reaches the mission at its next
+  step ("use port 8080", "skip the admin pages"), even across its restarts;
+  `/btw`, `/dashboard`, `/todos`, `/cost` and `/help` answer at once (other
+  commands cannot run during a mission: they go back into the box). **Esc**
+  stops it like Ctrl-C. The report lists what you told it, and anything typed
+  too late to be delivered.
 - **Survives being killed.** Every step is saved. If the computer sleeps or
   restarts or the terminal closes, `coded mission --resume` (in the project or
   the worktree) carries on with the same answers, branch and task list, and
@@ -1474,7 +1495,10 @@ knob, and the default is 128k.
   may take; set it per model or globally. When a request reaches it while still
   making progress, the limit grows by `max_turns` again, up to five times
   `max_turns`, with a note each time. It stops early when the agent looks stuck:
-  the same tool call 4 times in its last 30, or 10 failing calls in a row. After a
+  the same tool call 4 times in its last 30, or 10 failing calls in a row.
+  Checking on something still running (`bash_output`, `task_output`) is waiting,
+  not a loop, and those tools take `wait` (seconds) to block until there is new
+  output or the job is done, instead of using a step per check. After a
   stop, type `continue` to pick up where it left off. `"auto_extend_turns": false`
   makes `max_turns` a hard cap, and so does an explicit `--max-turns N`.
 - **Repository overview** (`repo_overview`: `auto`, `true` or `false`; auto means

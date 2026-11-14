@@ -623,7 +623,7 @@ def _handle_lab_command(argv: List[str]) -> int:
         if not _stdin_is_tty():
             ui.error("--apply asks about each change, so it needs a terminal.")
             return 2
-        n = lab.apply_interactive(cwd, report, input, lambda m: ui.console.print(m, markup=False))
+        n = lab.apply_interactive(cwd, report, None, lambda m: ui.console.print(m, markup=False))
         ui.info(f"Applied {n} change(s).")
     return 0
 
@@ -749,25 +749,15 @@ def _stdin_is_tty() -> bool:
 def _ask_project_trust(info: dict, read=input) -> bool:
     """Show what this folder's .coded/ settings would run or change, and ask
     once. A yes is remembered until those settings change."""
-    from rich.panel import Panel
-    from rich.text import Text
-
     from coded import trust
+    from coded.confirm import yes_no
 
-    body = Text()
-    body.append(f"{info['root']}\n\n", style="bold")
-    body.append("This folder's .coded/ settings would:\n", style=ui.MUTED)
-    for line in info["lines"]:
-        body.append(f"  • {line}\n")
-    body.append("\nOnly trust a project whose files you have read or wrote yourself.",
-                style=ui.WARN)
-    ui.console.print(Panel(body, title=f"[{ui.WARN}]Trust this project?[/]",
-                           title_align="left", border_style=ui.WARN))
-    try:
-        answer = read("  Apply these settings? [y/N] ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        answer = ""
-    if answer in ("y", "yes"):
+    detail = (f"{info['root']}\n\nThis folder's .coded/ settings would:\n"
+              + "".join(f"  • {line}\n" for line in info["lines"])
+              + "\nOnly trust a project whose files you have read or wrote yourself.")
+    if yes_no("Trust this project?", "Apply these settings?", detail=detail,
+              yes="Yes, trust this project", no="No, keep them off", default=False,
+              read=None if read is input else read):
         trust.remember(info["root"], info["fingerprint"])
         return True
     return False

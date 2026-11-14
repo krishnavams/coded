@@ -40,7 +40,8 @@ coded/
 ├── permissions.py      # PermissionManager: approve/deny/always gate, accept-edits mode
 ├── trust.py            # project trust: which .coded/config.json keys need it, fingerprint store
 ├── choice.py           # Chooser: arrow-key selector for permission prompts + ask_user (review page)
-├── notify.py           # Notifier: bell/desktop notification when a long turn ends or asks
+├── confirm.py          # yes_no(): every yes/no outside a turn in the Chooser panel (keys or lines)
+├── notify.py           # Notifier: "Task completed/stopped: why" via desktop/voice/bell/line
 ├── lineedit.py         # LineEditor: the mid-turn input box's text, cursor, selection, lines
 ├── suggest.py          # command suggestions: grammar, live values, fuzzy, learning, next steps
 ├── execstate.py        # Execution: running/tool/waiting/follow-up/interrupting/… apart from input
@@ -147,6 +148,8 @@ tests/
 ├── test_line_editing.py  # mid-turn box: arrows/Home/End/words/selection/lines, POSIX pty +
 │                       # Windows readers, echo redraw, drawn cursor, normal prompt untouched
 ├── test_btw.py         # /btw: session untouched, answered mid-turn, REPL + TUI
+├── test_announce.py    # outcome + reason, channels, /notify, long-only, REPL/TUI/mission
+├── test_confirm.py     # yes/no panel: line + key mode, defaults, Esc/Ctrl-C = no, no [y/N] left
 ├── test_choice.py      # selector keys/lines, review page, permission feedback, REPL dock, TUI
 ├── test_trust.py       # project trust gate: what applies untrusted, remembered fingerprint, CLI
 ├── test_events.py      # event log: tool outcomes, denials, timings, saved, bounded, thread-safe
@@ -327,7 +330,12 @@ docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_
   requeued, never an answer). TUI: `PermissionModal`/`QuestionModal`
   (`ChoiceModal`). A "no" with text reaches the prompt callback as
   `"no: <text>"`; `request()` keeps it per thread and `Agent._run_tool` puts it
-  in the denial (`take_feedback`).
+  in the denial (`take_feedback`). Questions outside a turn (project trust,
+  mission up-front questions, plugin install, `/lab apply`, the setup wizard's
+  yes/no) use `confirm.yes_no` — the same panel, driven by the type-ahead
+  reader in key mode on a terminal, numbered lines otherwise (an injected
+  `read` forces lines; `y`/`n`/empty = default work there). Never add a bare
+  `[y/N]` prompt (`test_confirm` checks).
 - **`view_image`** queues a path through `ctx.extra["attach_image"]`; after the
   step's tool results the agent adds one user message with the images (a
   `tool` message cannot carry one). `Config.disabled_tools_for` drops it for a
@@ -395,7 +403,10 @@ docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_
   loop step (main agent only), so a turn stops cleanly with a note.
 - **Per-call permission** (git/github): a tool that is safe for some inputs and
   risky for others sets `requires_permission = False` and calls
-  `ctx.permissions.request(...)` itself for the risky branch. Static-risk tools
+  `ctx.permissions.request(...)` itself for the risky branch. A refusal's text comes from
+  `PermissionManager.denial(what, next_step)` — it says *why* (user / rule /
+  plan / unattended) via `peek_deny_reason`, which leaves the reason for the
+  event log; never write "the user declined" by hand. Static-risk tools
   use the class flag instead.
 - **Checkpoints**: mutating file tools call `ctx.checkpoints.record(path)` before
   writing so `/undo` works. `/rewind` uses `Agent._turn_marks` (one per
@@ -421,6 +432,15 @@ docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_
   only when `config.diagnostics` is set, and are appended to the tool result.
   `add_dirs` reach the Environment section only when non-empty (the prompt is
   otherwise byte-identical), the sandbox's writable list and mentions.
+- **Announcements** (`notify.py`): `Notifier(channels, after)` — `"notify"` is a
+  channel list (`desktop`, `voice`, `bell`, `line`; `all`/`off`; the old single
+  values still parse). `outcome(kind, reason, label, force)` only for work that
+  ran `after` seconds (missions pass `force`); `outcome_of(agent, ok, error,
+  interrupted)` reads the last request's events (interrupt, `max_turns` +
+  reason, `over_budget`). REPL: `Repl._busy`'s finally (after the dock stops),
+  TUI: `_run_agent`'s finally (its `liner` mounts a StatusNote from the worker),
+  mission: end of `_run`. `/notify` (also mid-turn) calls `Notifier.set`; voice
+  text goes through `_speakable` (letters, digits, light punctuation only).
 - **Opt-in extras must not change the default request**: the `browser` tool is
   registered only with `config.browser`, an output style only adds a prompt
   section when set, and `statusline`/`update_check` never block (background
@@ -681,7 +701,11 @@ docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_
   is_error) decides "stuck" (an identical call `_LOOP_REPEATS` times in
   `_LOOP_WINDOW`, or `_ERROR_RUN` failures in a row). `auto_extend_turns: false`
   or `--max-turns` (`max_turns_override`) is a hard cap. Events:
-  `turns_extended`, then `max_turns` on the stop.
+  `turns_extended`, then `max_turns` on the stop. Entries come from
+  `call_record`: for `_POLL_TOOLS` (`bash_output`, `task_output`) the outcome is
+  part of the key — a poll of something still running is never "the same
+  call", a finished one with the same output again is. Those tools take
+  `wait` (`BackgroundShells.wait`, `TaskEntry.done`; honours `ctx.extra["cancel"]`).
 - **Missions** (`mission.py`, `coded mission`): every question is asked before
   the run (project trust, `trust.approve_check` for the detected checks, a
   `bash` allow rule); during it `permissions` has no prompt, so anything
@@ -701,6 +725,13 @@ docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_
   a worktree) and the session's todos, so it skips planning. Never pushes or
   merges. The REPL's `/mission …` calls `mission_main` with `--cwd` and the
   session's model; the TUI only points to it (the questions need a terminal).
+  On a terminal `_steering` wraps `run_mission`: the type-ahead reader, the
+  dock (`get_state` badge) and `Agent.followups`, so typed messages reach the
+  mission at its next step; `STEERING_COMMANDS` answer at once, any other
+  command goes back into the box; Esc = Ctrl-C (status interrupted,
+  resumable). What was never delivered goes to the report (`undelivered`).
+  Without a terminal (or `ui.is_quiet()`) nothing changes. Never name a local
+  `escape` there: it shadows `rich.markup.escape`.
 - **Sessions survive a crash**: `Agent.on_step` (main agent only; the CLI sets
   it to autosave) runs after the user message, each tool step and the final
   answer, so a kill loses at most one step; the REPL also saves after Ctrl-C.
