@@ -10,6 +10,7 @@ import time
 import pytest
 
 from coded import ui
+from coded.lineedit import LineEditor
 from coded.typeahead import TypeAhead
 
 ITEMS = [
@@ -404,10 +405,10 @@ def _plain(renderable, width: int = 80) -> str:
 
 
 class _Keys:
-    """A key-by-key reader stand-in: has `buf` and `echo` like the real ones."""
+    """A key-by-key reader stand-in: has `editor` and `echo` like the real ones."""
 
     def __init__(self):
-        self.buf, self.echo = [], True
+        self.editor, self.echo = LineEditor(), True
 
     def __call__(self, _t):
         return None
@@ -416,7 +417,7 @@ class _Keys:
 def test_the_turn_dock_shows_an_input_box_with_what_is_being_typed():
     keys = _Keys()
     ta = TypeAhead(poll=keys)
-    keys.buf[:] = list("also check tests")
+    keys.editor.set_text("also check tests")
     dock = ui.TurnDock(lambda: ta.typing, lambda: ITEMS, lambda: 2)
     text = _plain(dock.render())
     assert "> also check tests" in text
@@ -488,7 +489,7 @@ def test_tab_completes_the_slash_command_being_typed():
     keys = _Keys()
     keys.echo = False
     ta = TypeAhead(poll=keys, complete=lambda t: ui.complete_slash(t, _CMDS))
-    keys.buf[:] = list("/rev")
+    keys.editor.set_text("/rev")
     assert ta.complete() == "/review " and ta.typing == "/review "
     assert ta.pending == 0  # completing does not queue anything
 

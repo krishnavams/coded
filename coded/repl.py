@@ -501,7 +501,7 @@ class Repl:
             return None
         ta.set_echo(False)
         tasks = (lambda: self.agent.todos.items) if self.agent.verbose else None
-        return ui.TurnDock(lambda: ta.typing, tasks, lambda: ta.pending,
+        return ui.TurnDock(lambda: ta.editing, tasks, lambda: ta.pending,
                            get_queue=lambda: ta.queued_items,
                            get_running=self.agent.tasks.running,
                            can_detach=lambda: self.agent.tasks.can_detach,

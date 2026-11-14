@@ -41,6 +41,7 @@ coded/
 ├── trust.py            # project trust: which .coded/config.json keys need it, fingerprint store
 ├── choice.py           # Chooser: arrow-key selector for permission prompts + ask_user (review page)
 ├── notify.py           # Notifier: bell/desktop notification when a long turn ends or asks
+├── lineedit.py         # LineEditor: the mid-turn input box's text, cursor, selection, lines
 ├── tasks.py            # TaskManager: running sub-agents (progress, background, stop)
 ├── btw.py              # /btw: side question over a copy of the conversation (no tools)
 ├── prompts.py          # assembles main/sub-agent prompts + AGENTS.md/CODED.md/CLAUDE.md hierarchy
@@ -136,6 +137,8 @@ tests/
 ├── test_review.py      # /review pipeline + coded review verdict/exit code
 ├── test_tasks.py       # sub-agent tasks: activity, background, Ctrl+B, /tasks, Ctrl+O
 ├── test_queue_edit.py  # ↑ edits the newest queued message (REPL reader, dock, TUI)
+├── test_line_editing.py  # mid-turn box: arrows/Home/End/words/selection/lines, POSIX pty +
+│                       # Windows readers, echo redraw, drawn cursor, normal prompt untouched
 ├── test_btw.py         # /btw: session untouched, answered mid-turn, REPL + TUI
 ├── test_choice.py      # selector keys/lines, review page, permission feedback, REPL dock, TUI
 ├── test_trust.py       # project trust gate: what applies untrusted, remembered fingerprint, CLI
@@ -766,8 +769,17 @@ docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_
   Polling (never a blocking read) is what lets the reader stop with the turn
   instead of stealing the next prompt's first line. On POSIX the reader
   (`typeahead._PosixKeys`) puts the terminal in non-canonical, no-echo mode for
-  the turn (signals stay on) so a lone **Esc** is seen; escape sequences (arrow
-  keys) are dropped, and `TypeAhead.stop()` must restore the terminal (`close()`).
+  the turn (signals stay on) so a lone **Esc** is seen, and `TypeAhead.stop()`
+  must restore the terminal (`close()`). Both readers edit a `lineedit.LineEditor`
+  (`reader.editor`; never a bare list): `_edit_sequence`/`_EDIT_SEQS` (POSIX,
+  xterm `ESC [1;<mod>X` modifiers) and `_WIN_EDIT` + `_shift_held` (Windows) map
+  keys to its moves/edits, `_EDIT_CTRL` the readline control keys; unknown
+  sequences are skipped whole. Home/End stay on the current line (Ctrl+Home/End
+  for the whole text) — never jump. `\`+Enter / Alt+Enter insert a new line; ↑
+  on the first line is still `UP` (edit queued). The dock draws
+  `TypeAhead.editing` (a `Snapshot`) with `ui.editor_text` (cursor block,
+  selection, indented lines, styled runs not per-char spans). Ctrl+J cannot be a
+  new line on POSIX (ICRNL makes Enter `\n` too).
   Esc stops the turn by sending this process SIGINT, so it behaves exactly as
   Ctrl-C.
   The dock's spinner shows `ui.spinner_word` (coded's own `SPINNER_WORDS`,

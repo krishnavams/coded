@@ -9,12 +9,13 @@ import time
 import pytest
 
 from coded import ui
+from coded.lineedit import LineEditor
 from coded.typeahead import UP, TypeAhead
 
 
 class _Keys:
     def __init__(self, lines=()):
-        self.buf, self.echo = [], True
+        self.editor, self.echo = LineEditor(), True
         self._lines = list(lines)
 
     def __call__(self, _t):
@@ -26,7 +27,7 @@ def test_up_takes_the_newest_queued_message_back_to_edit():
     ta = TypeAhead(poll=keys)
     ta.feed("run the api tests")
     ta.feed("then the ui tests")
-    keys.buf[:] = list("and")
+    keys.editor.set_text("and")
     assert ta.edit_last() == "then the ui tests"
     assert ta.typing == "then the ui tests and"        # put before what was typed
     assert ta.queued_items == ["run the api tests"]
@@ -70,7 +71,7 @@ def test_the_up_arrow_is_recognised_from_the_terminal():
         assert reader(0.5) == UP
         os.write(master, b"\x1bOA\x1b[B")       # application-mode Up; Down is dropped
         assert reader(0.5) == UP
-        assert reader(0.3) is None and reader.buf == ["x"]
+        assert reader(0.3) is None and reader.editor.text == "x"
     finally:
         reader.close()
         os.close(master)
@@ -110,7 +111,7 @@ def test_messages_left_from_earlier_turns_stay_editable(headless, tmp_path, monk
             repl._typeahead.feed("two")
             repl._typeahead.feed("three")
         elif text == "two":                       # "three" waits here: edit it
-            repl._typeahead._poll.buf[:] = []
+            repl._typeahead._poll.editor.set_text("")
             assert repl._typeahead.edit_last() == "three"
             repl._typeahead.feed("three, but only the api tests")
         return "ok"

@@ -259,7 +259,7 @@ def test_control_keys_reach_their_handlers_mid_turn():
         os.write(master, b"ab\x02cd\x0f")
         assert reader(0.5) == CTRL_B
         assert reader(0.5) == CTRL_O
-        assert reader.buf == list("abcd")   # typing around the keys is kept
+        assert reader.editor.text == "abcd"   # typing around the keys is kept
     finally:
         reader.close()
         os.close(master)
@@ -360,7 +360,7 @@ def test_shift_tab_turns_accept_edits_on_mid_turn(tmp_path):
         os.write(master, b"ab\x1b[Zc")
         assert reader(0.5) == SHIFT_TAB
         reader(0.2)
-        assert reader.buf == list("abc")
+        assert reader.editor.text == "abc"
     finally:
         reader.close()
         os.close(master)

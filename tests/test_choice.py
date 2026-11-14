@@ -16,6 +16,7 @@ from coded import choice, ui
 from coded.agent import create_agent
 from coded.choice import Chooser, Question
 from coded.config import Config, ModelConfig
+from coded.lineedit import LineEditor
 from coded.permissions import Decision, PermissionManager
 from coded.tools.base import ToolContext
 from coded.tools.interact import AskUserTool
@@ -224,7 +225,9 @@ def test_posix_reader_hands_over_single_keys_in_key_mode():
 
 class _KeyPoll:
     keys_mode = False
-    buf: list = []
+
+    def __init__(self):
+        self.editor = LineEditor()
 
     def __call__(self, timeout):
         time.sleep(timeout)

@@ -460,6 +460,7 @@ pip install -e '.[tui]'      # adds Textual
 |---|---|
 | `@path` | Attach a file to the message: `explain @src/app.py`, just some lines with `@app.py#L10-40`, a folder listing with `@src/`, an image with `@shot.png`; quote paths with spaces (`@"my notes.md"`). **Tab** completes paths. Works in the TUI and `coded -p` too. |
 | **Alt+Enter**, **Ctrl+J**, or `\` then Enter | New line without sending |
+| **←/→**, **Home/End**, **Delete**, **Ctrl/Option+←/→**, **Shift**+any of them | Move, delete and select anywhere in the message — also in the input box shown while the agent works (see below) |
 | **Esc** | Stop the agent mid-turn (Ctrl-C works too); at a permission question, Esc means "no" |
 | **Shift+Tab** | Cycle mode: normal → accept edits → plan. While a turn is running: accept edits on/off, from the next edit on |
 | **Ctrl+G** | Write the message in `$EDITOR` |
@@ -1044,6 +1045,24 @@ after the turn. Ctrl-C drops the queue
 along with the turn. The permission prompt takes the next line you type, so the
 two never fight over the same keystrokes. This works in the REPL and the TUI;
 without a terminal (piped input, `--print`) it simply stays off.
+
+That input box is a full line editor:
+
+| Keys | What they do |
+|---|---|
+| **←/→** | One character |
+| **Ctrl+←/→**, **Option/Alt+←/→** (or Alt+B/F) | One word |
+| **Home/End**, **Ctrl+A/E** | Start/end of the line; **Ctrl+Home/End**: of the whole message |
+| **↑/↓** | Between the lines of a multi-line message (↑ on the first line edits the newest queued message) |
+| **Shift** + any move | Select; typing, Backspace or Delete replace the selection |
+| **Backspace / Delete**, **Ctrl+D** | Delete before / after the cursor |
+| **Ctrl+W**, **Alt+Backspace** / **Alt+D** | Delete the word before / after |
+| **Ctrl+U / Ctrl+K** | Delete to the start / end of the line |
+| `\` then Enter, **Alt+Enter** (Windows: **Ctrl+Enter**) | New line; Enter queues the whole message |
+
+On Windows, Shift-selection reads the Shift key as the arrow arrives
+(`GetAsyncKeyState`); Ctrl+J is Enter on POSIX terminals, so use `\`+Enter or
+Alt+Enter there.
 
 **Plan mode** (`coded --plan`, or `/plan` / **Shift+Tab** in the REPL/TUI) makes the agent
 research with read-only tools only. When it has a plan it calls

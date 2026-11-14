@@ -283,7 +283,8 @@ class TurnDock:
             bottom.append(queued_list(waiting))
         foreground = any(not t.background for t in running) and self._can_detach()
         typed = self._get_input() or ""
-        matches = [] if self._question else slash_matches(typed, self._get_commands() or [])
+        plain = typed if isinstance(typed, str) else typed.text
+        matches = [] if self._question else slash_matches(plain, self._get_commands() or [])
         bottom.append(input_box(typed, self._get_queued() or 0,
                                 self._question, foreground_task=foreground,
                                 mode=self._get_mode(), suggesting=bool(matches)))
@@ -413,14 +414,52 @@ def slash_suggestions(matches: list) -> Text:
     return t
 
 
-def input_box(text: str, queued: int = 0, answering: bool = False,
-              foreground_task: bool = False, mode: str = "",
-              suggesting: bool = False) -> Group:
-    """The input box drawn during a turn (the REPL's own box is not up then)."""
+def editor_text(text: str, cursor: Optional[int] = None,
+                selection: Optional[tuple] = None) -> Text:
+    """What is being typed, as drawn in the input box: "> " before the first
+    line and an indent before the others, the selection highlighted and the
+    cursor as a block on the character it is before (or after the end)."""
+    cursor = len(text) if cursor is None else max(0, min(cursor, len(text)))
+    sel_start, sel_end = selection if selection else (cursor, cursor)
+    cells = []  # (text, style) per character; merged into runs below
+    for i, ch in enumerate(text):
+        if ch == "\n":
+            if i == cursor:
+                cells.append((" ", _CURSOR))
+            cells.append(("\n  ", None))
+            continue
+        style = _CURSOR if i == cursor else (_SELECTED if sel_start <= i < sel_end else None)
+        cells.append((ch, style))
+    if cursor == len(text):
+        cells.append((" ", _CURSOR))
     line = Text()
     line.append("> ", style=f"bold {ACCENT}")
-    line.append(text)
-    line.append("▌", style=ACCENT)
+    run, run_style = [], None
+    for chunk, style in cells:
+        if style != run_style and run:
+            line.append("".join(run), style=run_style)
+            run = []
+        run_style = style
+        run.append(chunk)
+    if run:
+        line.append("".join(run), style=run_style)
+    return line
+
+
+_CURSOR = f"reverse {ACCENT}"
+_SELECTED = f"on {ACCENT_DEEP}"
+
+
+def input_box(text, queued: int = 0, answering: bool = False,
+              foreground_task: bool = False, mode: str = "",
+              suggesting: bool = False) -> Group:
+    """The input box drawn during a turn (the REPL's own box is not up then).
+    `text` is the typed string (cursor at its end) or a `lineedit.Snapshot`."""
+    if isinstance(text, str):
+        line = editor_text(text)
+    else:
+        line = editor_text(text.text, text.cursor, text.selection)
+        text = text.text
     if answering:
         hint = "  enter to answer  ·  esc for no"
     else:

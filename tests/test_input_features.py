@@ -144,7 +144,7 @@ def test_keys_are_collected_into_lines_with_editing(keys):
     os.write(master, b"helo\x7flo there\r")
     assert reader(0.5) == "hello there"
     os.write(master, b"half-typ")
-    assert reader(0.5) is None and "".join(reader.buf) == "half-typ"
+    assert reader(0.5) is None and reader.editor.text == "half-typ"
 
 
 def test_the_terminal_is_restored(keys):
