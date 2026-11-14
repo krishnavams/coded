@@ -41,6 +41,11 @@
 - Missions show the input box while they work: type a message and it reaches
   the mission at its next step; `/btw`, `/dashboard`, `/todos`, `/cost`, `/help`
   answer at once; Esc stops it (resumable). The report lists what you told it.
+- Long work says how it ended: "Task completed" or "Task stopped: <reason>"
+  (you stopped it, an error, the step limit, not making progress, the spending
+  limit) by desktop notification, voice, bell and/or a line in the transcript
+  (`"notify": "desktop,voice,bell,line"` or `"all"`). `/notify on|off|all|test`
+  switches it for the session; missions always announce.
 - Esc stops a running turn in the TUI at once: a model reply that is still
   coming (or slow to start) is cut off and a running shell command is killed
   with its child processes, as well as a sub-agent the turn waits on.

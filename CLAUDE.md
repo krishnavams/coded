@@ -41,7 +41,7 @@ coded/
 ├── trust.py            # project trust: which .coded/config.json keys need it, fingerprint store
 ├── choice.py           # Chooser: arrow-key selector for permission prompts + ask_user (review page)
 ├── confirm.py          # yes_no(): every yes/no outside a turn in the Chooser panel (keys or lines)
-├── notify.py           # Notifier: bell/desktop notification when a long turn ends or asks
+├── notify.py           # Notifier: "Task completed/stopped: why" via desktop/voice/bell/line
 ├── lineedit.py         # LineEditor: the mid-turn input box's text, cursor, selection, lines
 ├── suggest.py          # command suggestions: grammar, live values, fuzzy, learning, next steps
 ├── execstate.py        # Execution: running/tool/waiting/follow-up/interrupting/… apart from input
@@ -148,6 +148,7 @@ tests/
 ├── test_line_editing.py  # mid-turn box: arrows/Home/End/words/selection/lines, POSIX pty +
 │                       # Windows readers, echo redraw, drawn cursor, normal prompt untouched
 ├── test_btw.py         # /btw: session untouched, answered mid-turn, REPL + TUI
+├── test_announce.py    # outcome + reason, channels, /notify, long-only, REPL/TUI/mission
 ├── test_confirm.py     # yes/no panel: line + key mode, defaults, Esc/Ctrl-C = no, no [y/N] left
 ├── test_choice.py      # selector keys/lines, review page, permission feedback, REPL dock, TUI
 ├── test_trust.py       # project trust gate: what applies untrusted, remembered fingerprint, CLI
@@ -431,6 +432,15 @@ docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_
   only when `config.diagnostics` is set, and are appended to the tool result.
   `add_dirs` reach the Environment section only when non-empty (the prompt is
   otherwise byte-identical), the sandbox's writable list and mentions.
+- **Announcements** (`notify.py`): `Notifier(channels, after)` — `"notify"` is a
+  channel list (`desktop`, `voice`, `bell`, `line`; `all`/`off`; the old single
+  values still parse). `outcome(kind, reason, label, force)` only for work that
+  ran `after` seconds (missions pass `force`); `outcome_of(agent, ok, error,
+  interrupted)` reads the last request's events (interrupt, `max_turns` +
+  reason, `over_budget`). REPL: `Repl._busy`'s finally (after the dock stops),
+  TUI: `_run_agent`'s finally (its `liner` mounts a StatusNote from the worker),
+  mission: end of `_run`. `/notify` (also mid-turn) calls `Notifier.set`; voice
+  text goes through `_speakable` (letters, digits, light punctuation only).
 - **Opt-in extras must not change the default request**: the `browser` tool is
   registered only with `config.browser`, an output style only adds a prompt
   section when set, and `statusline`/`update_check` never block (background

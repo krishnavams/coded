@@ -214,6 +214,16 @@ GRAMMAR: Dict[str, Spec] = {
     )),)),
     "/lab": Spec((Slot("action", choices=(("apply", "Review the proposals one by one", ()),)),)),
     "/plan": Spec((Slot("task", rest=True),)),
+    "/notify": Spec((Slot("setting", repeat=True, choices=(
+        ("on", "Tell you when long work completes or stops", ()),
+        ("off", "No notifications this session", ()),
+        ("all", "Desktop, voice, bell and a line in the transcript", ()),
+        ("test", "Send one now to try it", ()),
+        ("desktop", "A desktop notification", ()),
+        ("voice", "Say it aloud", ()),
+        ("bell", "The terminal bell", ()),
+        ("line", "A line in the transcript", ()),
+    )),)),
 }
 
 

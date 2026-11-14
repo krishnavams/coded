@@ -552,11 +552,24 @@ it, and `/budget` shows what has been spent.
 
 ### Notifications
 
-On a turn that runs longer than `notify_after` seconds (default 30), coded
-rings the terminal bell when it finishes or stops to ask you something, so
-you can work in another window. `"notify": "desktop"` shows a desktop
-notification instead (osascript on macOS, `notify-send` on Linux; the bell
-elsewhere); `"notify": "off"` turns it off.
+When work that ran longer than `notify_after` seconds (default 30) ends,
+coded tells you how: **Task completed**, or **Task stopped** with the reason —
+you stopped it, an error, the step limit, it was not making progress, the
+spending limit. It also calls you over when a long request waits for your
+answer. Choose the channels with `"notify"` (one or several, comma-separated):
+
+| Channel | What you get |
+|---|---|
+| `desktop` | A notification banner (osascript on macOS, `notify-send` on Linux; else the bell) |
+| `voice` | Said aloud (`say` on macOS, `spd-say`/`espeak` on Linux, PowerShell speech on Windows) |
+| `bell` | The terminal bell (the default) |
+| `line` | `✓ Task completed (2m 05s) — …` / `■ Task stopped: … — …` in the transcript |
+
+`"notify": "all"` uses every channel, `"off"` none. In the REPL or TUI,
+**`/notify off`** and **`/notify on`** switch it for the session (also while the
+agent works), `/notify desktop voice` picks channels, `/notify test` sends one
+now. A mission always announces how it ended, however long it ran
+(`coded mission … --notify desktop,voice`).
 
 ### Missions: work while you're away
 

@@ -139,7 +139,7 @@ def test_only_long_turns_notify():
     clock.t = 100
     assert n.waiting("Run shell command") == "bell"
     assert n.finished("All done.\nTests pass.") == "bell"
-    assert sent[-1] == ("coded finished", "All done. Tests pass.", "bell")
+    assert sent[-1] == ("coded: Task completed", "All done. Tests pass.", "bell")
     off = Notifier("off", after=0, clock=clock, sender=lambda *a: sent.append(a))
     off.start()
     assert off.finished() is None

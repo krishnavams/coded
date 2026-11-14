@@ -147,6 +147,8 @@ SLASH_COMMANDS = {
     "/permissions": "Show or change what may run without asking: "
                     "/permissions [allow|deny|remove <rule>] [mode <name>] [save].",
     "/budget": "Show or set the session's spending limit: /budget [dollars|off].",
+    "/notify": "Tell you when long work completes or stops: /notify [on|off|all|test|"
+               "desktop voice bell line].",
     "/todos": "Show the agent's current task list.",
     "/shells": "List background shells; /shells kill <id>.",
     "/tasks": "Running and finished sub-agents and shells (Ctrl+T): /tasks [id] | stop <id>.",
@@ -234,7 +236,7 @@ _AGENT_COMMANDS = frozenset({"/init", "/refactor", "/skill"})
 # input stays alive, typed messages are sent when it finishes.
 _WORK_COMMANDS = frozenset({"/review", "/redteam", "/compact", "/verify"})
 # Commands that only read: answered at once even while work runs.
-_READ_ONLY_MIDTURN = frozenset({"/tasks", "/todos", "/cost", "/context", "/help"})
+_READ_ONLY_MIDTURN = frozenset({"/tasks", "/todos", "/cost", "/context", "/help", "/notify"})
 
 
 class InputLexer(Lexer):
@@ -673,12 +675,13 @@ class Repl:
             if kind == "agent":
                 self.agent.followups = ta.take_followups
             self.execution.begin(label)
-            ok, error = False, ""
+            ok, error, interrupted = False, "", False
             try:
                 yield ta
                 ok = True
             except KeyboardInterrupt:
                 self.execution.interrupt()
+                interrupted = True
                 raise
             except Exception as exc:  # noqa: BLE001 - recorded, then raised on
                 error = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
@@ -696,6 +699,10 @@ class Repl:
                 partial = ta.partial  # a half-typed line: back in the next prompt
                 if partial:
                     self._prefill = partial if not self._prefill else self._prefill + "\n" + partial
+                from coded.notify import outcome_of
+
+                kind, reason = outcome_of(self.agent, ok, error, interrupted)
+                self.notifier.outcome(kind, reason, label)
 
     def _keep_after_interrupt(self) -> None:
         """Ctrl-C/Esc stopped the work: what was typed meanwhile is not run on its
@@ -979,8 +986,7 @@ class Repl:
                 # The input stays alive for the whole turn: typed messages reach
                 # the agent at its next step, commands run after it.
                 with self._busy(text):
-                    answer = self.agent.run(text, images=self._pending_images)
-                    self.notifier.finished(answer)
+                    self.agent.run(text, images=self._pending_images)
                 self._pending_images = None
                 if self._on_turn:
                     self._on_turn()
@@ -1130,6 +1136,8 @@ class Repl:
             self._cmd_permissions(args)
         elif cmd == "/budget":
             self._cmd_budget(args)
+        elif cmd == "/notify":
+            self._cmd_notify(args)
         elif cmd == "/resume":
             self._cmd_resume(args)
         elif cmd in ("/clear", "/reset"):
@@ -1449,6 +1457,15 @@ class Repl:
             ui.info("Nothing changed.")
             return
         self._cmd_rewind([str(number)])
+
+    def _cmd_notify(self, args: List[str]) -> None:
+        """/notify [on|off|all|test|<channels>] — for this session (config: "notify")."""
+        if args[:1] == ["test"]:
+            self.notifier.start()
+            used = self.notifier.outcome("completed", label="a test notification", force=True)
+            ui.info("Sent: " + (", ".join(used) if used else "nothing (notifications are off)"))
+            return
+        ui.info(self.notifier.set(args))
 
     def _cmd_budget(self, args: List[str]) -> None:
         spent = self.agent.session.estimated_cost(self.agent.model)

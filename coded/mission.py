@@ -470,8 +470,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--yolo", action="store_true",
                    help="Approve every action (deny rules still win).")
     p.add_argument("--no-checks", action="store_true", help="Do not run the project's checks.")
-    p.add_argument("--notify", choices=("bell", "desktop", "off"),
-                   help="How to tell you it is over (default: config notify, else desktop).")
+    p.add_argument("--notify", metavar="CHANNELS",
+                   help="How to tell you it is over: desktop, voice, bell, line (comma-"
+                        "separated), all or off (default: config notify plus desktop).")
     p.add_argument("--notify-url", help="Also POST the summary here (e.g. https://ntfy.sh/<topic>).")
     p.add_argument("--trust-project", action="store_true",
                    help="Apply this project's full .coded/config.json without asking.")
@@ -847,10 +848,20 @@ def _run(state: Dict[str, Any], args, resume: bool) -> int:
     ui.info(f"Report saved to {path}")
 
     title = f"coded mission: {STATUS_TEXT.get(result.status, result.status)}"
-    summary = f"{' '.join(state['goal'].split())[:80]} — report: {path}"
-    # A mission's end is worth more than a bell: desktop unless notify is off.
-    mode = state.get("notify") or ("off" if cfg.notify == "off" else "desktop")
-    notify.send(title, summary, mode)
+    # A mission always says how it ended, however long it ran; its end is worth
+    # a desktop notification unless notifications are off.
+    chosen = state.get("notify")
+    channels = notify.parse_channels(chosen if chosen else cfg.notify)
+    if channels and not chosen and "desktop" not in channels:
+        channels.insert(0, "desktop")
+    announcer = notify.Notifier(channels or "off", after=0)
+    announcer.start()
+    reason = "" if result.status == "done" else STATUS_TEXT.get(result.status, result.status)
+    if reason.startswith("Stopped: "):
+        reason = reason[len("Stopped: "):]
+    announcer.outcome("completed" if result.status == "done" else "stopped",
+                      reason.rstrip("."), "mission: " + " ".join(state["goal"].split()),
+                      force=True)
     url = state.get("notify_url")
     if url and not post_notification(url, title, report):
         ui.warn(f"Could not reach {url} to send the notification.")
