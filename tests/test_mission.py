@@ -327,6 +327,12 @@ def test_questions_are_asked_up_front_and_a_no_is_respected(repo, tmp_path, fake
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "make")
     monkeypatch.setattr(cli, "_stdin_is_tty", lambda: True)
+    import io
+
+    from coded import ui
+
+    con = ui.TranscriptConsole(width=120, record=True, file=io.StringIO(), color_system=None)
+    monkeypatch.setattr(ui, "console", con)
     asked = []
 
     def read(prompt):
@@ -338,7 +344,11 @@ def test_questions_are_asked_up_front_and_a_no_is_respected(repo, tmp_path, fake
                                      "--config", _config(tmp_path, server),
                                      "--notify", "off", "--budget", "5"], read=read)
     assert code == 0
-    assert any("make test" in q for q in asked) and any("shell commands" in q for q in asked)
+    shown = con.export_text()
+    # Both asked in the choice panel (the same as every other prompt), answered "n".
+    assert len(asked) == 2 and all("Answer (1-2)" in q for q in asked)
+    assert "Mission · checks" in shown and "make test" in shown
+    assert "Mission · shell commands" in shown and "No, no shell commands" in shown
     assert not trust.check_approved(str(repo), "make test")
     assert "No checks ran" in _report(repo)
 

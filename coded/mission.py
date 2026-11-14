@@ -469,12 +469,13 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _yes(question: str, read=input, default: bool = True) -> bool:
-    try:
-        answer = read(f"{question} [{'Y/n' if default else 'y/N'}] ").strip().lower()
-    except EOFError:
-        return False
-    return default if not answer else answer in ("y", "yes")
+def _yes(title: str, question: str, detail: str = "", read=input, default: bool = True,
+         yes: str = "Yes", no: str = "No") -> bool:
+    """An up-front question, in the same panel as every other prompt."""
+    from coded.confirm import yes_no
+
+    return yes_no(title, question, detail=detail, yes=yes, no=no, default=default,
+                  read=None if read is input else read)
 
 
 def _list(root: str) -> int:
@@ -552,15 +553,23 @@ def _start(args, cwd: str, read) -> int:
         configured = VerifySettings.from_config(cfg.verify).command
         check_command = configured or detect_checks(cwd)
         if check_command and not configured and not trust.check_approved(cwd, check_command):
-            if asking and _yes(f"Run the project's checks after each change?\n  "
-                               f"{check_command}\n(This runs the repository's own code.)", read):
+            if asking and _yes("Mission · checks", "Run the project's checks after each change?",
+                               f"{check_command}\n\nThis runs the repository's own code.",
+                               read, yes="Yes, run them after each change",
+                               no="No, no checks"):
                 trust.approve_check(cwd, check_command)
             else:
                 check_command = None
     allow_bash = args.allow_bash or args.yolo
     if not allow_bash and asking:
-        allow_bash = _yes("Let the mission run shell commands (tests, builds) without asking?"
-                          + ("" if args.here else " It works in a separate worktree."), read)
+        allow_bash = _yes(
+            "Mission · shell commands",
+            "Let the mission run shell commands (tests, builds) without asking?",
+            ("" if args.here else "It works in a separate worktree, but commands run as you, "
+             "unsandboxed: they can reach files outside it and the network.\n")
+            + "Nobody can approve anything during the run: with No, every shell command "
+              "is refused.", read, yes="Yes, run shell commands",
+            no="No, no shell commands")
     if args.budget is None and cfg.max_cost is None:
         ui.warn("No budget set: the mission can spend until it is done. "
                 "Pass --budget <dollars> to cap it.")

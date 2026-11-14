@@ -1050,13 +1050,7 @@ class Repl:
             report = lab.analyze(lab.load_sessions(self.agent.cwd))
             ui.console.print(lab.render(report))
             if args[:1] == ["apply"]:
-                def ask(question: str) -> str:
-                    try:
-                        return self.prompt.prompt(question, bottom_toolbar=None)
-                    except (EOFError, KeyboardInterrupt):
-                        return ""
-
-                n = lab.apply_interactive(self.agent.cwd, report, ask,
+                n = lab.apply_interactive(self.agent.cwd, report, None,
                                           lambda m: ui.console.print(m, markup=False))
                 ui.info(f"Applied {n} change(s).")
         elif cmd == "/twin":

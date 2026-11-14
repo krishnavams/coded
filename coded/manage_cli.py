@@ -44,11 +44,10 @@ def _confirm_fn(assume_yes: bool):
         if not sys.stdin.isatty():
             ui.error("Not running interactively: re-run with --yes after reviewing the above.")
             return False
-        try:
-            answer = input("Proceed? [y/N] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            return False
-        return answer in ("y", "yes")
+        from coded.confirm import yes_no
+
+        return yes_no("Install", "Proceed?", yes="Yes, install", no="No, cancel",
+                      default=False)
 
     return confirm
 

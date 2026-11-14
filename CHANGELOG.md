@@ -55,6 +55,10 @@
   Home/End, Delete, word jumps (Ctrl/Option+←/→), Shift-selection, Ctrl+A/E/K/U/W,
   and multi-line messages (`\`+Enter, Alt+Enter; Ctrl+Enter on Windows).
 - A completed command ends with a space, ready for its arguments.
+- The questions asked before work starts — trust this project, a mission's
+  checks and shell commands, installing a skill or plugin, `/lab apply`, the
+  setup wizard's yes/no — use the same panel as permission prompts (↑/↓,
+  Enter, Esc = no) instead of a bare `[y/N]` line.
 - The TUI no longer sends an unknown `/word` to the model; it suggests a
   correction (or points REPL-only commands to the REPL). Paths such as
   `/etc/hosts …` still go to the model.

@@ -40,6 +40,7 @@ coded/
 ├── permissions.py      # PermissionManager: approve/deny/always gate, accept-edits mode
 ├── trust.py            # project trust: which .coded/config.json keys need it, fingerprint store
 ├── choice.py           # Chooser: arrow-key selector for permission prompts + ask_user (review page)
+├── confirm.py          # yes_no(): every yes/no outside a turn in the Chooser panel (keys or lines)
 ├── notify.py           # Notifier: bell/desktop notification when a long turn ends or asks
 ├── lineedit.py         # LineEditor: the mid-turn input box's text, cursor, selection, lines
 ├── suggest.py          # command suggestions: grammar, live values, fuzzy, learning, next steps
@@ -147,6 +148,7 @@ tests/
 ├── test_line_editing.py  # mid-turn box: arrows/Home/End/words/selection/lines, POSIX pty +
 │                       # Windows readers, echo redraw, drawn cursor, normal prompt untouched
 ├── test_btw.py         # /btw: session untouched, answered mid-turn, REPL + TUI
+├── test_confirm.py     # yes/no panel: line + key mode, defaults, Esc/Ctrl-C = no, no [y/N] left
 ├── test_choice.py      # selector keys/lines, review page, permission feedback, REPL dock, TUI
 ├── test_trust.py       # project trust gate: what applies untrusted, remembered fingerprint, CLI
 ├── test_events.py      # event log: tool outcomes, denials, timings, saved, bounded, thread-safe
@@ -327,7 +329,12 @@ docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_
   requeued, never an answer). TUI: `PermissionModal`/`QuestionModal`
   (`ChoiceModal`). A "no" with text reaches the prompt callback as
   `"no: <text>"`; `request()` keeps it per thread and `Agent._run_tool` puts it
-  in the denial (`take_feedback`).
+  in the denial (`take_feedback`). Questions outside a turn (project trust,
+  mission up-front questions, plugin install, `/lab apply`, the setup wizard's
+  yes/no) use `confirm.yes_no` — the same panel, driven by the type-ahead
+  reader in key mode on a terminal, numbered lines otherwise (an injected
+  `read` forces lines; `y`/`n`/empty = default work there). Never add a bare
+  `[y/N]` prompt (`test_confirm` checks).
 - **`view_image`** queues a path through `ctx.extra["attach_image"]`; after the
   step's tool results the agent adds one user message with the images (a
   `tool` message cannot carry one). `Config.disabled_tools_for` drops it for a
