@@ -128,11 +128,11 @@ def keys():
 
 
 def test_a_lone_escape_stops_but_arrow_keys_do_not(keys):
-    from coded.typeahead import ESCAPE, UP
+    from coded.typeahead import DOWN, ESCAPE, UP
 
     master, reader = keys
-    os.write(master, b"\x1b[B")      # arrow down: an escape sequence, dropped
-    assert reader(0.5) is None
+    os.write(master, b"\x1b[B")      # arrow down: the next history entry, not a stop
+    assert reader(0.5) == DOWN
     os.write(master, b"\x1b[A")      # arrow up: edits the newest queued message
     assert reader(0.5) == UP
     os.write(master, b"\x1b")
@@ -144,7 +144,7 @@ def test_keys_are_collected_into_lines_with_editing(keys):
     os.write(master, b"helo\x7flo there\r")
     assert reader(0.5) == "hello there"
     os.write(master, b"half-typ")
-    assert reader(0.5) is None and "".join(reader.buf) == "half-typ"
+    assert reader(0.5) is None and reader.editor.text == "half-typ"
 
 
 def test_the_terminal_is_restored(keys):
@@ -286,4 +286,5 @@ def test_tab_accepts_the_history_suggestion(tmp_path):
 
 
 def test_tab_still_completes_from_the_menu(tmp_path):
-    assert _type_into_prompt(tmp_path, "/he\tZ\r") == "/helpZ"
+    # A completed command ends with a space, ready for its arguments.
+    assert _type_into_prompt(tmp_path, "/he\tZ\r") == "/help Z"

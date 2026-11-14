@@ -33,6 +33,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import (
     Input,
+    OptionList,
     Markdown,
     Static,
 )
@@ -214,6 +215,32 @@ class QuestionModal(ChoiceModal):
 # ---------------------------------------------------------------------------
 # The app
 # ---------------------------------------------------------------------------
+# Commands the TUI runs itself (CodedTUI._submit); the rest of the REPL's
+# commands are not offered here. Descriptions come from the REPL's list.
+_TUI_COMMANDS = ("/btw", "/clear", "/dashboard", "/exit", "/heal", "/mission", "/plan",
+                 "/quit", "/redteam", "/refactor", "/reset", "/resume", "/timeline", "/twin",
+                 "/undo")
+
+
+def tui_commands() -> dict:
+    from coded.repl import SLASH_COMMANDS
+
+    out = {}
+    for name in _TUI_COMMANDS:
+        desc = SLASH_COMMANDS.get(name) or ("Quit." if name == "/quit" else "")
+        if name == "/mission":
+            desc = "Missions start in the REPL or `coded mission` (they ask questions first)."
+        out[name] = (desc, "built-in")
+    return out
+
+
+def _looks_like_command(text: str) -> bool:
+    """`/word …` (letters, digits, - and :), not a path such as /etc/hosts."""
+    import re
+
+    return bool(re.match(r"/[A-Za-z][\w:-]*(\s|$)", text))
+
+
 class CodedTUI(App):
     CSS = f"""
     Screen {{ background: #100d1a; }}
@@ -238,6 +265,10 @@ class CodedTUI(App):
     #tasks {{ height: auto; max-height: 12; padding: 0 2; margin: 1 1 0 1; display: none; }}
     #tasks.shown {{ display: block; }}
     #prompt {{ border: round #3b3260; background: #100d1a; margin: 0 1; }}
+    #suggest {{ height: auto; max-height: 10; margin: 0 1; display: none;
+                border: round #3b3260; background: #151124; }}
+    #suggest.shown {{ display: block; }}
+    #suggest > .option-list--option-highlighted {{ background: #2a2342; }}
     #prompt:focus {{ border: round {ui.ACCENT}; }}
     #statusline {{ height: 1; padding: 0 2; color: {ui.MUTED}; }}
     #perm-box {{ width: 96; max-width: 95%; height: auto; padding: 0; background: #100d1a; }}
@@ -254,15 +285,22 @@ class CodedTUI(App):
         Binding("ctrl+b", "toggle_sidebar", "Side panel", priority=True),
         Binding("ctrl+o", "toggle_output", "Expand output", priority=True),
         Binding("up", "edit_queued", "Edit queued", show=False),
+        # The suggestion dropdown (only while it is open; see check_action).
+        Binding("down", "menu_move(1)", "Next suggestion", show=False, priority=True),
+        Binding("tab", "menu_take", "Take suggestion", show=False, priority=True),
+        Binding("escape", "menu_close", "Close suggestions", show=False, priority=True),
+        Binding("escape", "interrupt", "Stop", show=False),
     ]
 
     busy = reactive(False)
 
-    def __init__(self, agent: Agent, on_turn=None):
+    def __init__(self, agent: Agent, on_turn=None, sessions=None):
         super().__init__()
         self.agent = agent
         self._on_turn = on_turn
+        self.sessions = sessions  # SessionKeeper: what /resume switches
         self.agent.on_event = self._agent_event  # called from the worker thread
+        self.agent.cancellable = True  # Esc stops a reply or a command at once
         self.agent.permissions.set_prompt(self._permission_prompt, threadsafe=True)
         self.agent.permissions.set_questions(self._questions_prompt)
         self._assistant_md: Optional[Markdown] = None
@@ -270,8 +308,13 @@ class CodedTUI(App):
         self._thought: Optional[Static] = None
         self._thought_buf = ""
         self._queued: list = []  # messages typed while a turn was running
+        self._qlock = threading.Lock()  # the agent's thread takes follow-ups from it
+        from coded.execstate import Execution
+
+        self.execution = Execution(agent, pending=self._followups_waiting)
         self._expanded = False  # Ctrl+O: tool results shown whole
         self._panel_choice: Optional[bool] = None  # None: follow the terminal width
+        self._paused = False  # after an interrupt: the queue waits for you
         self._changes: list = []  # sidebar.FileChange, recomputed after tool results
         from coded import notify
 
@@ -292,6 +335,13 @@ class CodedTUI(App):
         from coded.commands import discover_commands
 
         self.commands = discover_commands(agent.cwd)
+        from coded.suggest import Context, Engine, MenuState
+
+        self.suggest = Engine(Context(
+            cwd=agent.cwd, commands=tui_commands(), custom=self.commands, skills=agent.skills,
+            agent=agent, config=agent.config, sessions=sessions))
+        self.menu = MenuState(self.suggest)
+        self._menu_items: list = []
 
     # -- layout -------------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -302,6 +352,7 @@ class CodedTUI(App):
                 yield Static("", id="side-body")
         # Docked by the input, panel open or not, so progress stays in view.
         yield Static("", id="tasks")
+        yield OptionList(id="suggest")
         yield Input(placeholder="Ask coded to build, fix, explain…", id="prompt")
         yield Static(self._status_text(), id="statusline")
 
@@ -341,6 +392,12 @@ class CodedTUI(App):
         t = Text(no_wrap=True, overflow="ellipsis")
         t.append("◆ ", style=ui.ACCENT)
         t.append(self.agent.model.name, style=f"bold {ui.ACCENT}")
+        from coded.execstate import badge
+
+        state = badge(self.execution)
+        if state.plain and not state.plain.startswith("○"):
+            t.append("  ·  ")
+            t.append_text(state)
         if self.busy:
             doing = ui.current_todo(self.agent.todos.items)
             done, total, _ = ui.todo_progress(self.agent.todos.items)
@@ -437,12 +494,82 @@ class CodedTUI(App):
         self._thought = None
         self._thought_buf = ""
 
+    # -- suggestions ------------------------------------------------------------
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "prompt":
+            self._refresh_menu()
+
+    def _refresh_menu(self) -> None:
+        """Fill the dropdown for what is typed at the cursor (or hide it)."""
+        prompt = self.query_one("#prompt", Input)
+        box = self.query_one("#suggest", OptionList)
+        items = self.menu.items(prompt.value, prompt.cursor_position)
+        self._menu_items = items
+        box.clear_options()
+        if not items:
+            box.remove_class("shown")
+            return
+        width = min(max(len(s.display) for s in items), 34)
+        box.add_options([ui.suggestion_row(s, width, marker=False) for s in items])
+        box.highlighted = self.menu.index
+        box.add_class("shown")
+
+    def _menu_open(self) -> bool:
+        return bool(self._menu_items) and self.query_one("#suggest", OptionList).has_class("shown")
+
+    def check_action(self, action: str, parameters: tuple) -> Optional[bool]:
+        """The dropdown keys act only while it is open, and only on the main
+        screen; otherwise Tab moves focus and Esc closes a dialog as before."""
+        if action in ("menu_move", "menu_take", "menu_close"):
+            return self.screen is self.screen_stack[0] and self._menu_open()
+        return True
+
+    def action_menu_move(self, step: int) -> None:
+        prompt = self.query_one("#prompt", Input)
+        self.menu.move(prompt.value, prompt.cursor_position, step)
+        self.query_one("#suggest", OptionList).highlighted = self.menu.index
+
+    def _take(self, explicit: bool = False) -> bool:
+        """Put the picked (or first) row into the input. Never submits."""
+        from coded.lineedit import LineEditor
+
+        prompt = self.query_one("#prompt", Input)
+        editor = LineEditor(prompt.value)
+        editor.set_text(prompt.value, prompt.cursor_position)
+        if self.menu.accept(editor, explicit=explicit) is None:
+            return False
+        prompt.value = editor.text
+        prompt.cursor_position = editor.cursor
+        prompt.focus()
+        self._refresh_menu()
+        return True
+
+    def action_menu_take(self) -> None:
+        self._take()
+
+    def action_menu_close(self) -> None:
+        self.menu.dismiss(self.query_one("#prompt", Input).value)
+        self._refresh_menu()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        """A click (or Enter in the list) takes that row."""
+        if event.option_list.id != "suggest":
+            return
+        prompt = self.query_one("#prompt", Input)
+        self.menu.index = event.option_index
+        self.menu._key = (prompt.value, prompt.cursor_position)
+        self._take(explicit=True)
+
     # -- input --------------------------------------------------------------
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        if self._menu_open() and self.menu.index is not None and self._take(explicit=True):
+            return  # Enter on a picked suggestion takes it; the next Enter sends
         text = event.value.strip()
         if not text:
             return
         event.input.value = ""
+        if text.startswith("/"):
+            self.suggest.record(text)
         if text == "/btw" or text.startswith("/btw "):
             self._btw(text[len("/btw"):].strip())  # answered now, even mid-turn
             return
@@ -450,11 +577,17 @@ class CodedTUI(App):
             self.push_screen(DashboardModal(self))  # read-only: fine mid-turn
             return
         if self.busy:
-            # Don't swallow a question asked mid-turn: queue it and run it next.
-            self._queued.append(text)
-            self._mount(StatusNote(f"queued ({len(self._queued)}): {text}"))
+            # Never swallowed: a message goes to the running agent at its next
+            # step, a command runs after the turn.
+            with self._qlock:
+                self._queued.append(text)
+                n = len(self._queued)
+            note = (f"queued ({n}): {text}  · runs after this turn" if text.startswith("/")
+                    else f"↪ for the agent's next step: {text}")
+            self._mount(StatusNote(note))
             self._refresh_sidebar()
             return
+        self._paused = False
         self._submit(text)
 
     def _btw(self, question: str) -> None:
@@ -483,9 +616,15 @@ class CodedTUI(App):
         """Up in the prompt: take the newest queued message back to edit it
         (Enter queues it again). Elsewhere Up keeps its usual meaning."""
         prompt = self.query_one("#prompt", Input)
+        if self._menu_open() and self.screen is self.screen_stack[0]:
+            self.action_menu_move(-1)
+            return
         if not self._queued or self.focused is not prompt:
             return
-        text = self._queued.pop()
+        with self._qlock:
+            if not self._queued:
+                return
+            text = self._queued.pop()
         typed = prompt.value.strip()
         prompt.value = text + (" " + typed if typed else "")
         prompt.cursor_position = len(prompt.value)
@@ -503,6 +642,9 @@ class CodedTUI(App):
             return
         if text == "/undo":
             self.action_undo()
+            return
+        if text.split()[0] == "/resume":
+            self._resume(text[len("/resume"):])
             return
         if text.split()[0] == "/dashboard":
             self.push_screen(DashboardModal(self))
@@ -572,7 +714,23 @@ class CodedTUI(App):
                 self._mount(StatusNote(f"Could not read skill: {exc}"))
                 return
             text = skill_message(name, body, text[len(name) + 1:])
+        elif _looks_like_command(text) and not self._known_command(text.split()[0]):
+            self._mount(StatusNote(self._unknown_command(text.split()[0])))
+            return
         self._start_turn(text)
+
+    def _known_command(self, word: str) -> bool:
+        return word in self.suggest.registry()
+
+    def _unknown_command(self, word: str) -> str:
+        from coded.repl import SLASH_COMMANDS
+
+        if word in SLASH_COMMANDS:
+            return (f"{word} works in the REPL (coded without --tui); "
+                    "here: " + ", ".join(sorted(tui_commands())) + ".")
+        close = self.suggest.correct(word)
+        return (f"Unknown command: {word}. "
+                + (f"Did you mean {' or '.join(close)}?" if close else "Type / to see them."))
 
     @work(thread=True)
     def _run_redteam(self, target) -> None:
@@ -584,11 +742,15 @@ class CodedTUI(App):
     @work(thread=True, exclusive=True)
     def _run_agent(self, text: str) -> None:
         self.notifier.start()
+        ok, error = False, ""
         try:
             self.notifier.finished(self.agent.run(text))
+            ok = True
         except Exception as exc:  # noqa: BLE001
+            error = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
             self.call_from_thread(self._mount, StatusNote(explain_failure(exc)))
         finally:
+            self.execution.end(ok, error)
             if self._on_turn:
                 try:
                     self._on_turn()
@@ -596,20 +758,65 @@ class CodedTUI(App):
                     pass
             self.call_from_thread(self._turn_done)
 
+    def _take_followups(self) -> list:
+        """The agent's thread, at a step boundary: messages typed for it."""
+        with self._qlock:
+            texts = [q for q in self._queued if not q.startswith("/")]
+            self._queued[:] = [q for q in self._queued if q.startswith("/")]
+        if texts:
+            self.call_from_thread(self._refresh_sidebar)
+        return texts
+
+    def _followups_waiting(self) -> int:
+        with self._qlock:
+            return sum(1 for q in self._queued if not q.startswith("/"))
+
+    def action_interrupt(self) -> None:
+        """Esc (no dropdown open): stop the running turn after its current step."""
+        if not self.busy or self.screen is not self.screen_stack[0]:
+            return
+        self.execution.interrupt()
+        self.agent.interrupt()
+        self._mount(StatusNote("Stopping after the current step…"))
+        self._refresh_sidebar()
+
     def _turn_done(self) -> None:
         self.busy = False
+        self.agent.followups = None
         self._finalize_assistant()
         self._refresh_sidebar(files=True)
-        self.query_one("#prompt", Input).focus()
+        prompt = self.query_one("#prompt", Input)
+        prompt.focus()
+        from coded.execstate import ExecState
+
+        if self.execution.outcome is ExecState.INTERRUPTED and self._queued:
+            # Stopped on purpose: what was typed meanwhile is neither run on its
+            # own nor dropped — the next one goes back into the input.
+            self._paused = True
+            with self._qlock:
+                first = self._queued.pop(0) if not prompt.value else None
+                left = len(self._queued)
+            if first is not None:
+                prompt.value = first
+                prompt.cursor_position = len(first)
+            self._mount(StatusNote(
+                "Kept what you typed meanwhile: Enter sends it"
+                + (f"; {left} more queued (↑ to edit)." if left else ".")))
+            self._refresh_sidebar()
+            return
         # Queued text takes the same path as typed text, so a slash command
         # typed mid-turn still acts as a command, not as a prompt — and a
         # command that starts no turn does not stall the rest of the queue.
-        while self._queued and not self.busy:
-            self._submit(self._queued.pop(0))
+        while self._queued and not self.busy and not self._paused:
+            with self._qlock:
+                nxt = self._queued.pop(0)
+            self._submit(nxt)
 
     def _start_turn(self, text: str) -> None:
         self._mount(UserMessage(text))
         self.busy = True
+        self.agent.followups = self._take_followups
+        self.execution.begin(text)
         self._run_agent(text)
 
     # -- agent events (called from worker thread) ---------------------------
@@ -653,6 +860,9 @@ class CodedTUI(App):
             self._mount(DiffView(ev.get("diff", "")))
         elif kind == "status":
             self._mount(StatusNote(ev.get("text", "")))
+        elif kind == "followup":
+            self._mount(StatusNote(f"↪ follow-up delivered: {ev.get('text', '')}"))
+            self._refresh_sidebar()
         elif kind == "task_end":
             word = "Done" if ev.get("status") == "completed" else str(ev.get("status", "")).capitalize()
             self._mount(StatusNote(f"⎿ {ev.get('id', '')} {word} ({ev.get('summary', '')})"))
@@ -667,6 +877,10 @@ class CodedTUI(App):
 
     # -- permission prompt (blocks the worker thread) -----------------------
     def _permission_prompt(self, title: str, detail: str) -> str:
+        with self.execution.waiting():
+            return self._permission_prompt_inner(title, detail)
+
+    def _permission_prompt_inner(self, title: str, detail: str) -> str:
         done = threading.Event()
         result = {"v": "no"}
         self.notifier.waiting(title)
@@ -682,6 +896,10 @@ class CodedTUI(App):
         return result["v"]
 
     def _questions_prompt(self, questions: list):
+        with self.execution.waiting():
+            return self._questions_prompt_inner(questions)
+
+    def _questions_prompt_inner(self, questions: list):
         done = threading.Event()
         result = {"v": None}
         self.notifier.waiting("Question")
@@ -697,6 +915,18 @@ class CodedTUI(App):
         return result["v"]
 
     # -- actions ------------------------------------------------------------
+    def _resume(self, arg: str) -> None:
+        from coded.sessions_store import resume_command
+
+        note, table, resumed = resume_command(self.agent, self.sessions, arg)
+        if resumed:
+            self.query_one("#transcript", VerticalScroll).remove_children()
+            self._finalize_assistant()
+            self._refresh_sidebar(files=True)
+        if table is not None:
+            self._mount(Static(table, classes="statusnote"))
+        self._mount(StatusNote(note))
+
     def action_clear(self) -> None:
         self.agent.session.reset()
         self.query_one("#transcript", VerticalScroll).remove_children()
@@ -724,5 +954,5 @@ class CodedTUI(App):
         self._refresh_sidebar(files=True)
 
 
-def run_tui(agent: Agent, on_turn=None) -> None:
-    CodedTUI(agent, on_turn=on_turn).run()
+def run_tui(agent: Agent, on_turn=None, sessions=None) -> None:
+    CodedTUI(agent, on_turn=on_turn, sessions=sessions).run()

@@ -7,6 +7,8 @@ import json
 import threading
 import time
 
+from rich.text import Text
+
 from coded import ui
 from coded.permissions import Decision, PermissionManager
 from coded.tasks import TaskManager, format_elapsed, report_message
@@ -257,7 +259,7 @@ def test_control_keys_reach_their_handlers_mid_turn():
         os.write(master, b"ab\x02cd\x0f")
         assert reader(0.5) == CTRL_B
         assert reader(0.5) == CTRL_O
-        assert reader.buf == list("abcd")   # typing around the keys is kept
+        assert reader.editor.text == "abcd"   # typing around the keys is kept
     finally:
         reader.close()
         os.close(master)
@@ -358,8 +360,50 @@ def test_shift_tab_turns_accept_edits_on_mid_turn(tmp_path):
         os.write(master, b"ab\x1b[Zc")
         assert reader(0.5) == SHIFT_TAB
         reader(0.2)
-        assert reader.buf == list("abc")
+        assert reader.editor.text == "abc"
     finally:
         reader.close()
         os.close(master)
         os.close(slave)
+
+
+def _dock_screen(monkeypatch, dock, height):
+    """What a terminal `height` rows tall shows of the dock."""
+    con = ui.TranscriptConsole(width=110, height=height, record=True, color_system=None,
+                               file=io.StringIO())
+    monkeypatch.setattr(ui, "console", con)
+    con.print(dock.render())
+    return con.export_text()
+
+
+def test_many_running_tasks_never_push_the_input_box_off_screen(monkeypatch):
+    tm = TaskManager()
+    for n in range(8):
+        t = tm.start(f"decorate allure files {n}", "fake", background=True)
+        for i in range(11):
+            tm.record(t, f"Read(tests/test_api/test_{n}_{i}.py)")
+    todos = [{"content": f"step {i}", "status": "pending", "activeForm": "x"} for i in range(4)]
+    for expanded in (True, False):
+        monkeypatch.setattr(ui, "_expanded", expanded)
+        dock = ui.TurnDock(lambda: "half typed", get_running=tm.running,
+                           get_tasks=lambda: todos, get_queue=lambda: ["next one"])
+        screen = _dock_screen(monkeypatch, dock, 30)
+        rows = screen.rstrip("\n").split("\n")
+        assert len(rows) <= 29, len(rows)
+        assert "> half typed" in screen  # the input box
+        assert "esc to interrupt" in screen and "step 0" in screen and "next one" in screen
+        assert "decorate allure files 0" in screen
+    # Room for every headline but no steps: headlines only.
+    assert "Read(" not in _dock_screen(monkeypatch, dock, 26)
+    # Too small even for that: a count.
+    assert "more running" in _dock_screen(monkeypatch, dock, 20)
+    # Plenty of room: steps are shown as before.
+    assert "Read(tests/test_api/test_7_10.py)" in _dock_screen(monkeypatch, dock, 80)
+
+
+def test_a_long_streaming_answer_keeps_its_newest_lines_above_the_input_box(monkeypatch):
+    dock = ui.TurnDock(lambda: "typed")
+    dock.set_body(Text("\n".join(f"answer line {i}" for i in range(100))))
+    screen = _dock_screen(monkeypatch, dock, 24)
+    assert "answer line 99" in screen and "answer line 0\n" not in screen
+    assert "> typed" in screen and len(screen.rstrip("\n").split("\n")) <= 23

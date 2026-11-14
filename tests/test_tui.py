@@ -181,3 +181,38 @@ async def test_tui_tool_results_fold_and_expand_by_click_or_ctrl_o(tmp_path, fak
             assert widget.expanded and not short.expanded
             await pilot.press("ctrl+o")
             assert not widget.expanded
+
+
+@pytest.mark.asyncio
+async def test_tui_resume_lists_and_switches(tmp_path, fake_server):
+    from coded.session import Session
+    from coded.sessions_store import SessionKeeper, SessionStore
+    from coded.tui import StatusNote
+
+    store = SessionStore()
+    saved = Session(system_prompt="SYS")
+    saved.add_user("an earlier request")
+    saved.turns = 1
+    store.save(saved, session_id="earlier", cwd=str(tmp_path), model="fake")
+
+    def script(body):
+        return {"role": "assistant", "content": "hello"}, None
+
+    with fake_server(script) as server:
+        agent = _agent(tmp_path, server.base_url)
+        keeper = SessionKeeper(str(tmp_path), "fake", store, session_id="now")
+        app = CodedTUI(agent, sessions=keeper)
+        async with app.run_test() as pilot:
+            app._submit("/resume")
+            await pilot.pause()
+            from rich.console import Console
+
+            con = Console(record=True, width=120, file=__import__("io").StringIO())
+            con.print(app.query_one("#transcript").children[-2].render()._renderable)
+            assert "an earlier request" in con.export_text()
+            app._submit("/resume 1")
+            await pilot.pause()
+            assert keeper.id == "earlier"
+            assert agent.session.messages[1]["content"] == "an earlier request"
+            children = app.query_one("#transcript").children
+            assert len(children) == 1 and isinstance(children[0], StatusNote)

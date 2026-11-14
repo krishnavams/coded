@@ -272,6 +272,9 @@ class Config:
     lsp: Any = False
     # REPL input: "emacs" (default) or "vi" key bindings.
     editing_mode: str = "emacs"
+    # REPL: let the mouse pick from the suggestion menu. Off by default: while
+    # the prompt owns the mouse, the terminal's own text selection is off.
+    mouse: bool = False
     plugins: list = field(default_factory=list)  # names of enabled plugins merged in
     plugin_warnings: list = field(default_factory=list)
     source_paths: list = field(default_factory=list)  # config files that were loaded
@@ -505,7 +508,7 @@ def _merge_into(cfg: Config, data: Dict[str, Any], source: Path) -> None:
                 "show_reasoning", "parallel_tools", "injection_guard",
                 "detect_external_agents", "shell", "disabled_tools", "add_dirs",
                 "editing_mode", "max_cost", "notify", "notify_after", "accept_edits",
-                "diagnostics", "output_style", "update_check", "browser", "lsp"):
+                "diagnostics", "output_style", "update_check", "browser", "lsp", "mouse"):
         if key in data:
             setattr(cfg, key, data[key])
 

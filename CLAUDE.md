@@ -41,6 +41,9 @@ coded/
 ├── trust.py            # project trust: which .coded/config.json keys need it, fingerprint store
 ├── choice.py           # Chooser: arrow-key selector for permission prompts + ask_user (review page)
 ├── notify.py           # Notifier: bell/desktop notification when a long turn ends or asks
+├── lineedit.py         # LineEditor: the mid-turn input box's text, cursor, selection, lines
+├── suggest.py          # command suggestions: grammar, live values, fuzzy, learning, next steps
+├── execstate.py        # Execution: running/tool/waiting/follow-up/interrupting/… apart from input
 ├── tasks.py            # TaskManager: running sub-agents (progress, background, stop)
 ├── btw.py              # /btw: side question over a copy of the conversation (no tools)
 ├── prompts.py          # assembles main/sub-agent prompts + AGENTS.md/CODED.md/CLAUDE.md hierarchy
@@ -71,7 +74,7 @@ coded/
 ├── builtin_skills/     # bundled roles: planner, reviewer, debugger (bodies from prompt files), qa,
 │                       # security, refactor, adversary
 ├── compaction.py       # context auto-compaction (summarize old messages)
-├── sessions_store.py   # persist/restore sessions (--continue/--resume)
+├── sessions_store.py   # persist/restore sessions (--continue/--resume, /resume: SessionKeeper)
 ├── checkpoints.py      # CheckpointManager: per-turn file snapshots for /undo and /rewind
 ├── transcript.py       # /context breakdown and /export Markdown
 ├── ignore.py           # .codedignore (gitignore syntax): rules_for(cwd), cached by mtime
@@ -136,6 +139,13 @@ tests/
 ├── test_review.py      # /review pipeline + coded review verdict/exit code
 ├── test_tasks.py       # sub-agent tasks: activity, background, Ctrl+B, /tasks, Ctrl+O
 ├── test_queue_edit.py  # ↑ edits the newest queued message (REPL reader, dock, TUI)
+├── test_suggest.py     # suggestion engine: matching, grammar, values, learning, context, speed
+├── test_suggest_tui.py # the TUI dropdown: keys only while open, click, unknown commands
+├── test_persistent_input.py  # follow-ups reach the running turn, states, routing, interrupt
+│                       # keeps input, history, TUI, a real REPL in a pty
+├── test_cancel.py      # Agent.cancellable: Esc cuts a slow model call / kills a shell, TUI
+├── test_line_editing.py  # mid-turn box: arrows/Home/End/words/selection/lines, POSIX pty +
+│                       # Windows readers, echo redraw, drawn cursor, normal prompt untouched
 ├── test_btw.py         # /btw: session untouched, answered mid-turn, REPL + TUI
 ├── test_choice.py      # selector keys/lines, review page, permission feedback, REPL dock, TUI
 ├── test_trust.py       # project trust gate: what applies untrusted, remembered fingerprint, CLI
@@ -149,6 +159,7 @@ tests/
 ├── test_turn_limit.py  # max_turns grows with progress, stops a loop, ceiling, hard-cap switches
 ├── test_mission.py     # restarts/stops, open tasks, budget, branch + report, up-front questions
 ├── test_session_autosave.py  # per-step autosave, atomic save, orphan tool calls, todos
+├── test_resume.py      # /resume: list this folder's sessions, switch, keep saving under its id
 ├── test_memory_bounds.py  # bounded output/file reads, timeout kills the process group
 ├── test_compaction.py  # context compaction trigger + tail preservation
 ├── test_permissions_sessions.py  # allow/deny rules, diff preview, sessions, json
@@ -187,6 +198,8 @@ examples/plugins/       # example plugin (code-quality) + plugin layout guide
 examples/github-actions/coded-review.yml  # PR review workflow (copy to .github/workflows)
 examples/.coded-plugin/marketplace.json  # examples folder doubles as a marketplace
 config.example.json     # sample configuration
+docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_pdf.py
+                        # (needs markdown + pygments, prints with Node Playwright's Chromium)
 ```
 
 ## How it fits together
@@ -697,6 +710,11 @@ config.example.json     # sample configuration
   `sessions_store.close_tool_calls` gives unanswered tool calls an
   `INTERRUPTED_RESULT`: applied on load and at the start of every
   `Agent.run`, since endpoints reject a history with an orphan tool call.
+  The saved id lives in a `SessionKeeper` (CLI autosave, `--resume`, and the
+  REPL/TUI `/resume` via `resume_command`), so a session opened with `/resume`
+  saves under its own id; the one left is saved first only if it has content.
+  Checkpoints are not touched (`/undo` still reverts this run's edits). Tests
+  get a private `CODED_SESSIONS_DIR` (autouse fixture).
 - **Cross-platform**: anything that runs a command goes through `shells.run` /
   `command_argv` (POSIX keeps the historical `shell=True` string path; Windows
   gets an argv list for the resolved shell) and `popen_kwargs`/`kill_tree` for
@@ -742,19 +760,34 @@ config.example.json     # sample configuration
   through `ui.todo_progress`/`todo_bar`/`todo_title`/`current_todo` (panel, REPL
   toolbar and TUI status line all use them), and in the REPL `ui.todo_dock` pins the
   unfinished list under the spinner and the streaming view (transient, so the
-  final answer frame drops it), and input typed mid-turn is queued. During a
+  final answer frame drops it), and input typed mid-turn is routed (see
+  *Persistent input*). During a
   REPL turn `ui.TurnDock` is the one rich Live (spinner, tasks, an input box
   showing `TypeAhead.typing`); the key reader's echo is off meanwhile, and
   `ui.thinking()`/`_call_streaming` draw into the dock (`ui.active_dock()`)
-  instead of opening their own Live — rich allows only one. Input typed mid-turn is queued
+  instead of opening their own Live — rich allows only one. The dock never grows
+  past the terminal (`ui._fit_height`): a Live taller than the screen is cut at
+  the bottom, hiding the input box, so the spinner, todos, queue and input box
+  always show and running sub-agents (`fit_running_tasks`: fewer steps, then
+  headlines, then a count) and a streaming answer (newest lines) get the rest.
+  Input typed mid-turn is queued
   by `typeahead.TypeAhead` (REPL) or `CodedTUI._queued` and run as the next
   message. The type-ahead reader owns stdin during a turn, so a prompt that
   needs an answer asks it via `TypeAhead.ask()` instead of reading stdin itself.
   Polling (never a blocking read) is what lets the reader stop with the turn
   instead of stealing the next prompt's first line. On POSIX the reader
   (`typeahead._PosixKeys`) puts the terminal in non-canonical, no-echo mode for
-  the turn (signals stay on) so a lone **Esc** is seen; escape sequences (arrow
-  keys) are dropped, and `TypeAhead.stop()` must restore the terminal (`close()`).
+  the turn (signals stay on) so a lone **Esc** is seen, and `TypeAhead.stop()`
+  must restore the terminal (`close()`). Both readers edit a `lineedit.LineEditor`
+  (`reader.editor`; never a bare list): `_edit_sequence`/`_EDIT_SEQS` (POSIX,
+  xterm `ESC [1;<mod>X` modifiers) and `_WIN_EDIT` + `_shift_held` (Windows) map
+  keys to its moves/edits, `_EDIT_CTRL` the readline control keys; unknown
+  sequences are skipped whole. Home/End stay on the current line (Ctrl+Home/End
+  for the whole text) — never jump. `\`+Enter / Alt+Enter insert a new line; ↑
+  on the first line is still `UP` (edit queued). The dock draws
+  `TypeAhead.editing` (a `Snapshot`) with `ui.editor_text` (cursor block,
+  selection, indented lines, styled runs not per-char spans). Ctrl+J cannot be a
+  new line on POSIX (ICRNL makes Enter `\n` too).
   Esc stops the turn by sending this process SIGINT, so it behaves exactly as
   Ctrl-C.
   The dock's spinner shows `ui.spinner_word` (coded's own `SPINNER_WORDS`,
@@ -786,11 +819,54 @@ config.example.json     # sample configuration
   under its tool call. Folded output is 3 lines (`_MAX_RESULT_LINES`), blank runs squeezed and
   long lines cut to one terminal row; the TUI's `ToolResult` folds the same way
   and a click (or Ctrl+O, `action_toggle_output`, for all) expands it.
-- **Slash commands mid-turn**: the dock lists matching commands under the
-  input box while a `/word` is typed (`ui.slash_matches`/`slash_suggestions`,
-  `TurnDock(get_commands=…)`, from `Repl._slash_entries`); Tab (`typeahead.TAB`)
-  calls `TypeAhead(complete=…)` → `ui.complete_slash`. The line is still queued
-  and run as a command after the turn (except the intercepted `/btw`, `/dashboard`).
+- **Command suggestions** (`suggest.py`): one `Engine` for the REPL prompt
+  (`repl.SuggestCompleter`, threaded), the mid-turn dock (`MenuState`, drawn by
+  `ui.suggestion_rows`) and the TUI (`#suggest` OptionList). Commands come from
+  `SLASH_COMMANDS` (TUI: `tui_commands()`, the ones it runs), custom commands
+  and skills; arguments from `GRAMMAR` (keep it in step with a command's
+  handler) whose slots name live `PROVIDERS` (models, styles, sessions, turns,
+  tasks, shells, memory, rules, paths …) — never a canned list of values.
+  Matching is `fuzzy` (prefix > substring > letters in order > typos); ranking
+  adds `UsageStore` (per project, `$CODED_USAGE_STORE` in tests via an autouse
+  fixture) and `next_steps` (from the last request's events, `Agent.active_tools`
+  and agent state; only commands in this front-end's registry). Ties keep the
+  source's order. Providers are cached (`_TTL`), a failing one yields nothing,
+  `suggest()` never raises. A taken row only edits the input (`Suggestion.apply`):
+  Enter takes a row only after ↑/↓ picked it, else it sends; Esc closes the
+  list (mid-turn: the reader's `_escape` — Esc stops the turn only with the list
+  closed). REPL mouse is opt-in (`config.mouse`, a SAFE_KEY). Unknown commands
+  get `Engine.correct` ("Did you mean"); the TUI no longer sends an unknown
+  `/word` to the model (paths like `/etc/x` still go).
+- **Persistent input / routing** (`Repl._busy`, `Agent.followups`, `execstate.py`):
+  every REPL path that runs agent work goes through `Repl._busy(label, kind)`
+  — the main turn and `_handle_slash` for `_AGENT_COMMANDS`, skills, custom
+  commands, `/plan <task>`, `/image … <prompt>` (`kind="agent"`) and
+  `_WORK_COMMANDS` (`kind="command"`) — so the type-ahead reader, the dock and
+  the execution state are up for all of it (before, those commands ran with no
+  input at all). Typed messages are follow-ups: `Agent.followups` (set for the
+  turn: `TypeAhead.take_followups` / `CodedTUI._take_followups`) is read by
+  `_deliver_followups` at the top of each step and before a final answer
+  (`followup_message`, `FOLLOWUP_HEADER`; event `followup`); slash commands stay
+  queued and run after; `_READ_ONLY_MIDTURN` answer at once. What is left when
+  the work ends goes to `Repl._backlog` and runs next; on an interrupt
+  `_keep_after_interrupt` puts it back into the input instead (TUI: `_paused`,
+  the next one into the field) — never dropped, never run unasked. `Execution`
+  is separate from input: front-ends call `begin/end/interrupt/waiting()`, the
+  rest (running tools via `Agent.active_tools`, pending follow-ups) is read
+  live; `badge()` draws it (dock `get_state`, TUI status line, REPL toolbar
+  after a request). TUI Esc: priority `menu_close` while the dropdown is open,
+  else `action_interrupt` → `agent.interrupt()`. With `Agent.cancellable` (TUI
+  only; the REPL stops its main thread with SIGINT) that is immediate: the
+  model call runs on a helper thread (`_call_cancellable`) and the wait raises
+  `TurnCancelled` (a BaseException, so retry/fallback never catches it; the
+  loop ends the turn with nothing half-added); stream callbacks
+  (`_cancel_guard`) end the abandoned stream at its next chunk; `bash` gets
+  `ctx.extra["cancel"]` → `shells.run(cancel=…)` kills the tree
+  (`CommandCancelled`, the tool result says so); a foreground sub-agent task
+  is stopped too. Without a cancel event `shells.run` is unchanged. Mid-turn ↑/↓
+  (`DOWN` from the reader on the last line) walk history after the queue,
+  Ctrl+R searches it, Ctrl+L clears. `suggest.highlight` colors the typed line
+  in the prompt (`InputLexer`) and the box (`editor_text(spans=…)`).
 - **Queued messages** (`TypeAhead._queued`, a deque): **↑** mid-turn
   (`typeahead.UP`, from `ESC [A`/`ESC OA` or Windows `\xe0H`) runs
   `edit_last`, moving the newest one into the line being typed; Enter queues it

@@ -38,6 +38,22 @@ class SessionMeta:
     updated: float
     turns: int
     messages: int
+    preview: str = ""  # the first request typed in it
+
+
+def first_request(messages: list) -> str:
+    """The first message the person typed (coded's own [verify]/[memory] notes skipped)."""
+    for msg in messages or []:
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            content = " ".join(p.get("text", "") for p in content
+                               if isinstance(p, dict) and p.get("type") == "text")
+        text = " ".join(str(content or "").split())
+        if text and not text.startswith(("[verify]", "[memory]")):
+            return text
+    return ""
 
 
 INTERRUPTED_RESULT = "[interrupted: coded stopped before this tool call finished]"
@@ -156,9 +172,140 @@ class SessionStore:
                 updated=data.get("updated", 0),
                 turns=data.get("turns", 0),
                 messages=len(data.get("messages", [])),
+                preview=first_request(data.get("messages") or []),
             ))
         metas.sort(key=lambda m: m.updated, reverse=True)
         return metas
 
     def new_id(self) -> str:
         return _new_id()
+
+
+class SessionKeeper:
+    """The saved session a running front-end writes to, and switching it.
+
+    The CLI's autosave, `--resume`/`--continue` and the REPL/TUI `/resume`
+    all go through one keeper, so a resumed session keeps saving under its
+    own id instead of the one the process started with.
+    """
+
+    def __init__(self, cwd: str, model: str, store: Optional[SessionStore] = None,
+                 session_id: Optional[str] = None) -> None:
+        self.store = store or SessionStore()
+        self.cwd = cwd
+        self.model = model
+        self.id = session_id or self.store.new_id()
+
+    def save(self, agent) -> None:
+        agent.session.todos = [dict(t) for t in agent.todos.items]
+        try:
+            self.store.save(agent.session, session_id=self.id, cwd=self.cwd, model=self.model)
+        except OSError:
+            pass
+
+    def here(self) -> List[SessionMeta]:
+        """Saved sessions for this folder, newest first (the current one left out)."""
+        return [m for m in self.store.list() if m.cwd == self.cwd and m.id != self.id]
+
+    def resolve(self, arg: str) -> Optional[str]:
+        """A session id from `/resume N` (as listed by `here`), an id or a unique id prefix."""
+        arg = arg.strip()
+        if arg.isdigit() and len(arg) < 4:
+            metas = self.here()
+            n = int(arg)
+            return metas[n - 1].id if 1 <= n <= len(metas) else None
+        ids = [m.id for m in self.store.list()]
+        if arg in ids:
+            return arg
+        matches = [i for i in ids if i.startswith(arg)]
+        return matches[0] if len(matches) == 1 else None
+
+    def resume(self, agent, session_id: str) -> Optional[Session]:
+        """Load `session_id` into `agent` and save to it from now on; None if missing."""
+        loaded = self.store.load(session_id)
+        if loaded is None:
+            return None
+        agent.session = loaded
+        agent.todos.items = [dict(t) for t in loaded.todos]
+        self.id = session_id
+        return loaded
+
+    @staticmethod
+    def has_content(agent) -> bool:
+        return bool(agent.session.turns or len(agent.session.messages) > 1)
+
+    def switch(self, agent, session_id: str) -> Optional[Session]:
+        """`/resume`: save the open conversation (if it has any), then load another."""
+        if self.has_content(agent):
+            self.save(agent)
+        return self.resume(agent, session_id)
+
+
+def _age(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    for size, unit in ((86400, "d"), (3600, "h"), (60, "m")):
+        if seconds >= size:
+            return f"{seconds // size}{unit} ago"
+    return "just now"
+
+
+RESUME_LIMIT = 20
+
+
+def resume_command(agent, keeper: Optional[SessionKeeper], arg: str):
+    """`/resume [N | id]` for the REPL and TUI.
+
+    Returns (message, renderable, resumed): `message` is plain text for a
+    note (or ""), `renderable` a rich Table listing sessions (or None).
+    """
+    if keeper is None:
+        return "Saved sessions are off in this front-end.", None, False
+    arg = arg.strip()
+    if not arg:
+        metas = keeper.here()
+        if not metas:
+            return ("No other saved sessions for this folder. `coded sessions` lists "
+                    "every folder's.", None, False)
+        from rich.table import Table
+        from rich.text import Text
+
+        from coded import ui
+
+        table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
+        now = time.time()
+        for n, m in enumerate(metas[:RESUME_LIMIT], 1):
+            preview = m.preview or "(no request yet)"
+            preview = preview[:70] + ("…" if len(preview) > 70 else "")
+            table.add_row(Text(str(n), style=ui.ACCENT), Text(preview),
+                          Text(f"{_age(now - m.updated)} · {m.turns} req · {m.id}",
+                               style=ui.MUTED))
+        more = len(metas) - RESUME_LIMIT
+        tail = f" ({more} older not shown; /resume <id> reaches any.)" if more > 0 else ""
+        return ("/resume N reopens one; the current conversation stays saved." + tail,
+                table, False)
+    target = keeper.resolve(arg)
+    if target is None:
+        return (f"No saved session '{arg}'. /resume lists this folder's; "
+                "`coded sessions` lists all.", None, False)
+    if target == keeper.id:
+        return "That is the session you are in.", None, False
+    previous = keeper.id if keeper.has_content(agent) else None
+    loaded = keeper.switch(agent, target)
+    if loaded is None:
+        return f"Could not read saved session '{target}'.", None, False
+    last = ""
+    for msg in reversed(loaded.messages):
+        if msg.get("role") == "user":
+            last = first_request([msg])
+            if last:
+                break
+    note = (f"Resumed session {target} ({loaded.turns} request(s), "
+            f"{len(loaded.messages)} messages).")
+    if last:
+        note += f" Last request: {last[:80]}{'…' if len(last) > 80 else ''}"
+    if loaded_cwd := next((m.cwd for m in keeper.store.list() if m.id == target), ""):
+        if loaded_cwd != keeper.cwd:
+            note += f" (It was started in {loaded_cwd}; tools still work in {keeper.cwd}.)"
+    if previous:
+        note += f" The previous conversation is saved as {previous}."
+    return note, None, True

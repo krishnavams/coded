@@ -29,7 +29,7 @@ SAFE_KEYS = frozenset({
     "default_model", "model_roles", "pools", "routing", "max_turns", "auto_extend_turns", "stream",
     "auto_compact", "compact_ratio", "auto_fallback", "show_reasoning",
     "parallel_tools", "disabled_tools", "editing_mode", "max_cost", "notify",
-    "notify_after", "output_style", "update_check", "embedding_model",
+    "notify_after", "output_style", "update_check", "embedding_model", "mouse",
 })
 _GUARD_ORDER = {"off": 0, "warn": 1, "strict": 2}
 

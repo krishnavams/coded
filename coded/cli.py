@@ -600,7 +600,8 @@ def _handle_sessions_command(argv: List[str]) -> int:
     for m in metas:
         when = _dt.datetime.fromtimestamp(m.updated).strftime("%Y-%m-%d %H:%M")
         print(f"{m.id}  {when}  {m.model:<14} {m.messages:>3} msgs  {m.cwd}")
-    ui.info("Resume with: coded --resume <id>  (or --continue for the latest here)")
+    ui.info("Resume with: coded --resume <id>  (or --continue for the latest here; "
+            "/resume inside coded)")
     return 0
 
 
@@ -936,22 +937,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         agent.set_mode("plan", announce=False)
 
     # Session persistence: resume a saved session, or start a fresh id.
-    from coded.sessions_store import SessionStore
+    from coded.sessions_store import SessionKeeper, SessionStore
 
     store = SessionStore()
+    keeper = SessionKeeper(cwd, model.name, store)
     resume_id = args.resume or (store.latest(cwd) if args.continue_session else None)
     if resume_id:
-        loaded = store.load(resume_id)
+        loaded = keeper.resume(agent, resume_id)
         if loaded is not None:
-            agent.session = loaded
-            agent.todos.items = [dict(t) for t in loaded.todos]
-            session_id = resume_id
             ui.info(f"Resumed session {resume_id} ({len(loaded.messages)} messages).")
         else:
             ui.warn(f"No saved session '{resume_id}'; starting a new one.")
-            session_id = store.new_id()
-    else:
-        session_id = store.new_id()
 
     initial_prompt = " ".join(args.prompt) if args.prompt else None
     images = args.image or None
@@ -959,11 +955,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         ui.warn(f"Model '{model.name}' is not marked supports_vision; images may be ignored.")
 
     def autosave():
-        agent.session.todos = [dict(t) for t in agent.todos.items]
-        try:
-            store.save(agent.session, session_id=session_id, cwd=cwd, model=model.name)
-        except OSError:
-            pass
+        keeper.save(agent)
 
     agent.on_step = autosave
     try:
@@ -976,13 +968,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             except ImportError:
                 ui.error("The TUI needs Textual. Install it with: pip install 'coded[tui]'")
                 return 1
-            run_tui(agent, on_turn=autosave)
+            run_tui(agent, on_turn=autosave, sessions=keeper)
             autosave()
             return 0
         from coded.repl import Repl
 
         try:
-            repl = Repl(agent, cfg, on_turn=autosave)
+            repl = Repl(agent, cfg, on_turn=autosave, sessions=keeper)
         except ConfigError as exc:
             ui.error(str(exc))
             return 1

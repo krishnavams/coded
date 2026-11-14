@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections import deque
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -88,6 +89,23 @@ def _is_tool_images(message: Dict[str, Any]) -> bool:
             and str(content[0].get("text", "")).startswith(_TOOL_IMAGES))
 
 
+class TurnCancelled(BaseException):
+    """The user stopped the turn while the model was answering (see
+    Agent.cancellable). A BaseException, so retry/fallback code that catches
+    Exception never mistakes it for an endpoint failure."""
+
+
+FOLLOWUP_HEADER = ("[The user added this while you were working. Take it into account: "
+                   "adjust what you are doing, answer it, or carry on if it changes nothing.]")
+
+
+def followup_message(texts: List[str]) -> str:
+    """The user message that carries mid-turn follow-ups to the agent."""
+    if len(texts) == 1:
+        return f"{FOLLOWUP_HEADER}\n{texts[0]}"
+    return FOLLOWUP_HEADER + "\n" + "\n".join(f"{n}. {t}" for n, t in enumerate(texts, 1))
+
+
 class Agent:
     def __init__(
         self,
@@ -155,6 +173,7 @@ class Agent:
         # One entry per request the user sent: its user message (by identity),
         # what was typed and the checkpoint group it opened (for /rewind).
         self._turn_marks: List[Dict[str, Any]] = []
+        self._active_tools: Dict[str, str] = {}  # tool-call id → name, while it runs
         # This request's recent tool calls (name, raw args, is_error), for the
         # progress check when it reaches max_turns.
         self._recent_calls: deque = deque(maxlen=_LOOP_WINDOW)
@@ -178,6 +197,14 @@ class Agent:
         self.event_task: Optional[str] = None  # the task id, in a sub-agent
         self._last_request = ""
         self._interrupted = False
+        # Messages the user typed while this turn runs (set by the front-end
+        # for the turn): taken at each step and before a final answer.
+        self.followups: Optional[Callable[[], List[str]]] = None
+        # True where the turn runs off the main thread (TUI): interrupt() then
+        # cancels a model call or a shell command at once, not between steps.
+        # (The REPL stops the main thread with SIGINT instead.)
+        self.cancellable = False
+        self._cancel = threading.Event()
         self._session_started = False
         self._instruction_dirs: set = set()
         self._plan_intro_sent = False
@@ -224,6 +251,7 @@ class Agent:
         skill body, /init) rather than something the user typed.
         """
         self._interrupted = False
+        self._cancel.clear()
         if not self.is_subagent and isinstance(user_message, str) and "@" in user_message:
             from coded.mentions import expand_mentions
 
@@ -327,7 +355,12 @@ class Agent:
     def interrupt(self) -> None:
         """Ask the running turn to stop at the next checkpoint (between steps)."""
         self._interrupted = True
+        self._cancel.set()
         self.events.add("interrupt")
+        tasks = getattr(self, "tasks", None)
+        fg = tasks.foreground() if tasks is not None else None
+        if fg is not None:  # the sub-agent this turn waits on stops too
+            tasks.stop(fg.id)
 
     def switch_model(self, model: ModelConfig, pool: Optional[str] = None,
                      pin: bool = True) -> None:
@@ -480,6 +513,34 @@ class Agent:
             self._show_task_done(t)
         self.session.add_user(report_message(done))
 
+    def _deliver_followups(self) -> bool:
+        """Hand what the user typed mid-turn to the agent, at a safe point: the
+        top of a step (after any tool results) or instead of ending the turn.
+        Main agent only; True when something was delivered."""
+        if self.is_subagent or self.followups is None:
+            return False
+        try:
+            texts = [t.strip() for t in self.followups() or [] if t and t.strip()]
+        except Exception:  # noqa: BLE001 - a broken source must not end the turn
+            return False
+        if not texts:
+            return False
+        if any("@" in t for t in texts):
+            from coded.mentions import expand_mentions
+
+            texts = [expand_mentions(t, self.cwd, max_chars=self.limits.tool_result_chars,
+                                     vision=False, dirs=self.config.add_dirs).text
+                     if "@" in t else t for t in texts]
+        self.session.add_user(followup_message(texts))
+        self.events.add("followup", count=len(texts))
+        for t in texts:
+            short = " ".join(t.split())
+            short = short if len(short) <= 80 else short[:77] + "…"
+            if not self._emit("followup", text=short) and self.verbose:
+                ui.followup_delivered(short)
+        self._step_done()
+        return True
+
     def _background_pending(self) -> bool:
         """Before ending a turn: is a background report waiting, or (when nobody
         can wake the agent later) still being produced? Waits for the latter."""
@@ -531,11 +592,15 @@ class Agent:
                 final_text = final_text or stop
                 break
             self._deliver_background()
+            self._deliver_followups()
             self.session.turns += 1
             self._sync_sizing()
             self._maybe_compact()
             try:
                 completion = self._call_model()
+            except TurnCancelled:
+                self._status_note("Interrupted.")
+                break
             except Exception as exc:  # noqa: BLE001
                 if context_retry or not is_context_overflow(exc):
                     raise
@@ -551,7 +616,11 @@ class Agent:
                     self._shrink_recent_tool_results()
                     self._maybe_compact(force=True)
                     self._compact_until_fits()
-                completion = self._call_model()
+                try:
+                    completion = self._call_model()
+                except TurnCancelled:
+                    self._status_note("Interrupted.")
+                    break
             else:
                 context_retry = False
             answered = self.config.models.get(completion.model) or self.model
@@ -573,6 +642,8 @@ class Agent:
             if not completion.tool_calls:
                 self._step_done()
                 final_text = completion.content
+                if self._deliver_followups():
+                    continue  # the user added something: answer that before finishing
                 if self._background_pending():
                     continue  # a background task's report arrived: let the agent see it
                 feedback = self._verify_turn(final_text)
@@ -989,6 +1060,42 @@ class Agent:
             exclude=self.config.disabled_tools_for(self.model))
 
     def _call_model(self) -> Completion:
+        if self.cancellable and not self.is_subagent:
+            return self._call_cancellable(self._call_model_now)
+        return self._call_model_now()
+
+    def _call_cancellable(self, fn: Callable[[], Completion]) -> Completion:
+        """Run a model call on a helper thread and wait for it, so an interrupt
+        ends the wait at once (TurnCancelled). The stream callbacks stop the
+        abandoned call at its next chunk; its result is dropped."""
+        box: Dict[str, Any] = {}
+        done = threading.Event()
+
+        def work() -> None:
+            try:
+                box["v"] = fn()
+            except BaseException as exc:  # noqa: BLE001 - handed to the waiting thread
+                box["e"] = exc
+            finally:
+                done.set()
+
+        threading.Thread(target=work, daemon=True, name="coded-model-call").start()
+        while not done.wait(0.05):
+            if self._cancel.is_set():
+                raise TurnCancelled()
+        if "e" in box:
+            raise box["e"]
+        return box["v"]
+
+    def _cancel_guard(self, fn: Callable[[str], None]) -> Callable[[str], None]:
+        """A stream callback that ends the stream once the turn is cancelled."""
+        def guarded(chunk: str) -> None:
+            if self._cancel.is_set():
+                raise TurnCancelled()
+            fn(chunk)
+        return guarded
+
+    def _call_model_now(self) -> Completion:
         tools = self._tool_schema()
         with self.tracer.span("llm", model=self.model.name, model_id=self.model.model,
                               messages=len(self.session.messages)) as attrs:
@@ -1009,8 +1116,9 @@ class Agent:
         self._emit("assistant_start")
         completion = self.llm.complete(
             self.session.messages, tools, stream=True,
-            on_text=lambda chunk: self._emit("assistant_delta", text=chunk),
-            on_reasoning=lambda chunk: self._emit("reasoning_delta", text=chunk),
+            on_text=self._cancel_guard(lambda chunk: self._emit("assistant_delta", text=chunk)),
+            on_reasoning=self._cancel_guard(
+                lambda chunk: self._emit("reasoning_delta", text=chunk)),
         )
         self._emit("assistant_end", text=completion.content)
         return completion
@@ -1138,8 +1246,14 @@ class Agent:
                 "limits": self.limits,
                 "model": self.model,
                 "attach_image": self._tool_images.append,
+                "cancel": self._cancel,  # shell commands stop when it is set
             },
         )
+
+    @property
+    def active_tools(self) -> List[str]:
+        """Names of the tool calls running right now (parallel ones included)."""
+        return list(dict(self._active_tools).values())
 
     def _run_tool(self, tc, display: bool = True) -> Tuple[str, bool, Optional[dict]]:
         """Run one tool call and record it in the event log (timing, outcome)."""
@@ -1149,7 +1263,11 @@ class Agent:
 
         start = _time.monotonic()
         self.permissions.take_deny_reason()  # start clean
-        content, is_error, args = self._run_tool_inner(tc, display)
+        self._active_tools[tc.id] = tc.name
+        try:
+            content, is_error, args = self._run_tool_inner(tc, display)
+        finally:
+            self._active_tools.pop(tc.id, None)
         flags = classify(content) if is_error else {"denied": False, "outside": False}
         if flags["denied"]:
             if content.startswith("Plan mode is on"):

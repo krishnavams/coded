@@ -121,7 +121,7 @@ runtime.
 - **Context auto-compaction** — long sessions are summarized automatically as
   they approach the model's context window (`/compact` to force it).
 - **Session save/resume** — conversations persist to disk; `--continue` /
-  `--resume <id>` pick up where you left off.
+  `--resume <id>`, or `/resume` inside coded, pick up where you left off.
 - **Permission rules** — allow/deny tool actions by pattern in config, plus a
   colored diff preview before every `write`/`edit`.
 - **Cost tracking** — `/cost` shows token usage and an estimated dollar cost;
@@ -428,6 +428,7 @@ pip install -e '.[tui]'      # adds Textual
 | `/vim` | Toggle vi key bindings in the input |
 | `/undo` | Revert the last turn's file changes |
 | `/rewind [n] [--keep-files]` | Go back to before request *n*: conversation and its file changes |
+| `/resume [n \| id]` | List this folder's saved conversations, or reopen one (the current one stays saved) |
 | `/context` | What fills the context window |
 | `/add-dir [path]` | Let the agent work in another folder too |
 | `/style [name\|off]` | List or switch output styles |
@@ -459,6 +460,7 @@ pip install -e '.[tui]'      # adds Textual
 |---|---|
 | `@path` | Attach a file to the message: `explain @src/app.py`, just some lines with `@app.py#L10-40`, a folder listing with `@src/`, an image with `@shot.png`; quote paths with spaces (`@"my notes.md"`). **Tab** completes paths. Works in the TUI and `coded -p` too. |
 | **Alt+Enter**, **Ctrl+J**, or `\` then Enter | New line without sending |
+| **←/→**, **Home/End**, **Delete**, **Ctrl/Option+←/→**, **Shift**+any of them | Move, delete and select anywhere in the message — also in the input box shown while the agent works (see below) |
 | **Esc** | Stop the agent mid-turn (Ctrl-C works too); at a permission question, Esc means "no" |
 | **Shift+Tab** | Cycle mode: normal → accept edits → plan. While a turn is running: accept edits on/off, from the next edit on |
 | **Ctrl+G** | Write the message in `$EDITOR` |
@@ -470,6 +472,38 @@ pip install -e '.[tui]'      # adds Textual
 | **Ctrl+T** | List running and finished tasks (`/tasks`) |
 
 Set `"editing_mode": "vi"` in your config for vi key bindings (or toggle with `/vim`).
+
+### Command suggestions
+
+Type `/` and a dropdown lists the commands — the same in the REPL prompt, in the
+input box while the agent works, and in the TUI. It completes as you go:
+
+- **Commands, subcommands, flags and values**: `/permissions ` offers
+  `allow deny remove mode save`, `/permissions mode ` the three modes,
+  `/mission --` its flags, `/model ` your configured models and pools,
+  `/style ` the output styles, `/resume ` this folder's saved sessions,
+  `/rewind ` and `/timeline ` this conversation's requests, `/tasks stop `
+  what is running, `/memory forget ` the notes, `/permissions allow ` a rule
+  for each tool (and `bash(<cmd> *)` for the commands the agent ran),
+  `/review `, `/export `, `/add-dir `, `/image ` files and folders, `@` any
+  path. Custom commands show their `argument-hint`, plugins and skills their source.
+- **Forgiving**: prefix, letters in order (`/rvw` → `/review`) and typos
+  (`/reveiw` → `/review`). An unknown command answers "Did you mean …?".
+- **Ranked for you**: commands you use in this project come first, and whole
+  lines you ran before come back (`/model fast`). Learned per project in
+  `~/.config/coded/command_usage.json`.
+- **What next**: a bare `/` puts first what the session points at — failed
+  checks → `/heal`, `/timeline`; edits → `/review`, `/undo`; sub-agents
+  running → `/tasks`; a full context window → `/compact`; a call you denied →
+  `/permissions` — each with the reason.
+
+Keys: **↑/↓** choose, **Tab** takes the highlighted (or first) row, **Enter**
+takes a row you moved to (otherwise it sends the line), **Esc** closes the list.
+Taking a row only edits the line — nothing runs until you press Enter. During a
+turn, ↑ and Esc keep their usual meaning (edit queued message, stop) whenever
+the list is closed. The TUI's list can be clicked; in the REPL set
+`"mouse": true` to click it too (off by default: while the prompt owns the
+mouse, your terminal's own text selection does not work there).
 
 ### Permissions
 
@@ -588,6 +622,12 @@ coded --continue        # resume the most recent session for this directory
 coded --resume <id>     # resume a specific one
 coded sessions          # list them
 ```
+
+Inside coded, **`/resume`** lists this folder's other saved conversations
+(newest first, with their first request) and `/resume 2` — or `/resume <id>`,
+or an id prefix — switches to one without restarting. The conversation you
+leave is saved first, and the one you open keeps saving under its own id.
+File changes are not touched: `/undo` still reverts this run's edits.
 
 ### More folders, excluded paths
 
@@ -1029,14 +1069,52 @@ Each update shows progress — `Tasks 2/5 ▰▰▰▰▱▱▱▱▱▱ 40%`, t
 `← now` — and the status bar carries the same count and the current item while
 the agent works, so a long turn is never a silent one.
 
-**You can type while it works.** A question or follow-up typed mid-turn is
-queued (`⏎ queued (1): …`) and run as the next message instead of being
-swallowed by the busy terminal; several queue in order. Typing `/` lists the
-matching slash commands under the input box and Tab completes one; it runs
-after the turn. Ctrl-C drops the queue
-along with the turn. The permission prompt takes the next line you type, so the
-two never fight over the same keystrokes. This works in the REPL and the TUI;
-without a terminal (piped input, `--print`) it simply stays off.
+**You can type while it works.** The input never goes away: while the agent
+— or a command that runs it, like `/review`, `/init`, a skill or a custom
+command — is working, an input box stays at the bottom with the execution state
+above it (`◆ running tool  bash · 1 follow-up waiting`, `? waiting for you`,
+`■ interrupting`), and what you type is routed by what it is:
+
+- **A message** goes to the *running* agent: it is delivered at the next step
+  (`↪ follow-up delivered: …`), or just before the agent would finish, so it can
+  change course — "use port 8080", "also update the README", an answer to
+  something it said. Several are delivered together, in order.
+- **A read-only command** (`/btw`, `/dashboard`, `/tasks`, `/todos`, `/cost`,
+  `/context`, `/help`) answers at once, alongside the work.
+- **Any other command** runs right after the work finishes (`⏎ queued … · runs
+  after this one`). Commands that don't run the agent loop (`/review`,
+  `/redteam`, `/compact`, `/verify`) also keep the box; messages typed during
+  those are sent when they finish.
+- **Esc** (or Ctrl-C) stops the work. Nothing you typed is lost or run behind
+  your back: it is put back into the input to send, edit or clear.
+
+Typing `/` lists the matching commands (see *Command suggestions*). **↑/↓**
+walk your earlier messages (↑ first takes back a queued one), **Ctrl+R**
+finds the newest earlier message containing what you typed (again: older),
+**Ctrl+L** clears the screen. The permission prompt takes the next line you
+type, so the two never fight over the same keystrokes. The same routing works
+in the TUI (Esc stops a turn at once — a reply still streaming, a running shell
+command and its children — when no suggestion list is open); without a
+terminal (piped input, `--print`) it stays off. Between requests the status bar
+shows how the last one ended (`✓ completed 14s`, `✗ failed`, `■ interrupted`).
+
+That input box is a full line editor:
+
+| Keys | What they do |
+|---|---|
+| **←/→** | One character |
+| **Ctrl+←/→**, **Option/Alt+←/→** (or Alt+B/F) | One word |
+| **Home/End**, **Ctrl+A/E** | Start/end of the line; **Ctrl+Home/End**: of the whole message |
+| **↑/↓** | Between the lines of a multi-line message (↑ on the first line edits the newest queued message) |
+| **Shift** + any move | Select; typing, Backspace or Delete replace the selection |
+| **Backspace / Delete**, **Ctrl+D** | Delete before / after the cursor |
+| **Ctrl+W**, **Alt+Backspace** / **Alt+D** | Delete the word before / after |
+| **Ctrl+U / Ctrl+K** | Delete to the start / end of the line |
+| `\` then Enter, **Alt+Enter** (Windows: **Ctrl+Enter**) | New line; Enter queues the whole message |
+
+On Windows, Shift-selection reads the Shift key as the arrow arrives
+(`GetAsyncKeyState`); Ctrl+J is Enter on POSIX terminals, so use `\`+Enter or
+Alt+Enter there.
 
 **Plan mode** (`coded --plan`, or `/plan` / **Shift+Tab** in the REPL/TUI) makes the agent
 research with read-only tools only. When it has a plan it calls
