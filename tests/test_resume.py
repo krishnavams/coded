@@ -31,7 +31,7 @@ def _saved(store, sid, cwd, text, updated=None, todos=None):
 
 
 @pytest.fixture
-def setup(tmp_path, fake_server, monkeypatch):
+def setup(tmp_path, fake_server, monkeypatch, headless):
     con = ui.TranscriptConsole(width=200, record=True, file=io.StringIO(), color_system=None)
     monkeypatch.setattr(ui, "console", con)
     store = SessionStore()
