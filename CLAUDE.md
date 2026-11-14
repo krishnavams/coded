@@ -708,6 +708,13 @@ docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_
   a worktree) and the session's todos, so it skips planning. Never pushes or
   merges. The REPL's `/mission …` calls `mission_main` with `--cwd` and the
   session's model; the TUI only points to it (the questions need a terminal).
+  On a terminal `_steering` wraps `run_mission`: the type-ahead reader, the
+  dock (`get_state` badge) and `Agent.followups`, so typed messages reach the
+  mission at its next step; `STEERING_COMMANDS` answer at once, any other
+  command goes back into the box; Esc = Ctrl-C (status interrupted,
+  resumable). What was never delivered goes to the report (`undelivered`).
+  Without a terminal (or `ui.is_quiet()`) nothing changes. Never name a local
+  `escape` there: it shadows `rich.markup.escape`.
 - **Sessions survive a crash**: `Agent.on_step` (main agent only; the CLI sets
   it to autosave) runs after the user message, each tool step and the final
   answer, so a kill loses at most one step; the REPL also saves after Ctrl-C.

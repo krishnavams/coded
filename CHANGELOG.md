@@ -38,6 +38,9 @@
 - While the agent works: ↑/↓ walk earlier messages, Ctrl+R searches them,
   Ctrl+L clears the screen; the typed command, flags, values and `@paths` are
   highlighted (also in the prompt between turns).
+- Missions show the input box while they work: type a message and it reaches
+  the mission at its next step; `/btw`, `/dashboard`, `/todos`, `/cost`, `/help`
+  answer at once; Esc stops it (resumable). The report lists what you told it.
 - Esc stops a running turn in the TUI at once: a model reply that is still
   coming (or slow to start) is cut off and a running shell command is killed
   with its child processes, as well as a sub-agent the turn waits on.

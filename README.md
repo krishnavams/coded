@@ -584,6 +584,14 @@ asking? — and then works alone until the goal is done:
   step limit or left tasks open is sent back to finish (up to
   `--max-restarts`, default 3). It stops when it is clearly stuck, the
   `--budget` runs out, or you press Ctrl-C.
+- **Steer it if you are watching.** On a terminal the input box stays at the
+  bottom while it works, with what it is doing (`◆ running tool  bash · 1
+  follow-up waiting`). Type a message and it reaches the mission at its next
+  step ("use port 8080", "skip the admin pages"), even across its restarts;
+  `/btw`, `/dashboard`, `/todos`, `/cost` and `/help` answer at once (other
+  commands cannot run during a mission: they go back into the box). **Esc**
+  stops it like Ctrl-C. The report lists what you told it, and anything typed
+  too late to be delivered.
 - **Survives being killed.** Every step is saved. If the computer sleeps or
   restarts or the terminal closes, `coded mission --resume` (in the project or
   the worktree) carries on with the same answers, branch and task list, and
