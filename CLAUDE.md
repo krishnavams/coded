@@ -188,6 +188,8 @@ examples/plugins/       # example plugin (code-quality) + plugin layout guide
 examples/github-actions/coded-review.yml  # PR review workflow (copy to .github/workflows)
 examples/.coded-plugin/marketplace.json  # examples folder doubles as a marketplace
 config.example.json     # sample configuration
+docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_pdf.py
+                        # (needs markdown + pygments, prints with Node Playwright's Chromium)
 ```
 
 ## How it fits together
