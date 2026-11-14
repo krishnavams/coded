@@ -688,7 +688,11 @@ docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_
   is_error) decides "stuck" (an identical call `_LOOP_REPEATS` times in
   `_LOOP_WINDOW`, or `_ERROR_RUN` failures in a row). `auto_extend_turns: false`
   or `--max-turns` (`max_turns_override`) is a hard cap. Events:
-  `turns_extended`, then `max_turns` on the stop.
+  `turns_extended`, then `max_turns` on the stop. Entries come from
+  `call_record`: for `_POLL_TOOLS` (`bash_output`, `task_output`) the outcome is
+  part of the key — a poll of something still running is never "the same
+  call", a finished one with the same output again is. Those tools take
+  `wait` (`BackgroundShells.wait`, `TaskEntry.done`; honours `ctx.extra["cancel"]`).
 - **Missions** (`mission.py`, `coded mission`): every question is asked before
   the run (project trust, `trust.approve_check` for the detected checks, a
   `bash` allow rule); during it `permissions` has no prompt, so anything
