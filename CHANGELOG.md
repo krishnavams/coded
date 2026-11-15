@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.1
 
 ### Fixed
 - A mission no longer stops for good on one "not making progress" verdict
