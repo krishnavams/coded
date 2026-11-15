@@ -17,6 +17,7 @@ from typing import List, Optional
 
 from coded.config import user_config_path
 from coded.llm import Usage
+from coded.securefs import UnsafePath, check_id, private_dir, read_private, write_private
 from coded.session import Session
 
 
@@ -96,8 +97,12 @@ class SessionStore:
         self.dir = sessions_dir()
 
     # -- save ---------------------------------------------------------------
+    def _path(self, session_id: str) -> Path:
+        return self.dir / f"{check_id(session_id)}.json"
+
     def save(self, session: Session, *, session_id: str, cwd: str, model: str) -> str:
-        self.dir.mkdir(parents=True, exist_ok=True)
+        path = self._path(session_id)
+        private_dir(self.dir)
         payload = {
             "id": session_id,
             "cwd": cwd,
@@ -117,23 +122,24 @@ class SessionStore:
             "system_prompt": session.system_prompt,
             "messages": session.messages,
         }
-        # Atomic: saved after every step, so a kill mid-write must not leave a
-        # truncated file in place of the last good one.
-        path = self.dir / f"{session_id}.json"
-        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(payload), encoding="utf-8")
-        os.replace(tmp, path)
+        # Atomic (saved after every step, so a kill mid-write must not leave a
+        # truncated file) and private: 0600 from the first byte (securefs).
+        write_private(path, json.dumps(payload))
         return session_id
 
     # -- load ---------------------------------------------------------------
     def _read(self, path: Path) -> Optional[dict]:
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            return json.loads(read_private(path))
         except (OSError, json.JSONDecodeError):
             return None
 
     def load(self, session_id: str) -> Optional[Session]:
-        data = self._read(self.dir / f"{session_id}.json")
+        try:
+            path = self._path(session_id)
+        except UnsafePath:
+            return None
+        data = self._read(path)
         return self._to_session(data) if data else None
 
     def _to_session(self, data: dict) -> Session:

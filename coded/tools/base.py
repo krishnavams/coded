@@ -79,6 +79,13 @@ class Tool:
         """True when this call may skip the prompt (e.g. it runs sandboxed)."""
         return False
 
+    def escalation(self, args: Dict[str, Any], ctx: "ToolContext") -> Optional[Dict[str, str]]:
+        """A call that steps outside a safety boundary (e.g. bash without the
+        sandbox) returns {"key", "title", "detail"}: the agent then asks that
+        question on its own — `always_ask`, never answered by the ordinary
+        approval of this tool, a hook or the sandbox's auto-allow."""
+        return None
+
     def preview(self, args: Dict[str, Any], ctx: "ToolContext"):
         """Optional colored/plain preview (e.g. a diff) shown before running."""
         return None

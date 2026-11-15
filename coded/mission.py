@@ -442,11 +442,11 @@ def build_report(*, goal: str, result: MissionResult, agent, branch: str = "",
 
 def save_report(root: str, text: str, stamp: Optional[str] = None) -> Path:
     stamp = stamp or time.strftime("%Y%m%d-%H%M%S")
+    from coded.securefs import private_dir, write_private
+
     path = Path(root) / ".coded" / "missions" / f"{stamp}.md"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    private_dir(path.parent)
+    write_private(path, text)
     return path
 
 
@@ -479,12 +479,11 @@ def missions_dir(root: str) -> Path:
 
 
 def save_state(state: Dict[str, Any]) -> Path:
-    path = missions_dir(state["root"]) / f"{state['id']}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({k: state.get(k) for k in STATE_KEYS}, indent=2),
-                   encoding="utf-8")
-    os.replace(tmp, path)
+    from coded.securefs import check_id, private_dir, write_private
+
+    path = missions_dir(state["root"]) / f"{check_id(state['id'])}.json"
+    private_dir(path.parent)
+    write_private(path, json.dumps({k: state.get(k) for k in STATE_KEYS}, indent=2))
     return path
 
 

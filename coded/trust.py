@@ -119,18 +119,21 @@ def remember(root: str, fp: str) -> None:
     path = store_path()
     data = _load()
     data.setdefault(_key(root), {})["fingerprint"] = fp
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, path)
+    from coded.securefs import private_dir, write_private
+
+    private_dir(path.parent)
+    write_private(path, json.dumps(data, indent=2, sort_keys=True))
 
 
 def forget(root: str) -> bool:
     data = _load()
     if data.pop(_key(root), None) is None:
         return False
+    from coded.securefs import private_dir, write_private
+
     path = store_path()
-    path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    private_dir(path.parent)
+    write_private(path, json.dumps(data, indent=2, sort_keys=True))
     return True
 
 
@@ -231,7 +234,7 @@ def approve_check(root: str, command: str) -> None:
         checks.append(_check_fp(command))
     entry["checks"] = checks
     path = store_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, path)
+    from coded.securefs import private_dir, write_private
+
+    private_dir(path.parent)
+    write_private(path, json.dumps(data, indent=2, sort_keys=True))

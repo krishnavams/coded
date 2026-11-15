@@ -16,6 +16,13 @@ Chrome/Chromium that is already installed:
 
 Loading a page is like web_fetch and runs without asking; steps that act on
 the page (click, fill, press, select) can submit forms, so they ask first.
+
+Every request of every page in the browser context (redirects, scripts,
+popups) is checked by `_url_guard` before it is sent; service workers and
+downloads are off; popups are closed and reported. Limit: Chromium resolves
+names itself, so a host that passed the check could in principle resolve
+differently a moment later (DNS rebinding). The check is repeated per request,
+which narrows but does not close that gap; web_fetch pins addresses fully.
 """
 
 from __future__ import annotations
@@ -127,6 +134,7 @@ the user first."""
         failed: List[str] = []
         done: List[str] = []
         blocked: List[str] = []
+        popups: List[str] = []
         shot = ""
         try:
             with sync_playwright() as pw:
@@ -135,20 +143,38 @@ the user first."""
                     launch["executable_path"] = self.executable_path
                 browser = pw.chromium.launch(**launch)
                 try:
-                    page = browser.new_page(viewport={"width": width, "height": height})
+                    # Service workers fetch outside page.route, downloads write
+                    # files nobody asked for: both off.
+                    context = browser.new_context(
+                        viewport={"width": width, "height": height},
+                        service_workers="block", accept_downloads=False)
                     blocked: List[str] = []
+                    popups: List[str] = []
 
                     def route(r) -> None:
-                        # Every request after the first one too: a redirect or the
-                        # page's own scripts must not reach an internal address the
-                        # user did not allow.
+                        # Every request after the first one too, in every page of
+                        # the context (popups included): a redirect or the page's
+                        # own scripts must not reach an internal address the user
+                        # did not allow.
                         if allow_url(r.request.url):
                             r.continue_()
                         else:
                             blocked.append(r.request.url)
                             r.abort("blockedbyclient")
 
-                    page.route("**/*", route)
+                    context.route("**/*", route)
+                    page = context.new_page()
+
+                    def popup(new) -> None:
+                        # A page opening another window: noted and closed; the
+                        # tool reports one page.
+                        popups.append(new.url or "(blank)")
+                        try:
+                            new.close()
+                        except Exception:  # noqa: BLE001
+                            pass
+
+                    page.on("popup", popup)
                     page.on("console", lambda m: console.append(f"{m.type}: {m.text}")
                             if m.type in ("error", "warning") else None)
                     page.on("pageerror", lambda e: console.append(f"uncaught: {e}"))
@@ -213,6 +239,8 @@ the user first."""
         if blocked:
             lines.append("Blocked (internal address or local file, not allowed):")
             lines += [f"  {b}" for b in blocked[:30]]
+        if popups:
+            lines.append("Closed pop-up windows: " + ", ".join(popups[:10]))
         if failed:
             lines.append("Failed requests:")
             lines += [f"  {f}" for f in failed[:30]]

@@ -72,6 +72,31 @@ them (the user will be asked)."""
         settings, backend = self._sandboxed(args, ctx)
         return bool(backend) and settings.auto_allow
 
+    def escalation(self, args: Dict[str, Any], ctx: ToolContext):
+        """With the sandbox on, running outside it is its own question: the
+        ordinary bash approval (an allow rule, "always", a hook, sandbox
+        auto-allow) never answers it."""
+        settings, backend = sandbox_state(ctx.config)
+        if not settings.enabled:
+            return None
+        if args.get("dangerously_disable_sandbox"):
+            why = "the command asked to run outside the sandbox"
+        elif backend is None and not settings.fail_if_unavailable:
+            why = "no sandbox backend is installed (bwrap / sandbox-exec)"
+        else:
+            return None
+        command = str(args.get("command", ""))
+        return {
+            "key": "bash_unsandboxed",
+            "title": "Run shell command UNSANDBOXED",
+            "detail": (f"{command}\n\nUNSANDBOXED: {why}.\n"
+                       "- filesystem: no restriction (it can write anywhere you can)\n"
+                       "- network: full access (the sandbox's network setting does not apply)"
+                       + ("\n- runs in the background" if args.get("run_in_background")
+                          else "")),
+            "target": command,
+        }
+
     def run(self, args: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         command = args["command"]
         settings, backend = self._sandboxed(args, ctx)
@@ -85,6 +110,10 @@ them (the user will be asked)."""
                 return ToolResult.error(
                     "Sandbox is enabled but no backend (bwrap on Linux, sandbox-exec on "
                     "macOS; Windows has none) is installed; refusing to run unsandboxed.")
+            else:
+                note = " [UNSANDBOXED: no sandbox backend installed]"
+        elif settings.enabled:
+            note = " [UNSANDBOXED: run outside the sandbox on request]"
 
         if args.get("run_in_background"):
             shells = ctx.extra.get("shells")

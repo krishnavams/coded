@@ -1406,14 +1406,35 @@ class Agent:
             if outside:
                 title += " outside the project"
                 auto = False  # a sandbox or hook vouches for the project, not ~/.ssh
-            decision = self.permissions.request(
-                key=tc.name,
-                title=title,
-                detail=tool.permission_detail(args),
-                target=tool.permission_target(args),
-                auto_allowed=auto,
-                always_ask=bool(outside),
-            )
+            try:
+                escalation = tool.escalation(args, ctx)
+            except Exception:  # noqa: BLE001
+                escalation = None
+            if escalation:
+                # Its own question (e.g. bash outside the sandbox): deny rules
+                # for the tool still win; nothing that approves the tool
+                # (allow rule, "always", hook, sandbox auto-allow) answers it.
+                if self.permissions.denied_by_rule(tc.name, tool.permission_target(args)):
+                    decision = Decision.DENY
+                else:
+                    decision = self.permissions.request(
+                        key=escalation["key"], title=escalation["title"],
+                        detail=escalation["detail"],
+                        target=escalation.get("target", tool.permission_target(args)),
+                        auto_allowed=False, always_ask=True)
+                self.events.add("escalation", name=tc.name, key=escalation["key"],
+                                allowed=decision is Decision.ALLOW,
+                                reason=self.permissions.peek_deny_reason() or "",
+                                **({"task": self.event_task} if self.event_task else {}))
+            else:
+                decision = self.permissions.request(
+                    key=tc.name,
+                    title=title,
+                    detail=tool.permission_detail(args),
+                    target=tool.permission_target(args),
+                    auto_allowed=auto,
+                    always_ask=bool(outside),
+                )
             if decision is Decision.DENY:
                 feedback = self.permissions.take_feedback()
                 if display:

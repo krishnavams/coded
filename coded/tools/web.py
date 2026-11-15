@@ -87,9 +87,13 @@ def url_permission(ctx: ToolContext, key: str, verb: str):
     from urllib.parse import urlparse
 
     approved = set()
+    unset = object()
 
-    def allow(url: str) -> bool:
-        reason = internal_reason(url)
+    def allow(url: str, reason=unset) -> bool:
+        # `reason` comes from the caller's own resolution when it connects to
+        # what it checked (web_fetch's pinned transport); else resolve here.
+        if reason is unset:
+            reason = internal_reason(url)
         if reason is None:
             return True
         parsed = urlparse(url)

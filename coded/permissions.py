@@ -217,6 +217,13 @@ class PermissionManager:
             found = True
         return found
 
+    def denied_by_rule(self, key: str, target: str) -> bool:
+        """A deny rule matches (records the reason like request() does)."""
+        if self._matches(self.deny_rules, key, target or ""):
+            self._local.deny_reason = "rule"
+            return True
+        return False
+
     def _matches(self, patterns: List[str], key: str, target: str) -> bool:
         return any(_rule_matches(p, key, target) for p in patterns)
 

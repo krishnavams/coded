@@ -231,7 +231,7 @@ def test_web_fetch_redirect_to_an_internal_address_is_stopped(tmp_path):
     try:
         seen = []
         try:
-            fetch_url(base + "/start", allow=lambda u: seen.append(u) or u.endswith("/start"))
+            fetch_url(base + "/start", allow=lambda u, r=None: seen.append(u) or u.endswith("/start"))
             raise AssertionError("redirect was followed")
         except PermissionError:
             pass
