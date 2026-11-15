@@ -67,11 +67,20 @@ CONTINUE_PREFIX = "[mission] You stopped before the goal was done ("
 CONTINUE_SUFFIX = ("). Continue from where you left off: check the task list, finish the "
                    "open items (or mark why one cannot be done), run the checks, then give "
                    "the final summary.")
+STUCK_RETRY = (" Last time you went round in circles ({why}). Do not repeat that call: "
+               "the answer will not change. Use what you already have, or take a different "
+               "step.")
+UNVERIFIED_RETRY = (
+    "the checks still fail: {checks}. Find out why and fix it. If a failure really is "
+    "outside this change (a server or environment problem), do not weaken, skip or delete "
+    "tests to hide it: finish the other open work, then say so plainly in the summary")
 RESUMED = ("the mission was interrupted: the computer slept or restarted, or the terminal "
            "closed. Files may be half-edited, so look at what is there before going on")
 
 STATUS_TEXT = {
     "done": "Done",
+    "unfinished": "Stopped: tasks are still open after every restart",
+    "unverified": "Finished, but the checks still fail",
     "stuck": "Stopped: it was not making progress",
     "budget": "Stopped: the budget ran out",
     "failed": "Stopped: the model kept failing",
@@ -79,7 +88,7 @@ STATUS_TEXT = {
     "running": "Still running (or killed)",
 }
 # Outcomes that send a run back to work and so count against max_restarts.
-_RESTARTS = ("error", "max_turns", "open_tasks")
+_RESTARTS = ("error", "max_turns", "open_tasks", "unverified")
 
 
 def brief(goal: str) -> str:
@@ -109,6 +118,20 @@ class MissionResult:
     final: str = ""
     attempts: List[Attempt] = field(default_factory=list)
     seconds: float = 0.0
+    check_failure: str = ""  # why the checks failed, when it ended unverified
+
+
+def check_failure(events: List[dict]) -> str:
+    """Why the checks failed in these events: the failing tests the output
+    named, then its last line. "" when the last check passed or none ran."""
+    checks = [e for e in events if e.get("kind") == "verify"]
+    if not checks or checks[-1].get("result") == "pass":
+        return ""
+    last = next((e for e in reversed(checks) if e.get("result") == "fail"), {})
+    lines = [str(x) for x in (last.get("failures") or [])]
+    if last.get("detail") and str(last["detail"]) not in lines:
+        lines.append(str(last["detail"]))
+    return "\n".join(lines)
 
 
 def _open_todos(agent) -> List[dict]:
@@ -123,21 +146,27 @@ def _new_events(agent, before: List[dict]) -> List[dict]:
     if not before:
         return now
     last = before[-1]
-    for i in range(len(now) - 1, -1, -1):
-        if now[i] is last or now[i] == last:
-            return now[i + 1:]
+    # Identity first: two runs can log equal events within the same millisecond.
+    for same in (lambda e: e is last, lambda e: e == last):
+        for i in range(len(now) - 1, -1, -1):
+            if same(now[i]):
+                return now[i + 1:]
     return now
 
 
 def run_mission(agent, goal: str, *, max_restarts: int = DEFAULT_RESTARTS,
                 sleep: Callable[[float], None] = time.sleep,
                 backoff=BACKOFF_SECONDS, resume: bool = False,
+                retry_unverified: bool = True,
                 on_attempt: Optional[Callable[[Attempt], None]] = None) -> MissionResult:
     """Drive the agent until the goal is done or it cannot go on.
 
     It plans first: a run in which every change is refused, until a task list
     exists (asked for twice, then the work starts anyway and the report says
-    so). A resumed mission with a task list goes straight back to work."""
+    so). A resumed mission with a task list goes straight back to work.
+    An answer whose last check failed is sent back to fix it and run the
+    checks again (`retry_unverified`, bounded by max_restarts) — but never for
+    the same failure twice: then it stops and the result says why."""
     from coded.llm import explain_failure
 
     started = time.monotonic()
@@ -150,6 +179,8 @@ def run_mission(agent, goal: str, *, max_restarts: int = DEFAULT_RESTARTS,
     else:
         message = continue_message(RESUMED)
     failures = 0
+    stuck_runs = 0  # runs in a row that ended going round in circles
+    last_failure = ""  # the previous run's check failure (retry_unverified)
 
     def record(outcome: str, detail: str = "") -> Attempt:
         attempt = Attempt(len(result.attempts) + 1, outcome, detail)
@@ -217,19 +248,49 @@ def run_mission(agent, goal: str, *, max_restarts: int = DEFAULT_RESTARTS,
             stop = [e for e in events if e.get("kind") == "max_turns"][-1]
             why = str(stop.get("reason") or "the step limit was reached")
             record("max_turns", why)
-            if restarts() > max_restarts or "not look like progress" in why:
+            looping = "not look like progress" in why
+            stuck_runs = stuck_runs + 1 if looping else 0
+            # One loop verdict is a weak signal after hours of work: a fresh run
+            # (told what it repeated) gets a chance; twice in a row is stuck.
+            if restarts() > max_restarts or stuck_runs >= 2:
                 result.status = "stuck"
                 break
             message = continue_message("step limit: " + why)
+            if looping:
+                message += STUCK_RETRY.format(why=why.split(": ", 1)[-1])
             continue
+        stuck_runs = 0
         open_items = _open_todos(agent)
-        if open_items and restarts() < max_restarts:
+        if open_items:
             names = "; ".join(str(t.get("content", ""))[:60] for t in open_items[:5])
-            record("open_tasks", names)
-            message = continue_message(f"{len(open_items)} task(s) still open: {names}")
+            if restarts() < max_restarts:
+                record("open_tasks", names)
+                message = continue_message(f"{len(open_items)} task(s) still open: {names}")
+                continue
+            record("answered", f"{len(open_items)} task(s) still open: {names}")
+            result.status = "unfinished"
+            break
+        from coded.verify import same_failure
+
+        checks = [e for e in events if e.get("kind") == "verify"]
+        failing = bool(checks) and checks[-1].get("result") != "pass"
+        why = check_failure(events)
+        # Running the same failing checks again and again helps nobody: a
+        # failure the run already saw twice (stall), or the one the previous
+        # run ended with, stops the mission, and the report says why.
+        repeated = checks and (checks[-1].get("result") == "stall"
+                               or same_failure(last_failure, why))
+        if failing and retry_unverified and not repeated and restarts() < max_restarts:
+            last_failure = why
+            what = f"`{checks[-1].get('command') or 'the checks'}`"
+            if why:
+                what += f" ({' | '.join(why.splitlines())[:300]})"
+            record("unverified", what)
+            message = continue_message(UNVERIFIED_RETRY.format(checks=what))
             continue
         record("answered")
-        result.status = "done"
+        result.status = "unverified" if failing else "done"
+        result.check_failure = why if failing else ""
         break
     result.seconds = time.monotonic() - started
     return result
@@ -248,9 +309,16 @@ def _git(cwd: str, *args: str) -> str:
         return ""
 
 
+# coded's own working state inside the worktree: /undo backups and the copied
+# project memory. Never part of the mission's commit (a project that does not
+# gitignore .coded/ would otherwise get every checkpoint backup committed).
+OWN_STATE = (".coded/checkpoints", ".coded/memory.json")
+
+
 def commit_changes(worktree: str, goal: str) -> str:
-    """Commit everything the mission changed on its branch. Returns a note
-    for the report ("" when committed or nothing changed)."""
+    """Commit everything the mission changed on its branch (but not coded's own
+    state, OWN_STATE). Returns a note for the report ("" when committed or
+    nothing changed)."""
     from coded.worktree import WorktreeError, _git as git
 
     if not _git(worktree, "status", "--porcelain"):
@@ -258,6 +326,9 @@ def commit_changes(worktree: str, goal: str) -> str:
     title = " ".join(goal.split())[:60]
     try:
         git(worktree, "add", "-A")
+        git(worktree, "reset", "-q", "--", *OWN_STATE)  # an exclude pathspec fails if ignored
+        if not git(worktree, "diff", "--cached", "--name-only").strip():
+            return ""
         git(worktree, "commit", "-q", "-m", f"coded mission: {title}")
         return ""
     except (WorktreeError, OSError) as exc:
@@ -273,7 +344,7 @@ def _duration(seconds: float) -> str:
     return f"{seconds // 3600}h {seconds % 3600 // 60:02d}m"
 
 
-def _checks_line(events: List[dict], command: Optional[str]) -> str:
+def _checks_line(events: List[dict], command: Optional[str], why: str = "") -> str:
     verify = [e for e in events if e.get("kind") == "verify"]
     if not command:
         return "No checks ran: no test command was found or approved for this project."
@@ -282,9 +353,13 @@ def _checks_line(events: List[dict], command: Optional[str]) -> str:
     last = verify[-1].get("result")
     if last == "pass":
         return f"`{command}` passed."
+    why = why or check_failure(events)
+    reason = ("\n\nWhy it failed:\n\n```\n" + why + "\n```\n\nThe agent's own "
+              "explanation is in its summary below.") if why else ""
     if last == "stall":
-        return f"`{command}` still fails the same way after fixes (gave up on it)."
-    return f"`{command}` failed on the last run."
+        return (f"`{command}` still fails the same way after fixes (not run again)."
+                + reason)
+    return f"`{command}` failed on the last run." + reason
 
 
 def build_report(*, goal: str, result: MissionResult, agent, branch: str = "",
@@ -312,7 +387,7 @@ def build_report(*, goal: str, result: MissionResult, agent, branch: str = "",
         lines += ["", commit_note]
     lines.append("")
 
-    lines += ["## Checks", "", _checks_line(events, check_command), ""]
+    lines += ["## Checks", "", _checks_line(events, check_command, result.check_failure), ""]
 
     todos = list(agent.todos.items or [])
     if todos:
@@ -362,16 +437,18 @@ def build_report(*, goal: str, result: MissionResult, agent, branch: str = "",
     if result.status != "done":
         lines.append(f"- Carry on with this mission: `coded mission --resume"
                      f"{' ' + mission_id if mission_id else ''}`")
-    return "\n".join(lines) + "\n"
+    from coded.redact import redact
+
+    return redact("\n".join(lines) + "\n")
 
 
 def save_report(root: str, text: str, stamp: Optional[str] = None) -> Path:
     stamp = stamp or time.strftime("%Y%m%d-%H%M%S")
+    from coded.securefs import private_dir, write_private
+
     path = Path(root) / ".coded" / "missions" / f"{stamp}.md"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    private_dir(path.parent)
+    write_private(path, text)
     return path
 
 
@@ -395,7 +472,8 @@ def post_notification(url: str, title: str, body: str, opener=None) -> bool:
 
 STATE_KEYS = ("id", "goal", "status", "session_id", "model", "branch", "worktree",
               "work_dir", "root", "base", "check_command", "allow_bash", "yolo", "budget",
-              "max_restarts", "trusted", "notify", "notify_url", "seconds", "runs")
+              "max_restarts", "retry_unverified", "trusted", "notify", "notify_url",
+              "seconds", "runs")
 
 
 def missions_dir(root: str) -> Path:
@@ -403,12 +481,11 @@ def missions_dir(root: str) -> Path:
 
 
 def save_state(state: Dict[str, Any]) -> Path:
-    path = missions_dir(state["root"]) / f"{state['id']}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({k: state.get(k) for k in STATE_KEYS}, indent=2),
-                   encoding="utf-8")
-    os.replace(tmp, path)
+    from coded.securefs import check_id, private_dir, write_private
+
+    path = missions_dir(state["root"]) / f"{check_id(state['id'])}.json"
+    private_dir(path.parent)
+    write_private(path, json.dumps({k: state.get(k) for k in STATE_KEYS}, indent=2))
     return path
 
 
@@ -463,6 +540,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-restarts", type=int, default=None,
                    help=f"How often to send a stopped run back to work (default "
                         f"{DEFAULT_RESTARTS}).")
+    p.add_argument("--retry-unverified", action=argparse.BooleanOptionalAction, default=None,
+                   help="When it finishes but the checks still fail, send it back to fix "
+                        "them (default: on; counts as a restart). The same failure is never "
+                        "run again: it stops and reports why. --no-retry-unverified stops at "
+                        "the first failing finish.")
     p.add_argument("--here", action="store_true",
                    help="Work in this checkout instead of a new worktree.")
     p.add_argument("--allow-bash", action="store_true",
@@ -520,7 +602,7 @@ def mission_main(argv: List[str], read=input) -> int:
         if not Path(state["work_dir"]).is_dir():
             ui.error(f"The mission's folder {state['work_dir']} is gone; it cannot be resumed.")
             return 1
-        for key in ("budget", "notify", "notify_url", "max_restarts"):
+        for key in ("budget", "notify", "notify_url", "max_restarts", "retry_unverified"):
             value = getattr(args, key)
             if value is not None:
                 state[key] = value
@@ -615,6 +697,7 @@ def _start(args, cwd: str, read) -> int:
         "check_command": check_command, "allow_bash": bool(allow_bash),
         "yolo": bool(args.yolo), "budget": args.budget,
         "max_restarts": DEFAULT_RESTARTS if args.max_restarts is None else args.max_restarts,
+        "retry_unverified": args.retry_unverified is not False,
         "trusted": trusted, "notify": args.notify, "notify_url": args.notify_url,
         "seconds": 0.0, "runs": 0,
     }
@@ -788,6 +871,18 @@ def _run(state: Dict[str, Any], args, resume: bool) -> int:
     if state.get("model"):
         agent.set_routing(False)
     store = SessionStore()
+    from coded.securefs import Busy
+
+    try:
+        # One process per mission: a second `--resume` of a running mission
+        # would run the same work twice into one conversation and worktree.
+        session_lock = store.lock(state["session_id"]).acquire()
+    except Busy as exc:
+        ui.error(f"Mission {state['id']} is already running: {exc}. Wait for it to finish, "
+                 "or stop it there (Esc) and resume again.")
+        if mcp_manager is not None:
+            mcp_manager.stop()
+        return 1
     if resume:
         loaded = store.load(state["session_id"])
         if loaded is not None:
@@ -826,12 +921,14 @@ def _run(state: Dict[str, Any], args, resume: bool) -> int:
         with _steering(agent, "mission: " + " ".join(state["goal"].split())[:60]) as left:
             result = run_mission(agent, state["goal"],
                                  max_restarts=max(0, state["max_restarts"]),
-                                 resume=resume, on_attempt=note)
+                                 resume=resume, on_attempt=note,
+                                 retry_unverified=state.get("retry_unverified") is not False)
         undelivered = left
     finally:
         if mcp_manager is not None:
             mcp_manager.stop()
         autosave()
+        session_lock.release()
     result.seconds += float(state.get("seconds") or 0)
     state["seconds"] = result.seconds
     state["status"] = result.status

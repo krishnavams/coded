@@ -111,14 +111,18 @@ def _work(args: Dict[str, Any], ctx: ToolContext, entry) -> "tuple[str, bool]":
             path, branch, root, base = create_worktree(ctx.cwd, label)
         except WorktreeError as exc:
             return f"Could not create worktree: {exc}", True
+        result = ""
         try:
             result = ctx.spawn_subagent(prompt, cwd=path, **kw)
         except Exception as exc:  # noqa: BLE001
             result = f"Sub-agent failed: {exc}"
-        try:
-            where = finalize_worktree(path, branch, root, base)
-        except Exception as exc:  # noqa: BLE001
-            where = f"(could not inspect worktree {path}: {exc})"
+        finally:
+            # Also on Esc/Ctrl-C (BaseException): an untouched worktree is
+            # removed, a changed one is kept and described — never orphaned.
+            try:
+                where = finalize_worktree(path, branch, root, base)
+            except Exception as exc:  # noqa: BLE001
+                where = f"(could not inspect worktree {path}: {exc})"
         return f"{result or '(sub-agent returned no output)'}\n\n[worktree] {where}", False
     try:
         result = ctx.spawn_subagent(prompt, **kw)

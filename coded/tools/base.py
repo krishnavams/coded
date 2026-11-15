@@ -6,7 +6,7 @@ import copy
 import fnmatch
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 
 @dataclass
@@ -78,6 +78,13 @@ class Tool:
     def auto_allowed(self, args: Dict[str, Any], ctx: "ToolContext") -> bool:
         """True when this call may skip the prompt (e.g. it runs sandboxed)."""
         return False
+
+    def escalation(self, args: Dict[str, Any], ctx: "ToolContext") -> Optional[Dict[str, str]]:
+        """A call that steps outside a safety boundary (e.g. bash without the
+        sandbox) returns {"key", "title", "detail"}: the agent then asks that
+        question on its own — `always_ask`, never answered by the ordinary
+        approval of this tool, a hook or the sandbox's auto-allow."""
+        return None
 
     def preview(self, args: Dict[str, Any], ctx: "ToolContext"):
         """Optional colored/plain preview (e.g. a diff) shown before running."""
@@ -152,3 +159,94 @@ class ToolRegistry:
 
     def names(self) -> List[str]:
         return list(self._tools)
+
+
+# ---------------------------------------------------------------------------
+# Argument validation against a tool's JSON schema (before it runs)
+# ---------------------------------------------------------------------------
+
+MAX_ARGUMENT_BYTES = 8 * 1024 * 1024  # one tool call's JSON arguments
+_TYPES = {"string": str, "boolean": bool, "object": dict, "array": list}
+
+
+def _coerce(value: Any, kind: str) -> Any:
+    """Forgive what small models commonly send: "5" for 5, "true" for true.
+    Returns the coerced value, or the original when it cannot be."""
+    if kind == "integer":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+            return int(value.strip())
+    if kind == "number" and isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return value
+    if kind == "boolean" and isinstance(value, str) and value.lower() in ("true", "false"):
+        return value.lower() == "true"
+    return value
+
+
+def _type_ok(value: Any, kind: str) -> bool:
+    if kind == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if kind == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if kind == "null":
+        return value is None
+    expected = _TYPES.get(kind)
+    return True if expected is None else isinstance(value, expected)
+
+
+def _check(value: Any, schema: Dict[str, Any], where: str, depth: int = 0) -> Tuple[Any, Optional[str]]:
+    """(possibly coerced value, error or None). Only the keywords coded's and
+    common MCP schemas use are checked; anything else is accepted. Only the
+    top level and its fields: several tools deliberately accept looser nested
+    shapes (ask_user takes plain-string options) and check those themselves."""
+    if not isinstance(schema, dict) or depth > 1:
+        return value, None
+    kinds = schema.get("type")
+    if kinds:
+        kinds = kinds if isinstance(kinds, list) else [kinds]
+        if not any(_type_ok(value, k) for k in kinds):
+            for k in kinds:
+                coerced = _coerce(value, k)
+                if _type_ok(coerced, k):
+                    value = coerced
+                    break
+            else:
+                got = type(value).__name__ if value is not None else "null"
+                return value, f"{where} must be {' or '.join(kinds)} (got {got})"
+    if "enum" in schema and isinstance(schema["enum"], list) and value not in schema["enum"]:
+        return value, f"{where} must be one of {', '.join(map(str, schema['enum']))}"
+    if isinstance(value, dict) and depth == 0:
+        props = schema.get("properties") or {}
+        for name in schema.get("required") or []:
+            if value.get(name) is None:
+                return value, f"{where}.{name} is required" if where != "arguments" \
+                    else f"'{name}' is required"
+        if schema.get("additionalProperties") is False:
+            extra = sorted(set(value) - set(props))
+            if extra:
+                return value, f"unexpected argument(s) in {where}: {', '.join(extra)}"
+        out = dict(value)
+        for name, sub in props.items():
+            if name in value and value[name] is not None:
+                label = name if where == "arguments" else f"{where}.{name}"
+                out[name], err = _check(value[name], sub, label, depth + 1)
+                if err:
+                    return value, err
+        return out, None
+    return value, None
+
+
+def validate_arguments(schema: Dict[str, Any], args: Dict[str, Any]
+                       ) -> Tuple[Dict[str, Any], Optional[str]]:
+    """Check a call's arguments against the tool's schema: required fields,
+    types (with the common string-number/boolean forgiveness), enums and
+    unknown fields where the schema forbids them (additionalProperties: false). Returns the
+    (coerced) arguments and an error message for the model, or None."""
+    value, err = _check(args, schema or {}, "arguments")
+    return (value if isinstance(value, dict) else args), err

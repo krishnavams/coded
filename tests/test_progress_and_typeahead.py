@@ -541,8 +541,12 @@ def test_the_posix_reader_routes_keys_to_an_open_dropdown(tmp_path):
             assert ta.pending == 0                            # ...and did not send it
             os.write(master, b"\r")                           # Enter again sends it
             assert wait_for(lambda: ta.pending == 1)
-            os.write(master, b"/he\x1b")                      # Esc closes the dropdown...
-            assert wait_for(lambda: ta.typing == "/he")
+            os.write(master, b"/he")
+            assert wait_for(lambda: ta.typing == "/he" and reader._menu_open())
+            os.write(master, b"\x1b")                         # Esc closes the dropdown...
+            # wait until that Esc was consumed: two Escs arriving together read
+            # as one escape sequence (slow runners)
+            assert wait_for(lambda: not reader._menu_open())
             time.sleep(0.1)
             assert escaped == []                              # ...without stopping the turn
             os.write(master, b"\x1b")                         # closed now: Esc stops the turn

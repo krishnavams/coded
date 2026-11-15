@@ -79,6 +79,10 @@ def stuck_reason(calls) -> Optional[str]:
         if counts[key] >= _LOOP_REPEATS:
             return f"it repeated the same `{name}` call {counts[key]} times"
     return None
+class AgentBusy(RuntimeError):
+    """Agent.run was called while a turn of the same agent is running."""
+
+
 _FILE_TOOLS = ("read", "edit", "multi_edit", "write")
 # Tools whose path arguments .codedignore can refuse, and those whose result
 # gets the configured diagnostics after a successful change.
@@ -229,6 +233,7 @@ class Agent:
         # (The REPL stops the main thread with SIGINT instead.)
         self.cancellable = False
         self._cancel = threading.Event()
+        self._turn_lock = threading.Lock()
         self._session_started = False
         self._instruction_dirs: set = set()
         self._plan_intro_sent = False
@@ -267,6 +272,19 @@ class Agent:
     # -- public API ---------------------------------------------------------
     def run(self, user_message: Any, images: Optional[list] = None,
             route_hint: Optional[str] = None) -> str:
+        """Run one user turn to completion (see `_run_turn`). One turn at a time
+        per agent: a second concurrent call raises AgentBusy instead of
+        interleaving two turns into one conversation."""
+        if not self._turn_lock.acquire(blocking=False):
+            raise AgentBusy("a turn is already running in this session; wait for it, "
+                            "or interrupt it first")
+        try:
+            return self._run_turn(user_message, images, route_hint)
+        finally:
+            self._turn_lock.release()
+
+    def _run_turn(self, user_message: Any, images: Optional[list] = None,
+                  route_hint: Optional[str] = None) -> str:
         """Run one user turn to completion. Returns the final assistant text.
 
         `images` is an optional list of image file paths to attach (for
@@ -767,7 +785,7 @@ class Agent:
                 checks = run_checks(command, self.cwd, settings.timeout,
                                     limit=self.limits.tool_result_chars)
             if not checks.ok:
-                from coded.verify import same_failure, stalled_note
+                from coded.verify import failure_lines, same_failure, stalled_note
 
                 if self._verify_rounds > 1 and same_failure(self._verify_prev_output,
                                                             checks.output):
@@ -779,7 +797,8 @@ class Agent:
                 self._verify_prev_output = checks.output
                 self.events.add("verify", result="fail", command=command,
                                 detail=(checks.error or checks.output.strip().splitlines()[-1]
-                                        if (checks.error or checks.output.strip()) else ""))
+                                        if (checks.error or checks.output.strip()) else ""),
+                                failures=failure_lines(checks.output))
                 self._verify_last = f"`{command}` failed"
                 self._status_note(f"Checks failed; sending the turn back "
                                   f"(round {self._verify_rounds}/{settings.max_rounds}).")
@@ -1322,6 +1341,16 @@ class Agent:
             return content, is_error, args
 
         tool = self.registry.get(tc.name)
+        from coded.tools.base import MAX_ARGUMENT_BYTES, validate_arguments
+
+        if len(tc.arguments or "") > MAX_ARGUMENT_BYTES:
+            msg = (f"the arguments are {len(tc.arguments):,} bytes, over the "
+                   f"{MAX_ARGUMENT_BYTES:,}-byte limit for one call. Split the work into "
+                   "smaller calls (e.g. write a file in parts with edit).")
+            if display:
+                self._show_tool_call(tc.name, {"_raw": "(too large)"}, tc.id)
+                self._show_tool_result(f"Invalid arguments: {msg}", True, tc.id, tc.name)
+            return f"Error: {msg}", True, None
         try:
             args = json.loads(tc.arguments or "{}")
             if not isinstance(args, dict):
@@ -1345,6 +1374,16 @@ class Agent:
                    f"(disabled_tools). Do the work with the tools you were given.")
             if display:
                 self._show_tool_result(msg, True, tc.id, tc.name)
+            return f"Error: {msg}", True, args
+
+        args, invalid = validate_arguments(getattr(tool, "parameters", None) or {}, args)
+        if invalid:
+            msg = (f"invalid arguments for {tc.name}: {invalid}. Call it again with "
+                   "arguments that match its parameters.")
+            if display:
+                self._show_tool_result(msg, True, tc.id, tc.name)
+            self.events.add("invalid_args", name=tc.name, error=invalid,
+                            **({"task": self.event_task} if self.event_task else {}))
             return f"Error: {msg}", True, args
 
         if tc.name in _PATH_TOOLS or tc.name == "apply_patch":
@@ -1405,14 +1444,35 @@ class Agent:
             if outside:
                 title += " outside the project"
                 auto = False  # a sandbox or hook vouches for the project, not ~/.ssh
-            decision = self.permissions.request(
-                key=tc.name,
-                title=title,
-                detail=tool.permission_detail(args),
-                target=tool.permission_target(args),
-                auto_allowed=auto,
-                always_ask=bool(outside),
-            )
+            try:
+                escalation = tool.escalation(args, ctx)
+            except Exception:  # noqa: BLE001
+                escalation = None
+            if escalation:
+                # Its own question (e.g. bash outside the sandbox): deny rules
+                # for the tool still win; nothing that approves the tool
+                # (allow rule, "always", hook, sandbox auto-allow) answers it.
+                if self.permissions.denied_by_rule(tc.name, tool.permission_target(args)):
+                    decision = Decision.DENY
+                else:
+                    decision = self.permissions.request(
+                        key=escalation["key"], title=escalation["title"],
+                        detail=escalation["detail"],
+                        target=escalation.get("target", tool.permission_target(args)),
+                        auto_allowed=False, always_ask=True)
+                self.events.add("escalation", name=tc.name, key=escalation["key"],
+                                allowed=decision is Decision.ALLOW,
+                                reason=self.permissions.peek_deny_reason() or "",
+                                **({"task": self.event_task} if self.event_task else {}))
+            else:
+                decision = self.permissions.request(
+                    key=tc.name,
+                    title=title,
+                    detail=tool.permission_detail(args),
+                    target=tool.permission_target(args),
+                    auto_allowed=auto,
+                    always_ask=bool(outside),
+                )
             if decision is Decision.DENY:
                 feedback = self.permissions.take_feedback()
                 if display:

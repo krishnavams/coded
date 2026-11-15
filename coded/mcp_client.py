@@ -45,15 +45,53 @@ def unset_refs(cfg: Dict[str, Any], env: Optional[Dict[str, str]] = None) -> Lis
     return sorted({n for n in names if n not in env})
 
 
-def server_params(cfg: Dict[str, Any], env: Optional[Dict[str, str]] = None
-                  ) -> Tuple[str, List[str], Optional[Dict[str, str]]]:
-    """(command, args, env) for a configured server, with `${VAR}` expanded."""
+# What an MCP server process gets from coded's own environment by default:
+# enough to find programs, its home, a locale, temp space, a proxy and CA
+# bundle — never coded's model keys, cloud credentials or tokens. A server
+# that needs more lists it in its own "env" (`${VAR}` reads it from coded's
+# environment) or opts in with "inherit_env": true / ["NAME", ...].
+SAFE_ENV = (
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LANGUAGE", "TZ",
+    "TMPDIR", "TEMP", "TMP", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
+    "XDG_DATA_HOME",
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
+    "VIRTUAL_ENV", "PYTHONIOENCODING",
+    # Windows: programs fail to start without these.
+    "SYSTEMROOT", "SystemRoot", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT",
+    "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
+    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "USERNAME", "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+)
+_SAFE_PREFIXES = ("LC_",)
+
+
+def child_env(cfg: Dict[str, Any], env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """The environment for an MCP server process: SAFE_ENV from coded's own
+    environment, plus whatever "inherit_env" opts into (true = everything),
+    plus the server's own "env" (`${VAR}` expanded), which wins."""
     env = dict(os.environ if env is None else env)
-    extra = {k: expand_refs(v, env) for k, v in (cfg.get("env") or {}).items()}
-    # Server-specific vars on top of our environment (keeps PATH etc.).
+    inherit = cfg.get("inherit_env", False)
+    if inherit is True:
+        base = dict(env)
+    else:
+        names = set(SAFE_ENV) | {str(n) for n in (inherit or []) if isinstance(inherit, list)}
+        base = {k: v for k, v in env.items()
+                if (k in names or k.startswith(_SAFE_PREFIXES))
+                and not str(v).startswith("()")}  # bash exported functions
+    extra = {str(k): expand_refs(v, env) for k, v in (cfg.get("env") or {}).items()}
+    return {**base, **extra}
+
+
+def server_params(cfg: Dict[str, Any], env: Optional[Dict[str, str]] = None
+                  ) -> Tuple[str, List[str], Dict[str, str]]:
+    """(command, args, env) for a configured server, with `${VAR}` expanded.
+    The env is always explicit (`child_env`): never coded's whole environment."""
+    env = dict(os.environ if env is None else env)
     return (expand_refs(cfg["command"], env),
             [expand_refs(a, env) for a in cfg.get("args", [])],
-            {**env, **extra} if extra else None)
+            child_env(cfg, env))
 
 
 def _render_content(result: Any) -> str:

@@ -141,9 +141,20 @@ def test_the_step_limit_is_continued_but_a_loop_is_not():
     assert _go(agent).status == "done"
     assert "step limit" in agent.messages[2]
 
-    agent = _Agent([_plan, _limit("it does not look like progress: same `read` call")])
+    # one loop verdict gets a fresh run told what it repeated; twice in a row is stuck
+    loop = _limit("it does not look like progress: it repeated the same `bash_output` call")
+    agent = _Agent([_plan, loop, _answer()])
+    assert _go(agent).status == "done"
+    assert "Do not repeat that call" in agent.messages[2] and "`bash_output`" in agent.messages[2]
+
+    again = _limit("it does not look like progress: it repeated the same `read` call")
+    agent = _Agent([_plan, loop, again])
     result = _go(agent)
-    assert result.status == "stuck" and len(agent.messages) == 2
+    assert result.status == "stuck" and len(agent.messages) == 3
+
+    # a loop, then real progress, then a loop again is not "twice in a row"
+    agent = _Agent([_plan, loop, _limit(), again, _answer()])
+    assert _go(agent, max_restarts=5).status == "done"
 
 
 def test_open_tasks_are_sent_back_then_reported():
@@ -151,10 +162,142 @@ def test_open_tasks_are_sent_back_then_reported():
                  {"content": "read code", "status": "completed"}]
     agent = _Agent([_plan] + [_answer(todos=open_list)] * 3)
     result = _go(agent, max_restarts=2)
-    assert result.status == "done"
+    assert result.status == "unfinished"  # never "done" with tasks left open
     assert [a.outcome for a in result.attempts] == ["planned", "open_tasks", "open_tasks",
                                                    "answered"]
+    assert "write tests" in result.attempts[-1].detail
     assert "write tests" in agent.messages[2] and "read code" not in agent.messages[2]
+
+
+def test_an_answer_with_failing_checks_is_not_done():
+    def failing(agent):
+        agent.events.add("verify", result="fail")
+        return _answer("finished, the failure is unrelated")(agent)
+    assert _go(_Agent([_plan, failing]), retry_unverified=False).status == "unverified"
+
+    def fixed(agent):
+        agent.events.add("verify", result="fail")
+        agent.events.add("verify", result="pass")
+        return _answer()(agent)
+    assert _go(_Agent([_plan, fixed])).status == "done"
+
+
+def test_failing_checks_can_send_it_back_to_work():
+    def failing(agent):
+        agent.events.add("verify", result="fail", command="pytest -q",
+                         detail="1 failed, 26 passed")
+        return _answer("unrelated failure")(agent)
+
+    def fixed(agent):
+        agent.events.add("verify", result="pass", command="pytest -q")
+        return _answer()(agent)
+
+    agent = _Agent([_plan, failing, fixed])
+    result = _go(agent)  # on by default: fixable -> fix and run the checks again
+    assert result.status == "done"
+    assert [a.outcome for a in result.attempts] == ["planned", "unverified", "answered"]
+    assert "pytest -q" in agent.messages[2] and "1 failed, 26 passed" in agent.messages[2]
+
+    # the same failure again is not run a third time: it stops and says why
+    agent = _Agent([_plan] + [failing] * 5)
+    result = _go(agent, retry_unverified=True, max_restarts=9)
+    assert result.status == "unverified" and len(agent.messages) == 3
+    assert "1 failed, 26 passed" in result.check_failure
+
+    # a failure the run itself already saw twice (stall) is not retried at all
+    def stalled(agent):
+        agent.events.add("verify", result="fail", command="pytest -q", detail="1 failed",
+                         failures=["FAILED tests/test_doi.py::test_future - assert 200 == 400"])
+        agent.events.add("verify", result="stall", command="pytest -q")
+        return _answer("unrelated")(agent)
+    agent = _Agent([_plan, stalled, stalled])
+    result = _go(agent, retry_unverified=True)
+    assert result.status == "unverified" and len(agent.messages) == 2
+    assert "test_doi.py::test_future" in result.check_failure
+
+    # different failures each time: bounded by max_restarts
+    def failing_n(n):
+        def step(agent):
+            agent.events.add("verify", result="fail", command="pytest -q",
+                             detail=f"{n} failed")
+            return _answer("x")(agent)
+        return step
+    agent = _Agent([_plan] + [failing_n(n) for n in (4, 3, 2, 1)])
+    result = _go(agent, retry_unverified=True, max_restarts=2)
+    assert result.status == "unverified" and len(agent.messages) == 4
+    # turned off: it stops at the first failing finish
+    assert _go(_Agent([_plan, failing]), retry_unverified=False).status == "unverified"
+
+
+def test_the_report_says_why_the_checks_failed():
+    def failing(agent):
+        agent.events.add("verify", result="fail", command="pytest -q -x",
+                         detail="1 failed, 13 deselected in 0.77s",
+                         failures=["FAILED tests/test_doi.py::test_future - assert 200 == 400"])
+        return _answer("It fails on the server side.")(agent)
+    agent = _Agent([_plan, failing])
+    agent.session = type("S", (), {"estimated_cost": lambda self, m: 0.0})()
+    agent.model = type("M", (), {"name": "fake"})()
+    agent.cwd = "."
+    result = _go(agent, retry_unverified=False)
+    text = mission.build_report(goal="goal", result=result, agent=agent,
+                                check_command="pytest -q -x")
+    checks = text.split("## Checks")[1].split("##")[0]
+    assert "test_doi.py::test_future - assert 200 == 400" in checks
+    assert "1 failed, 13 deselected" in checks
+
+
+def test_failure_lines_names_the_failing_tests():
+    from coded.verify import failure_lines
+
+    out = ("collected 3 items\n\ntests/a.py .F\n=== short test summary info ===\n"
+           "FAILED tests/a.py::test_b - assert 1 == 2\nERROR tests/c.py - ImportError: x\n"
+           "=== 1 failed, 1 passed, 1 error in 0.1s ===\n")
+    assert failure_lines(out) == ["FAILED tests/a.py::test_b - assert 1 == 2",
+                                  "ERROR tests/c.py - ImportError: x"]
+    assert failure_lines("--- FAIL: TestX (0.00s)\nok\n") == ["--- FAIL: TestX (0.00s)"]
+    assert failure_lines("all good\n") == []
+    assert len(failure_lines("\n".join(f"FAILED t::t{i}" for i in range(50)))) == 8
+
+
+def test_retry_unverified_is_saved_and_can_be_changed_on_resume(repo, tmp_path, fake_server,
+                                                                 monkeypatch):
+    seen = []
+
+    def fake_run(agent, goal, **kw):
+        seen.append(kw.get("retry_unverified"))
+        return mission.MissionResult(status="unverified")
+
+    monkeypatch.setattr(mission, "run_mission", fake_run)
+    with fake_server(lambda body: _say("x")) as server:
+        cfg = _config(tmp_path, server)
+        mission.mission_main(["goal", "--cwd", str(repo), "--config", cfg,
+                              ] + _QUIET)
+        state = mission.load_states(str(repo))[0]
+        assert state["retry_unverified"] is True  # the default
+        mission.mission_main(["--resume", state["id"], "--cwd", str(repo), "--config", cfg,
+                              "--no-retry-unverified"])
+        mission.mission_main(["--resume", state["id"], "--cwd", str(repo), "--config", cfg])
+    assert seen == [True, False, False]
+
+
+def test_the_commit_leaves_out_codeds_own_state(repo):
+    (repo / ".gitignore").write_text("")  # a project that does not ignore .coded/
+    (repo / "app.py").write_text("x = 1\n")
+    backups = repo / ".coded" / "checkpoints" / "20261114-195653-000019"
+    backups.mkdir(parents=True)
+    (backups / "0.bak").write_text("old\n")
+    (backups / "manifest.json").write_text("{}\n")
+    (repo / ".coded" / "memory.json").write_text("[]\n")
+    assert mission.commit_changes(str(repo), "goal") == ""
+    shown = _git(repo, "show", "--stat", "--format=", "HEAD")
+    assert "app.py" in shown and ".coded" not in shown
+
+    # only coded's own files changed: nothing to commit, and no error
+    head = _git(repo, "rev-parse", "HEAD")
+    (backups / "1.bak").write_text("older\n")
+    assert mission.commit_changes(str(repo), "goal") == ""
+    assert _git(repo, "rev-parse", "HEAD") == head
 
 
 def test_the_budget_stops_it():

@@ -143,8 +143,9 @@ def test_mcp_client_expands_env_references():
     assert expand_refs("plain $TOKEN", env) == "plain $TOKEN"
     cmd, args, full = server_params({"command": "x", "args": ["--t=${TOKEN}"],
                                      "env": {"GITHUB_TOKEN": "${TOKEN}"}}, env)
-    assert (cmd, args) == ("x", ["--t=abc"]) and full == {**env, "GITHUB_TOKEN": "abc"}
-    assert server_params({"command": "x"}, env)[2] is None
+    assert (cmd, args) == ("x", ["--t=abc"]) and full["GITHUB_TOKEN"] == "abc"
+    # coded's own variables are not handed over unless listed (see test_security)
+    assert "TOKEN" not in full and "TOKEN" not in server_params({"command": "x"}, env)[2]
 
 
 def test_cli_dispatches_import(setup, monkeypatch):

@@ -933,7 +933,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     keeper = SessionKeeper(cwd, model.name, store)
     resume_id = args.resume or (store.latest(cwd) if args.continue_session else None)
     if resume_id:
-        loaded = keeper.resume(agent, resume_id)
+        from coded.securefs import Busy
+
+        try:
+            loaded = keeper.resume(agent, resume_id)
+        except Busy as exc:
+            ui.error(f"Cannot resume {resume_id}: {exc}. Close that coded first, or start "
+                     "without --resume/--continue.")
+            return 1
         if loaded is not None:
             ui.info(f"Resumed session {resume_id} ({len(loaded.messages)} messages).")
         else:

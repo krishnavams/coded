@@ -53,11 +53,14 @@ class EventLog:
         self._lock = threading.Lock()
 
     def add(self, kind: str, **data: Any) -> None:
+        from coded.redact import redact_data
+
         entry = {"t": round(time.time(), 3), "kind": kind}
         for key, value in data.items():
             if isinstance(value, str) and len(value) > _DETAIL:
                 value = value[:_DETAIL - 1] + "…"
-            entry[key] = value
+            # The log is saved, shown on /dashboard and read by `coded lab`.
+            entry[key] = redact_data(value)
         with self._lock:
             self.items.append(entry)
             if len(self.items) > self.cap:

@@ -17,6 +17,8 @@ from typing import List, Optional
 
 from coded.config import user_config_path
 from coded.llm import Usage
+from coded.securefs import (Busy, FileLock, UnsafePath, check_id, private_dir, read_private,
+                            write_private)
 from coded.session import Session
 
 
@@ -96,8 +98,18 @@ class SessionStore:
         self.dir = sessions_dir()
 
     # -- save ---------------------------------------------------------------
+    def _path(self, session_id: str) -> Path:
+        return self.dir / f"{check_id(session_id)}.json"
+
+    def lock(self, session_id: str) -> FileLock:
+        """The claim one coded process holds on a session while it works in
+        it, so two processes never run turns into the same conversation."""
+        return FileLock(self.dir / f".{check_id(session_id)}.lock",
+                        what=f"session {session_id}")
+
     def save(self, session: Session, *, session_id: str, cwd: str, model: str) -> str:
-        self.dir.mkdir(parents=True, exist_ok=True)
+        path = self._path(session_id)
+        private_dir(self.dir)
         payload = {
             "id": session_id,
             "cwd": cwd,
@@ -117,23 +129,24 @@ class SessionStore:
             "system_prompt": session.system_prompt,
             "messages": session.messages,
         }
-        # Atomic: saved after every step, so a kill mid-write must not leave a
-        # truncated file in place of the last good one.
-        path = self.dir / f"{session_id}.json"
-        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(payload), encoding="utf-8")
-        os.replace(tmp, path)
+        # Atomic (saved after every step, so a kill mid-write must not leave a
+        # truncated file) and private: 0600 from the first byte (securefs).
+        write_private(path, json.dumps(payload))
         return session_id
 
     # -- load ---------------------------------------------------------------
     def _read(self, path: Path) -> Optional[dict]:
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            return json.loads(read_private(path))
         except (OSError, json.JSONDecodeError):
             return None
 
     def load(self, session_id: str) -> Optional[Session]:
-        data = self._read(self.dir / f"{session_id}.json")
+        try:
+            path = self._path(session_id)
+        except UnsafePath:
+            return None
+        data = self._read(path)
         return self._to_session(data) if data else None
 
     def _to_session(self, data: dict) -> Session:
@@ -195,9 +208,36 @@ class SessionKeeper:
         self.cwd = cwd
         self.model = model
         self.id = session_id or self.store.new_id()
+        self._lock: Optional[FileLock] = None
+
+    def claim(self, session_id: Optional[str] = None) -> None:
+        """Hold the session's lock (Busy if another live process has it)."""
+        session_id = session_id or self.id
+        if self._lock is not None and self._lock.held and self._lock_id == session_id:
+            return
+        lock = self.store.lock(session_id).acquire()
+        self.release()
+        self._lock, self._lock_id = lock, session_id
+
+    def release(self) -> None:
+        if self._lock is not None:
+            self._lock.release()
+            self._lock = None
 
     def save(self, agent) -> None:
         agent.session.todos = [dict(t) for t in agent.todos.items]
+        try:
+            self.claim()
+        except Busy:
+            # Someone else is working in this id (it cannot be ours: ids are
+            # new or claimed on resume): keep going under a fresh one.
+            self.id = self.store.new_id()
+            try:
+                self.claim()
+            except (Busy, OSError):
+                return
+        except OSError:
+            pass
         try:
             self.store.save(agent.session, session_id=self.id, cwd=self.cwd, model=self.model)
         except OSError:
@@ -221,10 +261,15 @@ class SessionKeeper:
         return matches[0] if len(matches) == 1 else None
 
     def resume(self, agent, session_id: str) -> Optional[Session]:
-        """Load `session_id` into `agent` and save to it from now on; None if missing."""
+        """Load `session_id` into `agent` and save to it from now on; None if
+        missing. Busy when another live coded process is working in it."""
         loaded = self.store.load(session_id)
         if loaded is None:
             return None
+        try:
+            self.claim(session_id)  # Busy propagates: another process works in it
+        except OSError:
+            pass  # an unwritable sessions folder must not block reading one
         agent.session = loaded
         agent.todos.items = [dict(t) for t in loaded.todos]
         self.id = session_id
@@ -290,7 +335,11 @@ def resume_command(agent, keeper: Optional[SessionKeeper], arg: str):
     if target == keeper.id:
         return "That is the session you are in.", None, False
     previous = keeper.id if keeper.has_content(agent) else None
-    loaded = keeper.switch(agent, target)
+    try:
+        loaded = keeper.switch(agent, target)
+    except Busy as exc:
+        return (f"Cannot resume {target}: {exc}. Close it there first (two processes "
+                "writing one conversation would lose turns).", None, False)
     if loaded is None:
         return f"Could not read saved session '{target}'.", None, False
     last = ""

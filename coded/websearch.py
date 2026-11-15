@@ -118,16 +118,38 @@ class _TextExtractor(HTMLParser):
                 self.parts.append(text)
 
 
-def fetch_url(url: str, max_chars: int = 12_000, allow=None) -> str:
-    """Fetch a page as text. `allow(url) -> bool` is asked before every request,
-    redirects included, so a public page cannot bounce the fetch to an
-    internal address."""
-    def check(request) -> None:
-        if allow is not None and not allow(str(request.url)):
-            raise PermissionError(f"not allowed to fetch {request.url}")
+def fetch_url(url: str, max_chars: int = 12_000, allow=None, resolver=None) -> str:
+    """Fetch a page as text. `allow(url, reason) -> bool` is asked before every
+    request, redirects included (reason: why the destination is internal, or
+    None), so a public page cannot bounce the fetch to an internal address.
 
-    with httpx.Client(timeout=30, follow_redirects=True, event_hooks={"request": [check]},
-                      headers={"User-Agent": "coded/0.1"}) as client:
+    Without a proxy each request goes to the address that was checked
+    (`netguard.pinned_transport`), so DNS rebinding cannot swap it. Behind a
+    proxy the proxy resolves names; the local answer is checked instead."""
+    from coded.netguard import DestinationRefused, internal_reason, pinned_transport, proxy_for
+
+    def permit(target: str, reason) -> bool:
+        return True if allow is None else bool(allow(target, reason))
+
+    kwargs = dict(timeout=30, follow_redirects=True, max_redirects=10,
+                  headers={"User-Agent": "coded/0.1"})
+    if proxy_for(url) is None:
+        client = httpx.Client(transport=pinned_transport(permit, resolver), **kwargs)
+    else:
+        def check(request) -> None:
+            target = str(request.url)
+            if proxy_for(target) is None:
+                # A redirect off the proxy (NO_PROXY host): httpx would connect
+                # directly with its own lookup, which cannot be pinned here.
+                if internal_reason(target) is not None and not permit(
+                        target, internal_reason(target)):
+                    raise DestinationRefused(f"not allowed to fetch {target}")
+                return
+            if not permit(target, internal_reason(target)):
+                raise DestinationRefused(f"not allowed to fetch {target}")
+
+        client = httpx.Client(event_hooks={"request": [check]}, **kwargs)
+    with client:
         r = client.get(url)
         r.raise_for_status()
         ctype = r.headers.get("content-type", "")

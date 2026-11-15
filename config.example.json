@@ -289,6 +289,13 @@
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
       "enabled": false
+    },
+    "github": {
+      "command": "github-mcp-server",
+      "args": ["stdio"],
+      "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"},
+      "inherit_env": ["GH_HOST"],
+      "enabled": false
     }
   },
 

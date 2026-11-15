@@ -595,8 +595,13 @@ asking? — and then works alone until the goal is done:
   assumption.
 - **Keeps going.** A model outage is retried after a pause, a run that hit the
   step limit or left tasks open is sent back to finish (up to
-  `--max-restarts`, default 3). It stops when it is clearly stuck, the
-  `--budget` runs out, or you press Ctrl-C.
+  `--max-restarts`, default 3). One "going round in circles" verdict gets one
+  more run; two in a row stop it. It never reports *Done* with tasks still
+  open (*unfinished*) or the checks failing (*unverified*). A failing
+  check sends it back to fix it and run the checks again (a restart), but the
+  same failure is never run twice: it stops and the report says why it failed
+  (`--no-retry-unverified` stops at the first failing finish). It stops when it is clearly stuck, the `--budget` runs
+  out, or you press Ctrl-C.
 - **Steer it if you are watching.** On a terminal the input box stays at the
   bottom while it works, with what it is doing (`◆ running tool  bash · 1
   follow-up waiting`). Type a message and it reaches the mission at its next
@@ -636,7 +641,10 @@ model's `context_window`, older messages are summarized into a briefing while a
 recent, consistent tail is kept verbatim. Force it with `/compact`; disable with
 `--no-compact` or `"auto_compact": false`.
 
-Sessions **persist to disk** (`~/.config/coded/sessions/`, autosaved each turn):
+Sessions **persist to disk** (`~/.config/coded/sessions/`, autosaved each turn;
+the folder is private, 0700, and each file 0600 on Linux/macOS). One coded
+process works in a session at a time: resuming a session another running coded
+holds is refused with its pid (a crashed process's claim is taken over).
 
 ```bash
 coded --continue        # resume the most recent session for this directory
@@ -1056,6 +1064,19 @@ Values like `"${GITHUB_TOKEN}"` (or `"${VAR:-default}"`) in `command`, `args`
 and `env` are filled in from your environment when coded starts. A reference
 to a variable that is not set is reported by name at start (and used as empty).
 
+**A server sees only what it needs from your environment.** It gets `PATH`,
+`HOME`, the user and locale, temp folders, proxy and CA-bundle settings (and
+the variables Windows needs to start programs) plus its own `env` — not your
+model keys, cloud credentials or tokens. Give a server a secret by naming it
+in its `env` (`"GITHUB_TOKEN": "${GITHUB_TOKEN}"`), or widen what it inherits:
+
+```json
+{ "mcp_servers": { "aws": { "command": "aws-mcp",
+                            "inherit_env": ["AWS_PROFILE", "AWS_REGION"] } } }
+```
+
+`"inherit_env": true` passes your whole environment (the old behaviour).
+
 **Reuse the servers you set up for other agents.** `coded import` looks for MCP
 servers configured for Claude Code (`~/.claude.json`, the project's `.mcp.json`),
 Claude Desktop, Cursor, VS Code (`.vscode/mcp.json`), Gemini CLI, Codex
@@ -1240,8 +1261,13 @@ paths and a private `/tmp`. Because the sandbox is the safety boundary,
 sandboxed commands run **without a permission prompt** (`auto_allow`). Deny
 rules, plan mode and the strict injection guard still apply. The model can ask
 to run one command unsandboxed (`dangerously_disable_sandbox`), which always
-needs your approval. If no backend is installed, bash falls back to normal
-prompting (or refuses, with `fail_if_unavailable`).
+needs its own approval: the prompt says **UNSANDBOXED**, shows the command and
+that filesystem and network limits do not apply. Nothing that approves `bash`
+answers it — not an allow rule, "always", a hook or `auto_allow` — and an
+unattended run (mission, `--print`, a background task) refuses it; `--yolo` or
+an explicit `bash_unsandboxed` allow rule are the only ways around the
+question. If no backend is installed, bash asks the same UNSANDBOXED question
+(or refuses, with `fail_if_unavailable`) and its output is labelled.
 
 ### Windows
 
@@ -1743,6 +1769,33 @@ risky actions:
   MCP client, e.g. `claude mcp add coded -- coded mcp-serve`. Risky actions are
   denied unless started with `--yolo` (nobody is there to approve them) or
   allowed by permission rules.
+
+## Security
+
+What coded does to keep a model, a web page or a repository from turning your
+agent against you (details and limits: `SECURITY_AUDIT_REPORT.md`):
+
+- **Permissions** — edits and commands ask first; deny rules win over
+  everything; unattended runs refuse what nobody approved.
+- **Sandbox** — `--sandbox` confines `bash`; running outside it is a separate,
+  explicit UNSANDBOXED approval.
+- **Internal addresses** — `web_fetch` and `browser` ask before localhost, the
+  LAN, cloud metadata or a local file. `web_fetch` connects to the very address
+  it checked (DNS rebinding cannot swap it); every redirect is checked again.
+  The browser checks every request of every page, blocks service workers and
+  downloads and closes pop-ups.
+- **Project trust** — a repository's `.coded/config.json` cannot add hooks, MCP
+  servers or allow rules until you trust it.
+- **Secrets** — MCP servers get a minimal environment; sessions, mission files
+  and the trust store are private files; secrets are redacted from the event
+  log, telemetry, `/export`, mission reports and error messages.
+- **Tool calls** — arguments are checked against the tool's schema before it
+  runs; paths outside the project ask first, also through symlinks.
+
+Known limits: behind an HTTP(S) proxy the proxy resolves names, so `web_fetch`
+checks the local answer only; Chromium resolves names itself, so the browser's
+per-request check narrows but cannot close a DNS-rebinding window; Windows has
+no sandbox backend and relies on the user profile's ACL for private files.
 
 ## Making it faster
 

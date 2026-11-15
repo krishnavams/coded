@@ -144,6 +144,22 @@ def _normalized(output: str) -> str:
     return "\n".join(line.strip() for line in out.splitlines() if line.strip())[-2000:]
 
 
+_FAILURE_LINE = ("FAILED ", "ERROR ", "FAIL ", "FAIL:", "--- FAIL", "not ok ", "✕ ", "✗ ")
+
+
+def failure_lines(output: str, limit: int = 8) -> List[str]:
+    """The lines of a check's output that name what failed (pytest's summary,
+    go test, TAP, jest), for the event log and the mission report."""
+    found: List[str] = []
+    for line in (output or "").splitlines():
+        line = line.strip()
+        if line.startswith(_FAILURE_LINE) and line not in found:
+            found.append(line[:300])
+            if len(found) >= limit:
+                break
+    return found
+
+
 def same_failure(previous: str, current: str) -> bool:
     """The checks failed the same way twice: another round won't help."""
     return bool(previous) and _normalized(previous) == _normalized(current)

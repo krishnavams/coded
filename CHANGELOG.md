@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.5.0
+
+Security and reliability hardening. Details: `SECURITY_AUDIT_REPORT.md`,
+`SECURITY_REMEDIATION_PLAN.md`, `EXECUTION_LIFECYCLE.md`.
+
+### Security
+- MCP servers get a minimal environment plus their own `env`; more only with
+  `"inherit_env": true` or a list of names (before: a server with any `env`
+  got coded's whole environment). **A server that relied on an undeclared
+  variable must now name it.**
+- Running bash outside an enabled sandbox is its own UNSANDBOXED approval:
+  bash allow rules, "always", hooks and sandbox auto-allow no longer answer
+  it; unattended runs refuse it. A missing sandbox backend asks the same
+  question instead of running unsandboxed silently.
+- `web_fetch` connects to the exact address it checked (no DNS-rebinding
+  window, no DNS cache), keeping the hostname for TLS; NAT64/6to4/CGNAT count
+  as internal. The browser checks requests of every page (pop-ups too), blocks
+  service workers and downloads.
+- Sessions, mission files and the trust store are private (0700 folder, 0600
+  files, written via an exclusive temp file; symlinks refused; session ids
+  validated).
+- Secrets are redacted from the event log, telemetry, `/export`, mission
+  reports and notifications, and error messages.
+- Tool arguments are checked against the tool's schema before it runs.
+
+### Reliability
+- One turn at a time per agent (`AgentBusy`), one process per session (a lock
+  file; `--resume` of a session another coded holds is refused with its pid; a
+  crashed owner's lock is taken over; a running mission cannot be resumed
+  twice).
+- An interrupted worktree task no longer leaves an orphan worktree.
+
+## 0.4.2
+
+### Changed
+- A mission that finishes with the checks still failing is sent back to fix
+  them and run them again (counts against `--max-restarts`). The same failure
+  is never run a second time: a failure the run already hit twice, or the one
+  the previous run ended with, stops the mission as "unverified".
+  `--no-retry-unverified` stops at the first failing finish (saved with the
+  mission, changeable on `--resume`).
+- The mission report says why the checks failed: the failing tests the output
+  named and its last line (`verify` events carry `failures`).
+
+## 0.4.1
+
+### Fixed
+- A mission no longer stops for good on one "not making progress" verdict
+  (e.g. a finished `bash_output` read four times among 200 steps): it gets one
+  more run, told what it repeated; only two such runs in a row stop it.
+- A mission's commit leaves out coded's own state (`.coded/checkpoints/`
+  backups, the copied `.coded/memory.json`) in projects that do not gitignore
+  `.coded/`.
+- A mission that ends with tasks still open or with the checks failing is
+  reported as `unfinished` / `unverified` (and can be resumed), not "Done".
+
 ## 0.4.0
 
 ### Added
