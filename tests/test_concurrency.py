@@ -227,3 +227,30 @@ def test_an_interrupted_worktree_task_leaves_no_orphan_worktree(tmp_path, monkey
     branches = subprocess.run(["git", "branch", "--format=%(refname:short)"], cwd=repo,
                               capture_output=True, text=True).stdout.split()
     assert not [b for b in branches if b.startswith("coded/")]
+
+
+def test_a_busy_target_on_windows_is_retried_not_lost(tmp_path, monkeypatch):
+    """Windows refuses os.replace while another process holds the file open
+    (a reader, an antivirus scan): the save waits and retries."""
+    from coded import securefs
+
+    real = os.replace
+    refusals = {"n": 3}
+
+    def busy(src, dst):
+        if refusals["n"]:
+            refusals["n"] -= 1
+            raise PermissionError(13, "Access is denied")
+        return real(src, dst)
+
+    monkeypatch.setattr(securefs.sys, "platform", "win32")
+    monkeypatch.setattr(securefs.os, "replace", busy)
+    monkeypatch.setattr(securefs.time, "sleep", lambda s: None)
+    securefs.write_private(tmp_path / "s.json", '{"ok": 1}')
+    assert json.loads((tmp_path / "s.json").read_text()) == {"ok": 1}
+    assert refusals["n"] == 0
+
+    refusals["n"] = 99  # never frees up: the error surfaces, no temp file left behind
+    with pytest.raises(PermissionError):
+        securefs.write_private(tmp_path / "t.json", "{}")
+    assert not [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]

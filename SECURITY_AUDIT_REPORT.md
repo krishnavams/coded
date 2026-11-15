@@ -64,14 +64,17 @@ refuse. Run with a real bubblewrap backend.
 for the process (`lru_cache`); httpx then resolved again to connect. A
 rebinding name could pass as public and connect to 127.0.0.1 or
 169.254.169.254. NAT64 (`64:ff9b::/96`), 6to4 and `100.64.0.0/10` were
-public.
+public. Old-style IPv4 hosts (`127.1`, `0x7f.1`, `2130706433`), which
+browsers turn into 127.0.0.1, were judged by the resolver, and Windows'
+resolver does not expand them.
 **Exploitable.** Yes, with an attacker-controlled domain and a prompt-injected
 fetch.
 **Change.** `netguard.pinned_transport`: per request (each redirect too) one
 resolution → judged → the URL host replaced by that IP, `Host` header and TLS
 SNI/certificate name kept as the original host (httpcore `sni_hostname`); no
 keep-alive so a pooled connection cannot carry another host's request. No DNS
-cache. Approval of an internal destination is by the caller's judgement
+cache. Legacy IPv4 forms are parsed with WHATWG URL rules, independent of
+the resolver. Approval of an internal destination is by the caller's judgement
 (`allow(url, reason)`), not a second lookup.
 **Verified.** A fake resolver that answers public then 127.0.0.1: refused, the
 local server never hit. Pinning: the request reaches the judged address with
@@ -89,7 +92,9 @@ and `trusted.json` were written with the default umask (typically 0644 in a
 needed a crafted `--resume` argument (local).
 **Change.** `securefs.private_dir` (0700, symlink refused, existing folder and
 its files tightened once) and `write_private` (exclusive `O_EXCL|O_NOFOLLOW`
-temp file created 0600 before any byte, fsync, atomic rename). `check_id`
+temp file created 0600 before any byte, fsync, atomic rename; writers of
+one path take turns in-process, and a rename Windows refuses because the
+target is open elsewhere is retried briefly). `check_id`
 rejects anything but `[A-Za-z0-9._-]` names. Format unchanged; old sessions
 load.
 **Limits.** Windows ignores POSIX modes; the default locations are inside the

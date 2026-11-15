@@ -673,3 +673,27 @@ def test_a_large_file_read_is_bounded(tmp_path):
     agent = _agent(tmp_path, PermissionManager(auto_approve=True), {"enabled": False})
     out, is_error, _ = agent._run_tool(_file_call("read", path="big.log"), display=False)
     assert len(out) < 400_000 and "line 0" in out
+
+
+@pytest.mark.parametrize("host", ["127.1", "0x7f.0.0.1", "0177.0.0.1", "2130706433",
+                                  "0x7f000001", "10.1", "169.254.43518"])
+def test_legacy_ipv4_forms_are_internal_whatever_the_resolver_says(host, monkeypatch):
+    """Browsers turn 127.1 / 0x7f.1 / 2130706433 into 127.0.0.1; some resolvers
+    (Windows) do not resolve them at all. The check must not depend on that."""
+    import socket
+
+    from coded.netguard import internal_reason
+
+    def refuses(*a, **k):
+        raise socket.gaierror("no such host")
+
+    monkeypatch.setattr(socket, "getaddrinfo", refuses)
+    assert internal_reason(f"http://{host}/"), host
+
+
+def test_legacy_forms_that_are_public_or_not_addresses_stay_so():
+    from coded.netguard import _legacy_ipv4
+
+    assert _legacy_ipv4("8.8.8.8") == "8.8.8.8"
+    for host in ("example.com", "1.2.3.4.5", "999.1.1.1", "0x", "12a.1"):
+        assert _legacy_ipv4(host) in (None, "0.0.0.0"), host

@@ -64,8 +64,39 @@ def _embedded_v4(addr) -> list:
     return out
 
 
+def _legacy_ipv4(host: str) -> Optional[str]:
+    """The address a browser makes of an old-style IPv4 host — `127.1`,
+    `0x7f.0.0.1`, `0177.0.0.1`, `2130706433` (WHATWG URL rules) — or None.
+    Resolvers disagree on these (Windows rejects them), browsers do not."""
+    parts = host.split(".")
+    if parts and parts[-1] == "":
+        parts.pop()
+    if not 1 <= len(parts) <= 4:
+        return None
+    nums = []
+    for part in parts:
+        try:
+            if part[:2] in ("0x", "0X"):
+                nums.append(int(part[2:] or "0", 16))
+            elif len(part) > 1 and part.startswith("0"):
+                nums.append(int(part, 8))
+            else:
+                if not part.isdigit():
+                    return None
+                nums.append(int(part))
+        except ValueError:
+            return None
+    if any(n > 255 for n in nums[:-1]) or nums[-1] >= 256 ** (5 - len(nums)):
+        return None
+    value = nums[-1]
+    for i, n in enumerate(nums[:-1]):
+        value += n << (8 * (3 - i))
+    return str(ipaddress.IPv4Address(value))
+
+
 def _normal_host(host: str) -> str:
-    return (host or "").strip("[]").lower().rstrip(".")
+    host = (host or "").strip("[]").lower().rstrip(".")
+    return _legacy_ipv4(host) or host
 
 
 def _name_is_internal(host: str) -> bool:

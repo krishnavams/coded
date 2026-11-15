@@ -19,12 +19,39 @@ import os
 import re
 import stat
 import sys
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Set
 
 _POSIX = os.name == "posix"
 _tightened: Set[str] = set()
+# Writers of one path in this process take turns (Windows refuses to replace
+# a file another thread is replacing at the same moment).
+_path_locks: dict = {}
+_path_locks_guard = threading.Lock()
+
+
+def _lock_for(path: Path) -> "threading.Lock":
+    key = os.path.normcase(os.path.abspath(str(path)))
+    with _path_locks_guard:
+        return _path_locks.setdefault(key, threading.Lock())
+
+
+def _replace(src: str, dst: Path) -> None:
+    """os.replace, retried briefly on Windows, where another process holding
+    the target open (a reader, an antivirus scan) makes it fail."""
+    delay = 0.01
+    for attempt in range(8):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if sys.platform != "win32" or attempt == 7:
+                raise
+            time.sleep(delay)
+            delay *= 2
 
 # A stored id names a file: letters, digits, dot, dash, underscore; no path.
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -86,7 +113,8 @@ def write_private(path: Path, text: str, encoding: str = "utf-8") -> None:
             fh.write(text.encode(encoding))
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        with _lock_for(path):
+            _replace(str(tmp), path)
     except BaseException:
         try:
             os.unlink(tmp)
