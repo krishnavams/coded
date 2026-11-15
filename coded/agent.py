@@ -1341,6 +1341,16 @@ class Agent:
             return content, is_error, args
 
         tool = self.registry.get(tc.name)
+        from coded.tools.base import MAX_ARGUMENT_BYTES, validate_arguments
+
+        if len(tc.arguments or "") > MAX_ARGUMENT_BYTES:
+            msg = (f"the arguments are {len(tc.arguments):,} bytes, over the "
+                   f"{MAX_ARGUMENT_BYTES:,}-byte limit for one call. Split the work into "
+                   "smaller calls (e.g. write a file in parts with edit).")
+            if display:
+                self._show_tool_call(tc.name, {"_raw": "(too large)"}, tc.id)
+                self._show_tool_result(f"Invalid arguments: {msg}", True, tc.id, tc.name)
+            return f"Error: {msg}", True, None
         try:
             args = json.loads(tc.arguments or "{}")
             if not isinstance(args, dict):
@@ -1364,6 +1374,16 @@ class Agent:
                    f"(disabled_tools). Do the work with the tools you were given.")
             if display:
                 self._show_tool_result(msg, True, tc.id, tc.name)
+            return f"Error: {msg}", True, args
+
+        args, invalid = validate_arguments(getattr(tool, "parameters", None) or {}, args)
+        if invalid:
+            msg = (f"invalid arguments for {tc.name}: {invalid}. Call it again with "
+                   "arguments that match its parameters.")
+            if display:
+                self._show_tool_result(msg, True, tc.id, tc.name)
+            self.events.add("invalid_args", name=tc.name, error=invalid,
+                            **({"task": self.event_task} if self.event_task else {}))
             return f"Error: {msg}", True, args
 
         if tc.name in _PATH_TOOLS or tc.name == "apply_patch":

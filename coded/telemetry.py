@@ -70,7 +70,9 @@ class Tracer:
             if self.path:
                 record = dict(span, start=start, duration_ms=round((time.time() - start) * 1000, 2),
                               status=status, attrs=attrs)
-                line = json.dumps(record, default=str)
+                from coded.redact import redact_data
+
+                line = json.dumps(redact_data(record), default=str)
                 with self._lock, open(self.path, "a", encoding="utf-8") as fh:
                     fh.write(line + "\n")
 

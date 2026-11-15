@@ -83,6 +83,13 @@ def render_context(info: Dict[str, Any], width: int = 30) -> str:
 
 
 def export_markdown(agent: Any, *, result_chars: int = 4000) -> str:
+    """`_export_markdown` with secrets redacted (an export is meant to be shared)."""
+    from coded.redact import redact
+
+    return redact(_export_markdown(agent, result_chars=result_chars))
+
+
+def _export_markdown(agent: Any, *, result_chars: int = 4000) -> str:
     """The conversation as Markdown: requests, answers, tool calls and (cut)
     results. The system prompt is left out."""
     out = [f"# coded session — {time.strftime('%Y-%m-%d %H:%M')}", "",

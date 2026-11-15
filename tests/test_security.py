@@ -477,3 +477,199 @@ def test_browser_popups_and_subrequests_cannot_reach_internal_addresses(tmp_path
     assert not res.is_error, res.content
     assert handler.hits == []  # nothing left the browser for 127.0.0.1
     assert f"127.0.0.1:{port}/xhr" in res.content and f"127.0.0.1:{port}/frame" in res.content
+
+
+# -- SEC-08: secret redaction ------------------------------------------------------
+
+@pytest.mark.parametrize("text,secret", [
+    ("Authorization: Bearer abcdefghijklmnop1234", "abcdefghijklmnop1234"),
+    ("curl -H 'Authorization: token ghx_abcdef123456'", "ghx_abcdef123456"),
+    ("postgres://admin:S3cretPw@db.internal:5432/app", "S3cretPw"),
+    ("OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwx", "sk-proj-abcdefghijklmnopqrstuvwx"),
+    ("token ghp_" + "a" * 36, "ghp_" + "a" * 36),
+    ("aws AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE"),
+    ('{"client_secret": "zxcvbnm123456"}', "zxcvbnm123456"),
+    ("password = hunter2!", "hunter2!"),
+    ("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----",
+     "b3BlbnNzaC1rZXk"),
+    ("jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.SflKxwRJSMeKKF2QT4fwpM", "SflKxwRJSM"),
+])
+def test_secrets_are_redacted(text, secret):
+    from coded.redact import redact
+
+    out = redact(text, env={})
+    assert secret not in out and "[REDACTED]" in out
+
+
+def test_ordinary_text_is_left_alone():
+    from coded.redact import redact
+
+    for text in ("max_tokens=4096", "def tokenize(text):", "the auth flow failed",
+                 "secret=false", "see https://example.com/a?b=1", "use_token = None",
+                 "git@github.com:org/repo.git"):
+        assert redact(text, env={}) == text
+
+
+def test_environment_secret_values_are_redacted_wherever_they_appear():
+    from coded.redact import redact
+
+    env = {"MY_SERVICE_TOKEN": "qwertyuiop98765", "PATH": "/usr/bin:/bin"}
+    assert redact("got qwertyuiop98765 back from /usr/bin", env=env) == \
+        "got [REDACTED] back from /usr/bin"
+
+
+def test_redaction_reaches_events_exports_reports_and_errors(monkeypatch, tmp_path):
+    from coded.events import EventLog
+    from coded.llm import explain_failure
+
+    monkeypatch.setenv("ACME_API_KEY", "acme-live-0123456789")
+    log = EventLog()
+    log.add("tool", name="bash", error="curl failed: key acme-live-0123456789 rejected")
+    assert "acme-live" not in json.dumps(log.snapshot())
+
+    err = RuntimeError("401 from https://u:pw12345678@gw.example/v1?key=acme-live-0123456789")
+    text = explain_failure(err)
+    assert "acme-live" not in text and "pw12345678" not in text
+
+    from coded import mission
+
+    agent = type("A", (), {})()
+    agent.events = log
+    agent.todos = type("T", (), {"items": []})()
+    agent.session = type("S", (), {"estimated_cost": lambda self, m: 0.0})()
+    agent.model = type("M", (), {"name": "m"})()
+    agent.cwd = str(tmp_path)
+    result = mission.MissionResult(status="done",
+                                   final="Used Authorization: Bearer zzzzzzzzzzzzzzzz9")
+    report = mission.build_report(goal="g", result=result, agent=agent)
+    assert "zzzzzzzzzzzzzzzz9" not in report and "[REDACTED]" in report
+
+
+# -- SEC-09: tool arguments are validated before a tool runs -----------------------
+
+def test_malformed_arguments_never_reach_the_tool(tmp_path):
+    from coded.llm import ToolCall
+
+    perms = PermissionManager(auto_approve=True)
+    agent = _agent(tmp_path, perms, {"enabled": False})
+    ran = []
+    tool = agent.registry.get("write")
+    real = tool.run
+    tool.run = lambda args, ctx: ran.append(args) or real(args, ctx)
+    for bad in ({"content": "x"},                              # missing required path
+                {"path": ["a"], "content": "x"},               # wrong type
+                {"path": "a.txt", "content": {"x": 1}}):       # wrong type
+        out, is_error, _ = agent._run_tool(
+            ToolCall(id="c", name="write", arguments=json.dumps(bad)), display=False)
+        assert is_error and "invalid arguments for write" in out
+    assert ran == [] and not (tmp_path / "a.txt").exists()
+    assert any(e.get("kind") == "invalid_args" for e in agent.events.snapshot())
+
+
+def test_common_model_slips_are_still_accepted(tmp_path):
+    from coded.tools.base import validate_arguments
+
+    schema = {"type": "object", "properties": {
+        "n": {"type": "integer"}, "flag": {"type": "boolean"},
+        "mode": {"type": "string", "enum": ["a", "b"]}}, "required": ["mode"]}
+    args, err = validate_arguments(schema, {"n": "5", "flag": "true", "mode": "a"})
+    assert err is None and args == {"n": 5, "flag": True, "mode": "a"}
+    assert validate_arguments(schema, {"mode": "c"})[1] == "mode must be one of a, b"
+    strict = dict(schema, additionalProperties=False)
+    assert "unexpected argument" in validate_arguments(strict, {"mode": "a", "zz": 1})[1]
+    assert validate_arguments(schema, {"mode": "a", "zz": 1})[1] is None  # default: tolerated
+
+
+def test_oversized_arguments_are_refused(tmp_path, monkeypatch):
+    from coded.llm import ToolCall
+    from coded.tools import base
+
+    monkeypatch.setattr(base, "MAX_ARGUMENT_BYTES", 1000)
+    agent = _agent(tmp_path, PermissionManager(auto_approve=True), {"enabled": False})
+    out, is_error, _ = agent._run_tool(ToolCall(id="c", name="write", arguments=json.dumps(
+        {"path": "big.txt", "content": "x" * 5000})), display=False)
+    assert is_error and "limit" in out and not (tmp_path / "big.txt").exists()
+
+
+# -- SEC-10: filesystem edges ------------------------------------------------------
+
+def _file_call(name, **args):
+    from coded.llm import ToolCall
+
+    return ToolCall(id="c", name=name, arguments=json.dumps(args))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+def test_a_symlink_inside_the_project_cannot_be_used_to_write_outside(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "link").symlink_to(outside)
+    agent = _agent(proj, PermissionManager(), {"enabled": False})  # nobody to ask
+    agent.permissions.accept_edits = True
+    out, is_error, _ = agent._run_tool(_file_call("write", path="link/evil.txt",
+                                                  content="x"), display=False)
+    assert is_error and not (outside / "evil.txt").exists()
+    out, is_error, _ = agent._run_tool(_file_call("write", path="../outside/evil2.txt",
+                                                  content="x"), display=False)
+    assert is_error and not (outside / "evil2.txt").exists()
+
+
+def test_edits_refuse_binary_and_non_utf8_files(tmp_path):
+    agent = _agent(tmp_path, PermissionManager(auto_approve=True), {"enabled": False})
+    (tmp_path / "blob.bin").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\xff\xfe")
+    (tmp_path / "latin.txt").write_bytes("caf\xe9 x".encode("latin-1"))
+    for name in ("blob.bin", "latin.txt"):
+        before = (tmp_path / name).read_bytes()
+        out, is_error, _ = agent._run_tool(_file_call("edit", path=name, old_string="x",
+                                                      new_string="y"), display=False)
+        assert is_error and (tmp_path / name).read_bytes() == before
+
+
+def test_an_edit_after_the_file_changed_underneath_fails_cleanly(tmp_path):
+    agent = _agent(tmp_path, PermissionManager(auto_approve=True), {"enabled": False})
+    (tmp_path / "a.py").write_text("x = 1\n")
+    (tmp_path / "a.py").write_text("x = 2\n")  # changed by someone else since it was read
+    out, is_error, _ = agent._run_tool(_file_call("edit", path="a.py", old_string="x = 1",
+                                                  new_string="x = 3"), display=False)
+    assert is_error and (tmp_path / "a.py").read_text() == "x = 2\n"
+
+
+def test_write_creates_missing_parents_and_reports_permission_errors(tmp_path):
+    agent = _agent(tmp_path, PermissionManager(auto_approve=True), {"enabled": False})
+    out, is_error, _ = agent._run_tool(_file_call("write", path="new/deep/f.txt",
+                                                  content="ok"), display=False)
+    assert not is_error and (tmp_path / "new/deep/f.txt").read_text() == "ok"
+    if os.name == "posix" and os.geteuid() != 0:
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        os.chmod(locked, 0o500)
+        try:
+            out, is_error, _ = agent._run_tool(_file_call("write", path="locked/f.txt",
+                                                          content="x"), display=False)
+            assert is_error and "Traceback" not in out
+        finally:
+            os.chmod(locked, 0o700)
+
+
+def test_codedignore_blocks_reads_and_writes(tmp_path):
+    (tmp_path / ".codedignore").write_text("secrets/\n")
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets" / "k.txt").write_text("TOPSECRET")
+    agent = _agent(tmp_path, PermissionManager(auto_approve=True), {"enabled": False})
+    out, is_error, _ = agent._run_tool(_file_call("read", path="secrets/k.txt"), display=False)
+    assert is_error and "TOPSECRET" not in out
+    out, is_error, _ = agent._run_tool(_file_call("write", path="secrets/k.txt",
+                                                  content="x"), display=False)
+    assert is_error and (tmp_path / "secrets" / "k.txt").read_text() == "TOPSECRET"
+
+
+def test_a_large_file_read_is_bounded(tmp_path):
+    big = tmp_path / "big.log"
+    with open(big, "w") as fh:
+        for i in range(400_000):
+            fh.write(f"line {i} " + "x" * 40 + "\n")
+    agent = _agent(tmp_path, PermissionManager(auto_approve=True), {"enabled": False})
+    out, is_error, _ = agent._run_tool(_file_call("read", path="big.log"), display=False)
+    assert len(out) < 400_000 and "line 0" in out

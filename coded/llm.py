@@ -567,6 +567,14 @@ def _short(exc: Optional[Exception]) -> str:
 
 
 def explain_failure(exc: Exception) -> str:
+    """`_explain_failure`, with secrets (keys in URLs, tokens echoed by a
+    gateway) redacted: this text is shown, logged and sent in reports."""
+    from coded.redact import redact
+
+    return redact(_explain_failure(exc))
+
+
+def _explain_failure(exc: Exception) -> str:
     """A readable, actionable line for an error that ended a turn.
 
     The raw SDK text ("InternalServerError: Error code: 500 - An unexpected error

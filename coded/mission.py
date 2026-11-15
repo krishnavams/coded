@@ -437,7 +437,9 @@ def build_report(*, goal: str, result: MissionResult, agent, branch: str = "",
     if result.status != "done":
         lines.append(f"- Carry on with this mission: `coded mission --resume"
                      f"{' ' + mission_id if mission_id else ''}`")
-    return "\n".join(lines) + "\n"
+    from coded.redact import redact
+
+    return redact("\n".join(lines) + "\n")
 
 
 def save_report(root: str, text: str, stamp: Optional[str] = None) -> Path:
