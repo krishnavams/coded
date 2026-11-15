@@ -76,6 +76,8 @@ coded/
 │                       # security, refactor, adversary
 ├── compaction.py       # context auto-compaction (summarize old messages)
 ├── sessions_store.py   # persist/restore sessions (--continue/--resume, /resume: SessionKeeper)
+├── securefs.py         # private dirs/files (0700/0600, atomic, no symlinks), check_id, FileLock
+├── redact.py           # secret redaction for events, telemetry, exports, reports, errors
 ├── checkpoints.py      # CheckpointManager: per-turn file snapshots for /undo and /rewind
 ├── transcript.py       # /context breakdown and /export Markdown
 ├── ignore.py           # .codedignore (gitignore syntax): rules_for(cwd), cached by mtime
@@ -88,7 +90,7 @@ coded/
 ├── embeddings.py       # EmbeddingClient + embedding-model resolution
 ├── index.py            # CodeIndex: chunk/embed/store + cosine search
 ├── websearch.py        # web-search backends + HTML→text fetch
-├── netguard.py         # which URLs are internal (loopback/LAN/metadata/file) for web_fetch/browser
+├── netguard.py         # internal URLs (loopback/LAN/metadata/file); pinned_transport (no rebinding)
 ├── images.py           # image → base64 data URL for vision models; clipboard image grab
 ├── mentions.py         # `@path` mentions: expansion (Agent.run) + the REPL path completer
 ├── documents.py        # PDF/DOCX/XLSX/PPTX → text sections for the read tool
@@ -163,6 +165,10 @@ tests/
 ├── test_mission.py     # restarts/stops, open tasks, budget, branch + report, up-front questions
 ├── test_session_autosave.py  # per-step autosave, atomic save, orphan tool calls, todos
 ├── test_resume.py      # /resume: list this folder's sessions, switch, keep saving under its id
+├── test_security.py    # MCP env, private storage, sandbox bypass, SSRF/rebinding, browser,
+│                       # redaction, argument validation, filesystem edges
+├── test_concurrency.py # AgentBusy, session locks (stale/live/remote), saves, mission twice,
+│                       # no orphan worktrees
 ├── test_memory_bounds.py  # bounded output/file reads, timeout kills the process group
 ├── test_compaction.py  # context compaction trigger + tail preservation
 ├── test_permissions_sessions.py  # allow/deny rules, diff preview, sessions, json
@@ -201,6 +207,8 @@ examples/plugins/       # example plugin (code-quality) + plugin layout guide
 examples/github-actions/coded-review.yml  # PR review workflow (copy to .github/workflows)
 examples/.coded-plugin/marketplace.json  # examples folder doubles as a marketplace
 config.example.json     # sample configuration
+SECURITY_AUDIT_REPORT.md, SECURITY_REMEDIATION_PLAN.md, EXECUTION_LIFECYCLE.md
+                        # findings, fixes, limits; units of work, states, locks
 docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_pdf.py
                         # (needs markdown + pygments, prints with Node Playwright's Chromium)
 ```
@@ -420,11 +428,36 @@ docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_
   prompt ("Read file outside the project"), mutating tools reuse theirs with
   `request(always_ask=True)`, so accept-edits mode and sandbox auto-allow do
   not skip it. `--yolo`, "always" and allow rules (`read(/path/*)`) answer it.
+- **Security layers** (see `SECURITY_AUDIT_REPORT.md`; tests in `test_security.py`):
+  MCP children get `mcp_client.child_env` (`SAFE_ENV` + the server's `env`;
+  `inherit_env` opts in) — never pass `os.environ` to a child you start for a
+  third party. Anything written about a person's work (sessions, mission
+  state/reports, trust store) goes through `securefs.private_dir` +
+  `write_private`; ids that become file names go through `check_id`. A call
+  that leaves a safety boundary returns `Tool.escalation()` (bash outside the
+  sandbox: `bash_unsandboxed`), asked with `always_ask` and never answered by
+  the tool's own approval, hooks or auto-allow; deny rules still win. Text
+  leaving the conversation (events, telemetry, `/export`, mission reports,
+  `explain_failure`) goes through `redact.redact`/`redact_data`; the saved
+  session is not redacted. `Agent._run_tool_inner` validates arguments with
+  `tools.base.validate_arguments` (top level only: types with forgiving
+  coercion, required, enums, `additionalProperties: false`; nested shapes are
+  the tool's job) and caps them at `MAX_ARGUMENT_BYTES`.
+- **Concurrency**: `Agent.run` holds `_turn_lock` (a second concurrent call
+  raises `AgentBusy`; the body is `_run_turn`). `SessionStore.lock(id)` is a
+  `securefs.FileLock` (`.<id>.lock`, pid + host; a dead local owner's lock is
+  taken over, never via `os.kill(pid, 0)` on Windows); `SessionKeeper.claim`
+  on resume and first save, `Busy` refused by `--resume`, `/resume` and
+  missions. See `EXECUTION_LIFECYCLE.md`.
 - **Internal addresses ask first** (`netguard.py`, `tools.web.url_permission`):
   `web_fetch` and `browser` ask (once per host, `always_ask`) before a local
   file, localhost, a private/link-local/metadata address, and re-check every
-  redirect (`fetch_url(allow=…)`) or browser request (`page.route`); a
+  redirect (`fetch_url(allow=…)`, `allow(url, reason)`) or browser request
+  (`context.route`, so pop-ups too; service workers and downloads off); a
   `file://` inside the project passes. Non-interactive runs refuse them.
+  `web_fetch` without a proxy connects through `netguard.pinned_transport`:
+  one resolution per request, judged, sent to that IP with the hostname kept
+  for Host/SNI (`sni_hostname`); never add a DNS cache to `host_is_internal`.
 - **`.codedignore`** is enforced in `Agent._run_tool` for path tools
   (`_PATH_TOOLS`, plus apply_patch's file headers via `_tool_paths`), in
   `search._walk` (grep/glob), `ls`, and `@mentions`/their completion. bash is

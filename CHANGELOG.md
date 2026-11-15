@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.5.0
+
+Security and reliability hardening. Details: `SECURITY_AUDIT_REPORT.md`,
+`SECURITY_REMEDIATION_PLAN.md`, `EXECUTION_LIFECYCLE.md`.
+
+### Security
+- MCP servers get a minimal environment plus their own `env`; more only with
+  `"inherit_env": true` or a list of names (before: a server with any `env`
+  got coded's whole environment). **A server that relied on an undeclared
+  variable must now name it.**
+- Running bash outside an enabled sandbox is its own UNSANDBOXED approval:
+  bash allow rules, "always", hooks and sandbox auto-allow no longer answer
+  it; unattended runs refuse it. A missing sandbox backend asks the same
+  question instead of running unsandboxed silently.
+- `web_fetch` connects to the exact address it checked (no DNS-rebinding
+  window, no DNS cache), keeping the hostname for TLS; NAT64/6to4/CGNAT count
+  as internal. The browser checks requests of every page (pop-ups too), blocks
+  service workers and downloads.
+- Sessions, mission files and the trust store are private (0700 folder, 0600
+  files, written via an exclusive temp file; symlinks refused; session ids
+  validated).
+- Secrets are redacted from the event log, telemetry, `/export`, mission
+  reports and notifications, and error messages.
+- Tool arguments are checked against the tool's schema before it runs.
+
+### Reliability
+- One turn at a time per agent (`AgentBusy`), one process per session (a lock
+  file; `--resume` of a session another coded holds is refused with its pid; a
+  crashed owner's lock is taken over; a running mission cannot be resumed
+  twice).
+- An interrupted worktree task no longer leaves an orphan worktree.
+
 ## 0.4.2
 
 ### Changed

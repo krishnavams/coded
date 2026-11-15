@@ -34,11 +34,13 @@ def test_two_sessions_run_side_by_side(tmp_path, fake_server):
     usage = {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
 
     def slow(body):
-        time.sleep(0.3)
+        time.sleep(0.5)
         return {"role": "assistant", "content": "ok"}, usage
 
     with fake_server(slow) as server:
         a, b = _agent(tmp_path, server.base_url), _agent(tmp_path, server.base_url)
+        a.run("warm up")  # first import and client set-up are not the point
+        b.run("warm up")
         out = {}
         threads = [threading.Thread(target=lambda n=n, ag=ag: out.__setitem__(n, ag.run("hi")))
                    for n, ag in (("a", a), ("b", b))]
@@ -47,8 +49,9 @@ def test_two_sessions_run_side_by_side(tmp_path, fake_server):
             t.start()
         for t in threads:
             t.join()
+        elapsed = time.monotonic() - started
     assert out == {"a": "ok", "b": "ok"}
-    assert time.monotonic() - started < 0.55  # really concurrent, not serialized
+    assert elapsed < 0.95  # serialized would take >= 1.0s
 
 
 def test_a_second_turn_in_the_same_session_is_refused_not_interleaved(tmp_path, fake_server):
