@@ -595,8 +595,12 @@ asking? — and then works alone until the goal is done:
   assumption.
 - **Keeps going.** A model outage is retried after a pause, a run that hit the
   step limit or left tasks open is sent back to finish (up to
-  `--max-restarts`, default 3). It stops when it is clearly stuck, the
-  `--budget` runs out, or you press Ctrl-C.
+  `--max-restarts`, default 3). One "going round in circles" verdict gets one
+  more run; two in a row stop it. It never reports *Done* with tasks still
+  open (*unfinished*) or the checks failing (*unverified*); with
+  `--retry-unverified` a failing check sends it back to work too (each such
+  run is a restart). It stops when it is clearly stuck, the `--budget` runs
+  out, or you press Ctrl-C.
 - **Steer it if you are watching.** On a terminal the input box stays at the
   bottom while it works, with what it is doing (`◆ running tool  bash · 1
   follow-up waiting`). Type a message and it reaches the mission at its next

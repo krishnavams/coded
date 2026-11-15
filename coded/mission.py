@@ -70,6 +70,10 @@ CONTINUE_SUFFIX = ("). Continue from where you left off: check the task list, fi
 STUCK_RETRY = (" Last time you went round in circles ({why}). Do not repeat that call: "
                "the answer will not change. Use what you already have, or take a different "
                "step.")
+UNVERIFIED_RETRY = (
+    "the checks still fail: {checks}. Find out why and fix it. If a failure really is "
+    "outside this change (a server or environment problem), do not weaken, skip or delete "
+    "tests to hide it: finish the other open work, then say so plainly in the summary")
 RESUMED = ("the mission was interrupted: the computer slept or restarted, or the terminal "
            "closed. Files may be half-edited, so look at what is there before going on")
 
@@ -84,7 +88,7 @@ STATUS_TEXT = {
     "running": "Still running (or killed)",
 }
 # Outcomes that send a run back to work and so count against max_restarts.
-_RESTARTS = ("error", "max_turns", "open_tasks")
+_RESTARTS = ("error", "max_turns", "open_tasks", "unverified")
 
 
 def brief(goal: str) -> str:
@@ -128,21 +132,26 @@ def _new_events(agent, before: List[dict]) -> List[dict]:
     if not before:
         return now
     last = before[-1]
-    for i in range(len(now) - 1, -1, -1):
-        if now[i] is last or now[i] == last:
-            return now[i + 1:]
+    # Identity first: two runs can log equal events within the same millisecond.
+    for same in (lambda e: e is last, lambda e: e == last):
+        for i in range(len(now) - 1, -1, -1):
+            if same(now[i]):
+                return now[i + 1:]
     return now
 
 
 def run_mission(agent, goal: str, *, max_restarts: int = DEFAULT_RESTARTS,
                 sleep: Callable[[float], None] = time.sleep,
                 backoff=BACKOFF_SECONDS, resume: bool = False,
+                retry_unverified: bool = False,
                 on_attempt: Optional[Callable[[Attempt], None]] = None) -> MissionResult:
     """Drive the agent until the goal is done or it cannot go on.
 
     It plans first: a run in which every change is refused, until a task list
     exists (asked for twice, then the work starts anyway and the report says
-    so). A resumed mission with a task list goes straight back to work."""
+    so). A resumed mission with a task list goes straight back to work.
+    With `retry_unverified`, an answer whose last check failed is sent back
+    too (bounded by max_restarts like every other restart)."""
     from coded.llm import explain_failure
 
     started = time.monotonic()
@@ -245,10 +254,18 @@ def run_mission(agent, goal: str, *, max_restarts: int = DEFAULT_RESTARTS,
             record("answered", f"{len(open_items)} task(s) still open: {names}")
             result.status = "unfinished"
             break
-        record("answered")
         checks = [e for e in events if e.get("kind") == "verify"]
-        result.status = ("unverified" if checks and checks[-1].get("result") != "pass"
-                         else "done")
+        failing = checks and checks[-1].get("result") != "pass"
+        if failing and retry_unverified and restarts() < max_restarts:
+            last = checks[-1]
+            what = f"`{last.get('command') or 'the checks'}`"
+            if last.get("detail"):
+                what += f" ({str(last['detail'])[:200]})"
+            record("unverified", what)
+            message = continue_message(UNVERIFIED_RETRY.format(checks=what))
+            continue
+        record("answered")
+        result.status = "unverified" if failing else "done"
         break
     result.seconds = time.monotonic() - started
     return result
@@ -424,7 +441,8 @@ def post_notification(url: str, title: str, body: str, opener=None) -> bool:
 
 STATE_KEYS = ("id", "goal", "status", "session_id", "model", "branch", "worktree",
               "work_dir", "root", "base", "check_command", "allow_bash", "yolo", "budget",
-              "max_restarts", "trusted", "notify", "notify_url", "seconds", "runs")
+              "max_restarts", "retry_unverified", "trusted", "notify", "notify_url",
+              "seconds", "runs")
 
 
 def missions_dir(root: str) -> Path:
@@ -492,6 +510,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-restarts", type=int, default=None,
                    help=f"How often to send a stopped run back to work (default "
                         f"{DEFAULT_RESTARTS}).")
+    p.add_argument("--retry-unverified", action=argparse.BooleanOptionalAction, default=None,
+                   help="When it finishes but the checks still fail, send it back to work "
+                        "(counts as a restart). Saved with the mission; --no-retry-unverified "
+                        "turns it off on --resume.")
     p.add_argument("--here", action="store_true",
                    help="Work in this checkout instead of a new worktree.")
     p.add_argument("--allow-bash", action="store_true",
@@ -549,7 +571,7 @@ def mission_main(argv: List[str], read=input) -> int:
         if not Path(state["work_dir"]).is_dir():
             ui.error(f"The mission's folder {state['work_dir']} is gone; it cannot be resumed.")
             return 1
-        for key in ("budget", "notify", "notify_url", "max_restarts"):
+        for key in ("budget", "notify", "notify_url", "max_restarts", "retry_unverified"):
             value = getattr(args, key)
             if value is not None:
                 state[key] = value
@@ -644,6 +666,7 @@ def _start(args, cwd: str, read) -> int:
         "check_command": check_command, "allow_bash": bool(allow_bash),
         "yolo": bool(args.yolo), "budget": args.budget,
         "max_restarts": DEFAULT_RESTARTS if args.max_restarts is None else args.max_restarts,
+        "retry_unverified": bool(args.retry_unverified),
         "trusted": trusted, "notify": args.notify, "notify_url": args.notify_url,
         "seconds": 0.0, "runs": 0,
     }
@@ -855,7 +878,8 @@ def _run(state: Dict[str, Any], args, resume: bool) -> int:
         with _steering(agent, "mission: " + " ".join(state["goal"].split())[:60]) as left:
             result = run_mission(agent, state["goal"],
                                  max_restarts=max(0, state["max_restarts"]),
-                                 resume=resume, on_attempt=note)
+                                 resume=resume, on_attempt=note,
+                                 retry_unverified=bool(state.get("retry_unverified")))
         undelivered = left
     finally:
         if mcp_manager is not None:

@@ -182,6 +182,51 @@ def test_an_answer_with_failing_checks_is_not_done():
     assert _go(_Agent([_plan, fixed])).status == "done"
 
 
+def test_failing_checks_can_send_it_back_to_work():
+    def failing(agent):
+        agent.events.add("verify", result="fail", command="pytest -q",
+                         detail="1 failed, 26 passed")
+        return _answer("unrelated failure")(agent)
+
+    def fixed(agent):
+        agent.events.add("verify", result="pass", command="pytest -q")
+        return _answer()(agent)
+
+    agent = _Agent([_plan, failing, fixed])
+    result = _go(agent, retry_unverified=True)
+    assert result.status == "done"
+    assert [a.outcome for a in result.attempts] == ["planned", "unverified", "answered"]
+    assert "pytest -q" in agent.messages[2] and "1 failed, 26 passed" in agent.messages[2]
+
+    # bounded by max_restarts, then reported as unverified
+    agent = _Agent([_plan] + [failing] * 3)
+    result = _go(agent, retry_unverified=True, max_restarts=2)
+    assert result.status == "unverified" and len(agent.messages) == 4
+    # off by default
+    assert _go(_Agent([_plan, failing])).status == "unverified"
+
+
+def test_retry_unverified_is_saved_and_can_be_changed_on_resume(repo, tmp_path, fake_server,
+                                                                 monkeypatch):
+    seen = []
+
+    def fake_run(agent, goal, **kw):
+        seen.append(kw.get("retry_unverified"))
+        return mission.MissionResult(status="unverified")
+
+    monkeypatch.setattr(mission, "run_mission", fake_run)
+    with fake_server(lambda body: _say("x")) as server:
+        cfg = _config(tmp_path, server)
+        mission.mission_main(["goal", "--cwd", str(repo), "--config", cfg,
+                              "--retry-unverified"] + _QUIET)
+        state = mission.load_states(str(repo))[0]
+        assert state["retry_unverified"] is True
+        mission.mission_main(["--resume", state["id"], "--cwd", str(repo), "--config", cfg,
+                              "--no-retry-unverified"])
+        mission.mission_main(["--resume", state["id"], "--cwd", str(repo), "--config", cfg])
+    assert seen == [True, False, False]
+
+
 def test_the_commit_leaves_out_codeds_own_state(repo):
     (repo / ".gitignore").write_text("")  # a project that does not ignore .coded/
     (repo / "app.py").write_text("x = 1\n")
