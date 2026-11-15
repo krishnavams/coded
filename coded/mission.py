@@ -67,11 +67,16 @@ CONTINUE_PREFIX = "[mission] You stopped before the goal was done ("
 CONTINUE_SUFFIX = ("). Continue from where you left off: check the task list, finish the "
                    "open items (or mark why one cannot be done), run the checks, then give "
                    "the final summary.")
+STUCK_RETRY = (" Last time you went round in circles ({why}). Do not repeat that call: "
+               "the answer will not change. Use what you already have, or take a different "
+               "step.")
 RESUMED = ("the mission was interrupted: the computer slept or restarted, or the terminal "
            "closed. Files may be half-edited, so look at what is there before going on")
 
 STATUS_TEXT = {
     "done": "Done",
+    "unfinished": "Stopped: tasks are still open after every restart",
+    "unverified": "Finished, but the checks still fail",
     "stuck": "Stopped: it was not making progress",
     "budget": "Stopped: the budget ran out",
     "failed": "Stopped: the model kept failing",
@@ -150,6 +155,7 @@ def run_mission(agent, goal: str, *, max_restarts: int = DEFAULT_RESTARTS,
     else:
         message = continue_message(RESUMED)
     failures = 0
+    stuck_runs = 0  # runs in a row that ended going round in circles
 
     def record(outcome: str, detail: str = "") -> Attempt:
         attempt = Attempt(len(result.attempts) + 1, outcome, detail)
@@ -217,19 +223,32 @@ def run_mission(agent, goal: str, *, max_restarts: int = DEFAULT_RESTARTS,
             stop = [e for e in events if e.get("kind") == "max_turns"][-1]
             why = str(stop.get("reason") or "the step limit was reached")
             record("max_turns", why)
-            if restarts() > max_restarts or "not look like progress" in why:
+            looping = "not look like progress" in why
+            stuck_runs = stuck_runs + 1 if looping else 0
+            # One loop verdict is a weak signal after hours of work: a fresh run
+            # (told what it repeated) gets a chance; twice in a row is stuck.
+            if restarts() > max_restarts or stuck_runs >= 2:
                 result.status = "stuck"
                 break
             message = continue_message("step limit: " + why)
+            if looping:
+                message += STUCK_RETRY.format(why=why.split(": ", 1)[-1])
             continue
+        stuck_runs = 0
         open_items = _open_todos(agent)
-        if open_items and restarts() < max_restarts:
+        if open_items:
             names = "; ".join(str(t.get("content", ""))[:60] for t in open_items[:5])
-            record("open_tasks", names)
-            message = continue_message(f"{len(open_items)} task(s) still open: {names}")
-            continue
+            if restarts() < max_restarts:
+                record("open_tasks", names)
+                message = continue_message(f"{len(open_items)} task(s) still open: {names}")
+                continue
+            record("answered", f"{len(open_items)} task(s) still open: {names}")
+            result.status = "unfinished"
+            break
         record("answered")
-        result.status = "done"
+        checks = [e for e in events if e.get("kind") == "verify"]
+        result.status = ("unverified" if checks and checks[-1].get("result") != "pass"
+                         else "done")
         break
     result.seconds = time.monotonic() - started
     return result
@@ -248,9 +267,16 @@ def _git(cwd: str, *args: str) -> str:
         return ""
 
 
+# coded's own working state inside the worktree: /undo backups and the copied
+# project memory. Never part of the mission's commit (a project that does not
+# gitignore .coded/ would otherwise get every checkpoint backup committed).
+OWN_STATE = (".coded/checkpoints", ".coded/memory.json")
+
+
 def commit_changes(worktree: str, goal: str) -> str:
-    """Commit everything the mission changed on its branch. Returns a note
-    for the report ("" when committed or nothing changed)."""
+    """Commit everything the mission changed on its branch (but not coded's own
+    state, OWN_STATE). Returns a note for the report ("" when committed or
+    nothing changed)."""
     from coded.worktree import WorktreeError, _git as git
 
     if not _git(worktree, "status", "--porcelain"):
@@ -258,6 +284,9 @@ def commit_changes(worktree: str, goal: str) -> str:
     title = " ".join(goal.split())[:60]
     try:
         git(worktree, "add", "-A")
+        git(worktree, "reset", "-q", "--", *OWN_STATE)  # an exclude pathspec fails if ignored
+        if not git(worktree, "diff", "--cached", "--name-only").strip():
+            return ""
         git(worktree, "commit", "-q", "-m", f"coded mission: {title}")
         return ""
     except (WorktreeError, OSError) as exc:

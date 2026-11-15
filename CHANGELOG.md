@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- A mission no longer stops for good on one "not making progress" verdict
+  (e.g. a finished `bash_output` read four times among 200 steps): it gets one
+  more run, told what it repeated; only two such runs in a row stop it.
+- A mission's commit leaves out coded's own state (`.coded/checkpoints/`
+  backups, the copied `.coded/memory.json`) in projects that do not gitignore
+  `.coded/`.
+- A mission that ends with tasks still open or with the checks failing is
+  reported as `unfinished` / `unverified` (and can be resumed), not "Done".
+
 ## 0.4.0
 
 ### Added

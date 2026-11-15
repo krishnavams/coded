@@ -141,9 +141,20 @@ def test_the_step_limit_is_continued_but_a_loop_is_not():
     assert _go(agent).status == "done"
     assert "step limit" in agent.messages[2]
 
-    agent = _Agent([_plan, _limit("it does not look like progress: same `read` call")])
+    # one loop verdict gets a fresh run told what it repeated; twice in a row is stuck
+    loop = _limit("it does not look like progress: it repeated the same `bash_output` call")
+    agent = _Agent([_plan, loop, _answer()])
+    assert _go(agent).status == "done"
+    assert "Do not repeat that call" in agent.messages[2] and "`bash_output`" in agent.messages[2]
+
+    again = _limit("it does not look like progress: it repeated the same `read` call")
+    agent = _Agent([_plan, loop, again])
     result = _go(agent)
-    assert result.status == "stuck" and len(agent.messages) == 2
+    assert result.status == "stuck" and len(agent.messages) == 3
+
+    # a loop, then real progress, then a loop again is not "twice in a row"
+    agent = _Agent([_plan, loop, _limit(), again, _answer()])
+    assert _go(agent, max_restarts=5).status == "done"
 
 
 def test_open_tasks_are_sent_back_then_reported():
@@ -151,10 +162,43 @@ def test_open_tasks_are_sent_back_then_reported():
                  {"content": "read code", "status": "completed"}]
     agent = _Agent([_plan] + [_answer(todos=open_list)] * 3)
     result = _go(agent, max_restarts=2)
-    assert result.status == "done"
+    assert result.status == "unfinished"  # never "done" with tasks left open
     assert [a.outcome for a in result.attempts] == ["planned", "open_tasks", "open_tasks",
                                                    "answered"]
+    assert "write tests" in result.attempts[-1].detail
     assert "write tests" in agent.messages[2] and "read code" not in agent.messages[2]
+
+
+def test_an_answer_with_failing_checks_is_not_done():
+    def failing(agent):
+        agent.events.add("verify", result="fail")
+        return _answer("finished, the failure is unrelated")(agent)
+    assert _go(_Agent([_plan, failing])).status == "unverified"
+
+    def fixed(agent):
+        agent.events.add("verify", result="fail")
+        agent.events.add("verify", result="pass")
+        return _answer()(agent)
+    assert _go(_Agent([_plan, fixed])).status == "done"
+
+
+def test_the_commit_leaves_out_codeds_own_state(repo):
+    (repo / ".gitignore").write_text("")  # a project that does not ignore .coded/
+    (repo / "app.py").write_text("x = 1\n")
+    backups = repo / ".coded" / "checkpoints" / "20261114-195653-000019"
+    backups.mkdir(parents=True)
+    (backups / "0.bak").write_text("old\n")
+    (backups / "manifest.json").write_text("{}\n")
+    (repo / ".coded" / "memory.json").write_text("[]\n")
+    assert mission.commit_changes(str(repo), "goal") == ""
+    shown = _git(repo, "show", "--stat", "--format=", "HEAD")
+    assert "app.py" in shown and ".coded" not in shown
+
+    # only coded's own files changed: nothing to commit, and no error
+    head = _git(repo, "rev-parse", "HEAD")
+    (backups / "1.bak").write_text("older\n")
+    assert mission.commit_changes(str(repo), "goal") == ""
+    assert _git(repo, "rev-parse", "HEAD") == head
 
 
 def test_the_budget_stops_it():

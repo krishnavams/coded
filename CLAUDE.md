@@ -715,10 +715,14 @@ docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_
   mission, not `set_mode`, so no model swap or plan prompt) until a todo list
   exists (`PLAN_NUDGE` once, then `no_plan`). Then it decides from the run's
   events: an exception → backoff +
-  continue, `max_turns` → continue unless its `reason` says not progressing,
+  continue, `max_turns` → continue (a not-progressing `reason` gets one more
+  run told what it repeated, `STUCK_RETRY`; two in a row = `stuck`),
   open todos → continue, `over_budget()` → stop; all bounded by
-  `max_restarts`. It works in `worktree.create_worktree` (the project's
-  `.coded/memory.json` is copied in), commits there at the end, and writes the
+  `max_restarts`. Never "done" with todos still open (`unfinished`) or the
+  last check failing (`unverified`); both stay resumable. It works in
+  `worktree.create_worktree` (the project's `.coded/memory.json` is copied
+  in), commits there at the end without `OWN_STATE` (checkpoint backups, the
+  copied memory), and writes the
   report to `<repo>/.coded/missions/<id>.md`. `<id>.json` is the mission state
   (the up-front answers, session id, branch, worktree, status), saved at each
   run; `--resume` reloads it (`main_root` finds the main checkout from inside
