@@ -869,6 +869,18 @@ def _run(state: Dict[str, Any], args, resume: bool) -> int:
     if state.get("model"):
         agent.set_routing(False)
     store = SessionStore()
+    from coded.securefs import Busy
+
+    try:
+        # One process per mission: a second `--resume` of a running mission
+        # would run the same work twice into one conversation and worktree.
+        session_lock = store.lock(state["session_id"]).acquire()
+    except Busy as exc:
+        ui.error(f"Mission {state['id']} is already running: {exc}. Wait for it to finish, "
+                 "or stop it there (Esc) and resume again.")
+        if mcp_manager is not None:
+            mcp_manager.stop()
+        return 1
     if resume:
         loaded = store.load(state["session_id"])
         if loaded is not None:
@@ -914,6 +926,7 @@ def _run(state: Dict[str, Any], args, resume: bool) -> int:
         if mcp_manager is not None:
             mcp_manager.stop()
         autosave()
+        session_lock.release()
     result.seconds += float(state.get("seconds") or 0)
     state["seconds"] = result.seconds
     state["status"] = result.status

@@ -79,6 +79,10 @@ def stuck_reason(calls) -> Optional[str]:
         if counts[key] >= _LOOP_REPEATS:
             return f"it repeated the same `{name}` call {counts[key]} times"
     return None
+class AgentBusy(RuntimeError):
+    """Agent.run was called while a turn of the same agent is running."""
+
+
 _FILE_TOOLS = ("read", "edit", "multi_edit", "write")
 # Tools whose path arguments .codedignore can refuse, and those whose result
 # gets the configured diagnostics after a successful change.
@@ -229,6 +233,7 @@ class Agent:
         # (The REPL stops the main thread with SIGINT instead.)
         self.cancellable = False
         self._cancel = threading.Event()
+        self._turn_lock = threading.Lock()
         self._session_started = False
         self._instruction_dirs: set = set()
         self._plan_intro_sent = False
@@ -267,6 +272,19 @@ class Agent:
     # -- public API ---------------------------------------------------------
     def run(self, user_message: Any, images: Optional[list] = None,
             route_hint: Optional[str] = None) -> str:
+        """Run one user turn to completion (see `_run_turn`). One turn at a time
+        per agent: a second concurrent call raises AgentBusy instead of
+        interleaving two turns into one conversation."""
+        if not self._turn_lock.acquire(blocking=False):
+            raise AgentBusy("a turn is already running in this session; wait for it, "
+                            "or interrupt it first")
+        try:
+            return self._run_turn(user_message, images, route_hint)
+        finally:
+            self._turn_lock.release()
+
+    def _run_turn(self, user_message: Any, images: Optional[list] = None,
+                  route_hint: Optional[str] = None) -> str:
         """Run one user turn to completion. Returns the final assistant text.
 
         `images` is an optional list of image file paths to attach (for

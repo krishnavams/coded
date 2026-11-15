@@ -101,3 +101,132 @@ def read_private(path: Path, encoding: str = "utf-8") -> str:
     if path.is_symlink():
         raise UnsafePath(f"{path} is a symlink; refusing to read it as private data")
     return path.read_text(encoding=encoding)
+
+
+# ---------------------------------------------------------------------------
+# One process per session: a lock file next to the session
+# ---------------------------------------------------------------------------
+
+def pid_alive(pid: int) -> bool:
+    """Whether a process with this id runs (never signals it: on Windows
+    os.kill(pid, 0) would terminate it)."""
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by someone else
+    except OSError:
+        return False
+    return True
+
+
+class Busy(RuntimeError):
+    """The thing is in use by another live process (or turn)."""
+
+    def __init__(self, what: str, holder: dict):
+        self.holder = holder
+        pid = holder.get("pid")
+        super().__init__(f"{what} is in use by another coded process"
+                         + (f" (pid {pid})" if pid else ""))
+
+
+class FileLock:
+    """An exclusive, process-wide claim on `path` (a lock file holding the
+    owner's pid and host). A lock whose owner on this host is gone is taken
+    over; one held by a live process raises Busy. Released by release(), on
+    `with` exit (exceptions too) and at interpreter exit."""
+
+    def __init__(self, path: Path, what: str = "this session"):
+        self.path = Path(path)
+        self.what = what
+        self.held = False
+
+    def holder(self) -> dict:
+        try:
+            import json
+
+            return json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def _stale(self, info: dict) -> bool:
+        import socket
+
+        if not info:
+            # unreadable/partial: stale once it is older than a few seconds
+            try:
+                import time
+
+                return time.time() - self.path.stat().st_mtime > 5
+            except OSError:
+                return True
+        if info.get("host") != socket.gethostname():
+            return False  # another machine (shared folder): cannot tell; respect it
+        return not pid_alive(int(info.get("pid") or 0))
+
+    def acquire(self) -> "FileLock":
+        import json
+        import socket
+        import time
+
+        if self.held:
+            return self
+        private_dir(self.path.parent)
+        for _ in range(3):
+            try:
+                fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                             | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            except FileExistsError:
+                info = self.holder()
+                if info.get("pid") == os.getpid() and info.get("host") == socket.gethostname():
+                    # our own process already holds it (another keeper object)
+                    raise Busy(self.what, info)
+                if self._stale(info):
+                    try:
+                        os.unlink(self.path)
+                    except FileNotFoundError:
+                        pass
+                    continue
+                raise Busy(self.what, info)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump({"pid": os.getpid(), "host": socket.gethostname(),
+                           "since": time.time()}, fh)
+            self.held = True
+            import atexit
+
+            atexit.register(self.release)
+            return self
+        raise Busy(self.what, self.holder())
+
+    def release(self) -> None:
+        if not self.held:
+            return
+        self.held = False
+        try:
+            if self.holder().get("pid") == os.getpid():
+                os.unlink(self.path)
+        except OSError:
+            pass
+
+    def __enter__(self) -> "FileLock":
+        return self.acquire()
+
+    def __exit__(self, *exc) -> None:
+        self.release()
