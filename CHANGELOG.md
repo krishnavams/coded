@@ -2,12 +2,15 @@
 
 ## 0.4.2
 
-### Added
-- `coded mission --retry-unverified`: when the mission finishes but the checks
-  still fail, it is sent back to work with the failing command and its last
-  line, instead of stopping as "unverified". Each such run counts against
-  `--max-restarts`. Saved with the mission; `--resume ID --retry-unverified`
-  turns it on for an existing mission, `--no-retry-unverified` off.
+### Changed
+- A mission that finishes with the checks still failing is sent back to fix
+  them and run them again (counts against `--max-restarts`). The same failure
+  is never run a second time: a failure the run already hit twice, or the one
+  the previous run ended with, stops the mission as "unverified".
+  `--no-retry-unverified` stops at the first failing finish (saved with the
+  mission, changeable on `--resume`).
+- The mission report says why the checks failed: the failing tests the output
+  named and its last line (`verify` events carry `failures`).
 
 ## 0.4.1
 

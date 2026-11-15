@@ -767,7 +767,7 @@ class Agent:
                 checks = run_checks(command, self.cwd, settings.timeout,
                                     limit=self.limits.tool_result_chars)
             if not checks.ok:
-                from coded.verify import same_failure, stalled_note
+                from coded.verify import failure_lines, same_failure, stalled_note
 
                 if self._verify_rounds > 1 and same_failure(self._verify_prev_output,
                                                             checks.output):
@@ -779,7 +779,8 @@ class Agent:
                 self._verify_prev_output = checks.output
                 self.events.add("verify", result="fail", command=command,
                                 detail=(checks.error or checks.output.strip().splitlines()[-1]
-                                        if (checks.error or checks.output.strip()) else ""))
+                                        if (checks.error or checks.output.strip()) else ""),
+                                failures=failure_lines(checks.output))
                 self._verify_last = f"`{command}` failed"
                 self._status_note(f"Checks failed; sending the turn back "
                                   f"(round {self._verify_rounds}/{settings.max_rounds}).")

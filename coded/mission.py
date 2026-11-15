@@ -118,6 +118,20 @@ class MissionResult:
     final: str = ""
     attempts: List[Attempt] = field(default_factory=list)
     seconds: float = 0.0
+    check_failure: str = ""  # why the checks failed, when it ended unverified
+
+
+def check_failure(events: List[dict]) -> str:
+    """Why the checks failed in these events: the failing tests the output
+    named, then its last line. "" when the last check passed or none ran."""
+    checks = [e for e in events if e.get("kind") == "verify"]
+    if not checks or checks[-1].get("result") == "pass":
+        return ""
+    last = next((e for e in reversed(checks) if e.get("result") == "fail"), {})
+    lines = [str(x) for x in (last.get("failures") or [])]
+    if last.get("detail") and str(last["detail"]) not in lines:
+        lines.append(str(last["detail"]))
+    return "\n".join(lines)
 
 
 def _open_todos(agent) -> List[dict]:
@@ -143,15 +157,16 @@ def _new_events(agent, before: List[dict]) -> List[dict]:
 def run_mission(agent, goal: str, *, max_restarts: int = DEFAULT_RESTARTS,
                 sleep: Callable[[float], None] = time.sleep,
                 backoff=BACKOFF_SECONDS, resume: bool = False,
-                retry_unverified: bool = False,
+                retry_unverified: bool = True,
                 on_attempt: Optional[Callable[[Attempt], None]] = None) -> MissionResult:
     """Drive the agent until the goal is done or it cannot go on.
 
     It plans first: a run in which every change is refused, until a task list
     exists (asked for twice, then the work starts anyway and the report says
     so). A resumed mission with a task list goes straight back to work.
-    With `retry_unverified`, an answer whose last check failed is sent back
-    too (bounded by max_restarts like every other restart)."""
+    An answer whose last check failed is sent back to fix it and run the
+    checks again (`retry_unverified`, bounded by max_restarts) — but never for
+    the same failure twice: then it stops and the result says why."""
     from coded.llm import explain_failure
 
     started = time.monotonic()
@@ -165,6 +180,7 @@ def run_mission(agent, goal: str, *, max_restarts: int = DEFAULT_RESTARTS,
         message = continue_message(RESUMED)
     failures = 0
     stuck_runs = 0  # runs in a row that ended going round in circles
+    last_failure = ""  # the previous run's check failure (retry_unverified)
 
     def record(outcome: str, detail: str = "") -> Attempt:
         attempt = Attempt(len(result.attempts) + 1, outcome, detail)
@@ -254,18 +270,27 @@ def run_mission(agent, goal: str, *, max_restarts: int = DEFAULT_RESTARTS,
             record("answered", f"{len(open_items)} task(s) still open: {names}")
             result.status = "unfinished"
             break
+        from coded.verify import same_failure
+
         checks = [e for e in events if e.get("kind") == "verify"]
-        failing = checks and checks[-1].get("result") != "pass"
-        if failing and retry_unverified and restarts() < max_restarts:
-            last = checks[-1]
-            what = f"`{last.get('command') or 'the checks'}`"
-            if last.get("detail"):
-                what += f" ({str(last['detail'])[:200]})"
+        failing = bool(checks) and checks[-1].get("result") != "pass"
+        why = check_failure(events)
+        # Running the same failing checks again and again helps nobody: a
+        # failure the run already saw twice (stall), or the one the previous
+        # run ended with, stops the mission, and the report says why.
+        repeated = checks and (checks[-1].get("result") == "stall"
+                               or same_failure(last_failure, why))
+        if failing and retry_unverified and not repeated and restarts() < max_restarts:
+            last_failure = why
+            what = f"`{checks[-1].get('command') or 'the checks'}`"
+            if why:
+                what += f" ({' | '.join(why.splitlines())[:300]})"
             record("unverified", what)
             message = continue_message(UNVERIFIED_RETRY.format(checks=what))
             continue
         record("answered")
         result.status = "unverified" if failing else "done"
+        result.check_failure = why if failing else ""
         break
     result.seconds = time.monotonic() - started
     return result
@@ -319,7 +344,7 @@ def _duration(seconds: float) -> str:
     return f"{seconds // 3600}h {seconds % 3600 // 60:02d}m"
 
 
-def _checks_line(events: List[dict], command: Optional[str]) -> str:
+def _checks_line(events: List[dict], command: Optional[str], why: str = "") -> str:
     verify = [e for e in events if e.get("kind") == "verify"]
     if not command:
         return "No checks ran: no test command was found or approved for this project."
@@ -328,9 +353,13 @@ def _checks_line(events: List[dict], command: Optional[str]) -> str:
     last = verify[-1].get("result")
     if last == "pass":
         return f"`{command}` passed."
+    why = why or check_failure(events)
+    reason = ("\n\nWhy it failed:\n\n```\n" + why + "\n```\n\nThe agent's own "
+              "explanation is in its summary below.") if why else ""
     if last == "stall":
-        return f"`{command}` still fails the same way after fixes (gave up on it)."
-    return f"`{command}` failed on the last run."
+        return (f"`{command}` still fails the same way after fixes (not run again)."
+                + reason)
+    return f"`{command}` failed on the last run." + reason
 
 
 def build_report(*, goal: str, result: MissionResult, agent, branch: str = "",
@@ -358,7 +387,7 @@ def build_report(*, goal: str, result: MissionResult, agent, branch: str = "",
         lines += ["", commit_note]
     lines.append("")
 
-    lines += ["## Checks", "", _checks_line(events, check_command), ""]
+    lines += ["## Checks", "", _checks_line(events, check_command, result.check_failure), ""]
 
     todos = list(agent.todos.items or [])
     if todos:
@@ -511,9 +540,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"How often to send a stopped run back to work (default "
                         f"{DEFAULT_RESTARTS}).")
     p.add_argument("--retry-unverified", action=argparse.BooleanOptionalAction, default=None,
-                   help="When it finishes but the checks still fail, send it back to work "
-                        "(counts as a restart). Saved with the mission; --no-retry-unverified "
-                        "turns it off on --resume.")
+                   help="When it finishes but the checks still fail, send it back to fix "
+                        "them (default: on; counts as a restart). The same failure is never "
+                        "run again: it stops and reports why. --no-retry-unverified stops at "
+                        "the first failing finish.")
     p.add_argument("--here", action="store_true",
                    help="Work in this checkout instead of a new worktree.")
     p.add_argument("--allow-bash", action="store_true",
@@ -666,7 +696,7 @@ def _start(args, cwd: str, read) -> int:
         "check_command": check_command, "allow_bash": bool(allow_bash),
         "yolo": bool(args.yolo), "budget": args.budget,
         "max_restarts": DEFAULT_RESTARTS if args.max_restarts is None else args.max_restarts,
-        "retry_unverified": bool(args.retry_unverified),
+        "retry_unverified": args.retry_unverified is not False,
         "trusted": trusted, "notify": args.notify, "notify_url": args.notify_url,
         "seconds": 0.0, "runs": 0,
     }
@@ -879,7 +909,7 @@ def _run(state: Dict[str, Any], args, resume: bool) -> int:
             result = run_mission(agent, state["goal"],
                                  max_restarts=max(0, state["max_restarts"]),
                                  resume=resume, on_attempt=note,
-                                 retry_unverified=bool(state.get("retry_unverified")))
+                                 retry_unverified=state.get("retry_unverified") is not False)
         undelivered = left
     finally:
         if mcp_manager is not None:

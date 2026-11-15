@@ -173,7 +173,7 @@ def test_an_answer_with_failing_checks_is_not_done():
     def failing(agent):
         agent.events.add("verify", result="fail")
         return _answer("finished, the failure is unrelated")(agent)
-    assert _go(_Agent([_plan, failing])).status == "unverified"
+    assert _go(_Agent([_plan, failing]), retry_unverified=False).status == "unverified"
 
     def fixed(agent):
         agent.events.add("verify", result="fail")
@@ -193,17 +193,71 @@ def test_failing_checks_can_send_it_back_to_work():
         return _answer()(agent)
 
     agent = _Agent([_plan, failing, fixed])
-    result = _go(agent, retry_unverified=True)
+    result = _go(agent)  # on by default: fixable -> fix and run the checks again
     assert result.status == "done"
     assert [a.outcome for a in result.attempts] == ["planned", "unverified", "answered"]
     assert "pytest -q" in agent.messages[2] and "1 failed, 26 passed" in agent.messages[2]
 
-    # bounded by max_restarts, then reported as unverified
-    agent = _Agent([_plan] + [failing] * 3)
+    # the same failure again is not run a third time: it stops and says why
+    agent = _Agent([_plan] + [failing] * 5)
+    result = _go(agent, retry_unverified=True, max_restarts=9)
+    assert result.status == "unverified" and len(agent.messages) == 3
+    assert "1 failed, 26 passed" in result.check_failure
+
+    # a failure the run itself already saw twice (stall) is not retried at all
+    def stalled(agent):
+        agent.events.add("verify", result="fail", command="pytest -q", detail="1 failed",
+                         failures=["FAILED tests/test_doi.py::test_future - assert 200 == 400"])
+        agent.events.add("verify", result="stall", command="pytest -q")
+        return _answer("unrelated")(agent)
+    agent = _Agent([_plan, stalled, stalled])
+    result = _go(agent, retry_unverified=True)
+    assert result.status == "unverified" and len(agent.messages) == 2
+    assert "test_doi.py::test_future" in result.check_failure
+
+    # different failures each time: bounded by max_restarts
+    def failing_n(n):
+        def step(agent):
+            agent.events.add("verify", result="fail", command="pytest -q",
+                             detail=f"{n} failed")
+            return _answer("x")(agent)
+        return step
+    agent = _Agent([_plan] + [failing_n(n) for n in (4, 3, 2, 1)])
     result = _go(agent, retry_unverified=True, max_restarts=2)
     assert result.status == "unverified" and len(agent.messages) == 4
-    # off by default
-    assert _go(_Agent([_plan, failing])).status == "unverified"
+    # turned off: it stops at the first failing finish
+    assert _go(_Agent([_plan, failing]), retry_unverified=False).status == "unverified"
+
+
+def test_the_report_says_why_the_checks_failed():
+    def failing(agent):
+        agent.events.add("verify", result="fail", command="pytest -q -x",
+                         detail="1 failed, 13 deselected in 0.77s",
+                         failures=["FAILED tests/test_doi.py::test_future - assert 200 == 400"])
+        return _answer("It fails on the server side.")(agent)
+    agent = _Agent([_plan, failing])
+    agent.session = type("S", (), {"estimated_cost": lambda self, m: 0.0})()
+    agent.model = type("M", (), {"name": "fake"})()
+    agent.cwd = "."
+    result = _go(agent, retry_unverified=False)
+    text = mission.build_report(goal="goal", result=result, agent=agent,
+                                check_command="pytest -q -x")
+    checks = text.split("## Checks")[1].split("##")[0]
+    assert "test_doi.py::test_future - assert 200 == 400" in checks
+    assert "1 failed, 13 deselected" in checks
+
+
+def test_failure_lines_names_the_failing_tests():
+    from coded.verify import failure_lines
+
+    out = ("collected 3 items\n\ntests/a.py .F\n=== short test summary info ===\n"
+           "FAILED tests/a.py::test_b - assert 1 == 2\nERROR tests/c.py - ImportError: x\n"
+           "=== 1 failed, 1 passed, 1 error in 0.1s ===\n")
+    assert failure_lines(out) == ["FAILED tests/a.py::test_b - assert 1 == 2",
+                                  "ERROR tests/c.py - ImportError: x"]
+    assert failure_lines("--- FAIL: TestX (0.00s)\nok\n") == ["--- FAIL: TestX (0.00s)"]
+    assert failure_lines("all good\n") == []
+    assert len(failure_lines("\n".join(f"FAILED t::t{i}" for i in range(50)))) == 8
 
 
 def test_retry_unverified_is_saved_and_can_be_changed_on_resume(repo, tmp_path, fake_server,
@@ -218,9 +272,9 @@ def test_retry_unverified_is_saved_and_can_be_changed_on_resume(repo, tmp_path, 
     with fake_server(lambda body: _say("x")) as server:
         cfg = _config(tmp_path, server)
         mission.mission_main(["goal", "--cwd", str(repo), "--config", cfg,
-                              "--retry-unverified"] + _QUIET)
+                              ] + _QUIET)
         state = mission.load_states(str(repo))[0]
-        assert state["retry_unverified"] is True
+        assert state["retry_unverified"] is True  # the default
         mission.mission_main(["--resume", state["id"], "--cwd", str(repo), "--config", cfg,
                               "--no-retry-unverified"])
         mission.mission_main(["--resume", state["id"], "--cwd", str(repo), "--config", cfg])
