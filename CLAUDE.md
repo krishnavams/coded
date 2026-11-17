@@ -69,6 +69,7 @@ coded/
 ├── dashboard.py        # /dashboard Command Center: agents, models, tools, checks, problems
 ├── timeline.py         # /timeline time-travel: turns, steps + outcomes, file states, restore preview
 ├── ui.py               # rich-based rendering helpers (single Console)
+├── termreflow.py       # redraw after a resize: rows a reflowing terminal re-wrapped (rich + pt)
 ├── skills.py           # skill discovery, frontmatter parsing, prompt section
 ├── review.py           # /review pipeline: reviewer→qa→security sub-agents
 ├── adversary.py        # /redteam, review --adversarial: read-only critic, evidence-checked findings
@@ -147,6 +148,7 @@ tests/
 ├── test_persistent_input.py  # follow-ups reach the running turn, states, routing, interrupt
 │                       # keeps input, history, TUI, a real REPL in a pty
 ├── test_cancel.py      # Agent.cancellable: Esc cuts a slow model call / kills a shell, TUI
+├── test_resize.py      # resize/reflow: a model reflowing terminal fed rich + prompt_toolkit output
 ├── test_line_editing.py  # mid-turn box: arrows/Home/End/words/selection/lines, POSIX pty +
 │                       # Windows readers, echo redraw, drawn cursor, normal prompt untouched
 ├── test_btw.py         # /btw: session untouched, answered mid-turn, REPL + TUI
@@ -535,6 +537,18 @@ docs/coded-documentation.pdf  # all docs in one PDF; rebuild: python docs/build_
   `print(..., markup=False)` — table cells included. `tests/test_slash_smoke.py`
   runs every slash command on a session full of such text; add new commands to
   its `COMMANDS`.
+- **Resizes** (`termreflow.py`): live areas redraw by moving up over their
+  last frame, and most emulators re-wrap rows wider than a narrower window,
+  so the count must be the rows the terminal now shows. Every rich `Live` is
+  made with `ui.live()` (a `ReflowLiveRender`: rich's own codes while the
+  width did not shrink); the REPL's PromptSession gets
+  `install_prompt_reflow(app)` (corrects `renderer._cursor_pos` before
+  prompt_toolkit's own `_on_resize`). `terminal_reflows(env)` says no for
+  xterm (`XTERM_VERSION`), st, the Linux console; `CODED_TERMINAL_REFLOW`
+  overrides. `make_console` drops `COLUMNS`/`LINES` on a tty so the size stays
+  live. Dock rows that could wrap are fitted to `console.width` instead
+  (`fold_hints`, one row per suggestion). Tests: `tests/test_resize.py`
+  (`ReflowTerminal`, with a control run that must show the bug).
 - **UI**: use the helpers in `coded/ui.py` and its single shared `console`.
   Displayed tool output is truncated for readability; the **model** always
   receives the full tool result (truncation is display-only). Colors come from

@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Resizing the terminal (a window moved between a laptop screen and an external
+  monitor, maximized, a scaling change) no longer leaves a stray box edge,
+  spinner line or duplicated input box above the prompt, during a turn or
+  between turns. Terminals that re-wrap rows on resize made the old frame
+  taller than the redraw assumed; both the turn dock (rich) and the idle
+  prompt (prompt_toolkit) now erase it by the rows the terminal shows
+  (`coded/termreflow.py`; `CODED_TERMINAL_REFLOW=1|0` overrides the guess).
+- An exported `COLUMNS`/`LINES` no longer fixes the output width for the whole
+  session on a terminal.
+- The mid-turn suggestion dropdown keeps one row per suggestion at any width,
+  and the key hints under the input box wrap at their indent.
+
 ## 0.5.0
 
 Security and reliability hardening. Details: `SECURITY_AUDIT_REPORT.md`,

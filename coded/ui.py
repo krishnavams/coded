@@ -51,7 +51,30 @@ class TranscriptConsole(Console):
 
 
 def make_console(**kwargs) -> TranscriptConsole:
+    """The transcript console. On a terminal its size is read at each render:
+    rich would otherwise fix it for good from an exported `COLUMNS`/`LINES`,
+    and draw at the old width after the window moves to another display."""
+    if not any(k in kwargs for k in ("width", "height", "file", "_environ")) and _stdout_is_tty():
+        kwargs["_environ"] = {k: v for k, v in os.environ.items() if k not in ("COLUMNS", "LINES")}
     return TranscriptConsole(theme=_THEME, **kwargs)
+
+
+def _stdout_is_tty() -> bool:
+    import sys
+
+    try:
+        return bool(sys.stdout and sys.stdout.isatty())
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
+def live(*args, **kwargs):
+    """A rich `Live` that redraws cleanly after a resize (`termreflow`)."""
+    from rich.live import Live
+
+    from .termreflow import reflow_safe
+
+    return reflow_safe(Live(*args, **kwargs))
 
 
 console = make_console()
@@ -213,9 +236,7 @@ class TurnDock:
         global _dock
         if _quiet or self._live is not None:
             return self
-        from rich.live import Live
-
-        self._live = Live(get_renderable=self.render, console=console,
+        self._live = live(get_renderable=self.render, console=console,
                           refresh_per_second=12, transient=True)
         self._live.start()
         _dock = self
@@ -433,10 +454,15 @@ def suggestion_rows(items: list, picked: Optional[int] = None, shown: int = _SUG
     top = 0 if picked is None else max(0, min(picked - shown + 1, len(items) - shown))
     window = items[top:top + shown]
     width = min(max(len(s.display) for s in window), 34)
+    columns = max(1, console.width)
     for row, s in enumerate(window):
         if row:
             t.append("\n")
-        t.append_text(suggestion_row(s, width, top + row == picked))
+        line = suggestion_row(s, width, top + row == picked)
+        # One row per suggestion at any width: wrapping would make the
+        # dropdown (and the dock) change height when the window is resized.
+        line.truncate(columns, overflow="ellipsis")
+        t.append_text(line)
     hidden = len(items) - top - len(window)
     if hidden > 0 or top:
         t.append(f"\n   {'… ' + str(top) + ' above  ' if top else ''}"
@@ -488,6 +514,21 @@ _CURSOR = f"reverse {ACCENT}"
 _SELECTED = f"on {ACCENT_DEEP}"
 
 
+def fold_hints(hints: list, columns: int, sep: str = "  ·  ", indent: str = "  ") -> str:
+    """Key hints on one line, `indent` first; where they do not fit in
+    `columns`, they continue on the next line at the same indent, broken
+    between hints rather than inside one (rich would wrap to column 0)."""
+    from rich.cells import cell_len
+
+    lines = [indent + hints[0]] if hints else [indent]
+    for hint in hints[1:]:
+        if cell_len(lines[-1] + sep + hint) <= columns:
+            lines[-1] += sep + hint
+        else:
+            lines.append(indent + hint)
+    return "\n".join(lines)
+
+
 def input_box(text, queued: int = 0, answering: bool = False,
               foreground_task: bool = False, mode: str = "",
               suggesting: bool = False) -> Group:
@@ -502,17 +543,16 @@ def input_box(text, queued: int = 0, answering: bool = False,
         line = editor_text(text.text, text.cursor, text.selection, spans)
         text = text.text
     if answering:
-        hint = "  enter to answer  ·  esc for no"
+        hints = ["enter to answer", "esc for no"]
     else:
-        hint = "  enter queues a message  ·  esc to interrupt"
-        if suggesting:
-            hint = "  ↑↓ choose  ·  tab/enter take  ·  esc close"
+        hints = (["↑↓ choose", "tab/enter take", "esc close"] if suggesting
+                 else ["enter queues a message", "esc to interrupt"])
         if foreground_task:
-            hint += "  ·  ctrl+b run task in background"
-        hint += f"  ·  ctrl+o {'collapse' if _expanded else 'expand'}  ·  ctrl+t tasks"
+            hints.append("ctrl+b run task in background")
+        hints += [f"ctrl+o {'collapse' if _expanded else 'expand'}", "ctrl+t tasks"]
         if queued:
-            hint += "  ·  ↑ edit queued"
-    foot = Text(hint, style=MUTED)
+            hints.append("↑ edit queued")
+    foot = Text(fold_hints(hints, console.width), style=MUTED)
     if mode == "accept-edits":
         foot.append("\n  ⏵⏵ accept edits on", style=f"bold {ACCENT2}")
         foot.append("  ·  shift+tab to turn off", style=MUTED)
@@ -537,15 +577,19 @@ def thinking(text: str = "Thinking", tasks: Optional[list] = None):
         return _DockStatus(_dock, text)
     dock = todo_dock(tasks or [])
     if dock is not None:
-        from rich.live import Live
         from rich.spinner import Spinner
 
         spinner = Spinner("dots", text=Text.from_markup(
             f"[{ACCENT}]{text}…[/] [{MUTED}](Ctrl-C to interrupt)[/]"), style=ACCENT)
-        return Live(Group(spinner, dock), console=console, refresh_per_second=12,
+        return live(Group(spinner, dock), console=console, refresh_per_second=12,
                     transient=True)
-    return console.status(f"[{ACCENT}]{text}…[/] [{MUTED}](Ctrl-C to interrupt)[/]",
-                          spinner="dots", spinner_style=ACCENT)
+    status = console.status(f"[{ACCENT}]{text}…[/] [{MUTED}](Ctrl-C to interrupt)[/]",
+                            spinner="dots", spinner_style=ACCENT)
+    if hasattr(status, "_live"):
+        from .termreflow import reflow_safe
+
+        reflow_safe(status._live)
+    return status
 
 
 # Truncation limits for displaying tool activity (the model still sees full output).
