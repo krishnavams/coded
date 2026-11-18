@@ -473,6 +473,15 @@ pip install -e '.[tui]'      # adds Textual
 
 Set `"editing_mode": "vi"` in your config for vi key bindings (or toggle with `/vim`).
 
+Resizing the window — moving it between a laptop screen and a monitor,
+maximizing, changing display scaling — redraws the input box in place, with
+what you typed, the cursor and a running turn untouched. Most terminals re-wrap
+long rows when they get narrower (iTerm2, Terminal.app, GNOME/VTE, Konsole,
+kitty, Alacritty, WezTerm, Windows Terminal, VS Code, tmux), and coded erases
+the old frame counting those rows; xterm, st and the Linux console cut rows
+instead and are detected. If a resize still leaves an old box behind, set
+`CODED_TERMINAL_REFLOW=1` (your terminal re-wraps) or `0` (it cuts).
+
 ### Command suggestions
 
 Type `/` and a dropdown lists the commands — the same in the REPL prompt, in the

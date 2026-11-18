@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from rich.console import Group
-from rich.live import Live
 from rich.markdown import Markdown
 from rich.text import Text
 
@@ -1180,8 +1179,8 @@ class Agent:
         # The REPL's turn dock (spinner, tasks, input box) owns the one live
         # region: stream into it, then print the final answer above it.
         turn_dock = ui.active_dock()
-        live = None if turn_dock else Live(console=ui.console, refresh_per_second=12,
-                                           transient=False)
+        live = None if turn_dock else ui.live(console=ui.console, refresh_per_second=12,
+                                               transient=False)
         # The task list stays docked at the bottom while the answer streams;
         # the final frame drops it, so only the answer stays in the scrollback.
         tasks = self.todos.items if self.verbose and not turn_dock else []

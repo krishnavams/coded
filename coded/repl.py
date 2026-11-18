@@ -29,6 +29,7 @@ from coded.config import Config, ConfigError, load_config
 from coded.typeahead import (CTRL_B, CTRL_L, CTRL_O, CTRL_T, SHIFT_TAB, TypeAhead,
                              default_poll)
 from coded.llm import explain_failure
+from coded.termreflow import install_prompt_reflow
 
 # prompt_toolkit color theme (matches ui.py accents).
 _PT_STYLE = Style.from_dict({
@@ -443,6 +444,8 @@ class Repl:
             refresh_interval=1.0,  # keeps a running task's clock moving in the status bar
         )
         self._boxed = _box_input(self.prompt, self._bottom_toolbar)
+        # Moving the window to another display must not leave the old box behind.
+        install_prompt_reflow(self.prompt.app)
         # Wire the permission prompt into the manager.
         self.agent.permissions.set_prompt(self._permission_prompt)
         self.agent.permissions.set_questions(self._questions_prompt)

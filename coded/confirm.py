@@ -45,9 +45,7 @@ def run(chooser: choice.Chooser, read: Optional[Callable[[str], str]] = None,
     if reader is None:
         _run_lines(chooser, read or input, default)
         return
-    from rich.live import Live
-
-    live = Live(chooser.render(), console=ui.console, refresh_per_second=20, transient=True)
+    live = ui.live(chooser.render(), console=ui.console, refresh_per_second=20, transient=True)
     try:
         reader.keys_mode = True
         live.start()
