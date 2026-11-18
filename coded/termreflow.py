@@ -83,7 +83,9 @@ class ReflowLiveRender(LiveRender):
         """Rows the last frame occupies now, or None to keep rich's count."""
         if not self.reflows or self._shape is None or self._console is None:
             return None
-        rows = reflowed_rows(self._widths, self._console.size.width)
+        # A legacy Windows console reserves its last column: rich reports one less.
+        columns = self._console.size.width + bool(getattr(self._console, "legacy_windows", False))
+        rows = reflowed_rows(self._widths, columns)
         return rows if rows != self._shape[1] else None
 
     def position_cursor(self) -> Control:

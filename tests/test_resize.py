@@ -200,8 +200,10 @@ def test_terminal_reflows_guess(env, expected):
 
 # -- the turn dock (rich Live) ---------------------------------------------------
 def _console(term: ReflowTerminal):
+    # A VT terminal: never rich's legacy Windows path (Win32 calls, not escape
+    # codes, and one column less), which it picks on a Windows CI console.
     return ui.make_console(file=term, width=term.columns, height=40, force_terminal=True,
-                           force_interactive=True, color_system=None)
+                           force_interactive=True, color_system=None, legacy_windows=False)
 
 
 def _resize(term: ReflowTerminal, console, columns: int) -> None:
@@ -322,6 +324,9 @@ def test_idle_prompt_box_redraws_cleanly_after_resizes():
 
     from coded.repl import _box_input
 
+    import threading
+    from asyncio import get_running_loop
+
     term = ReflowTerminal(120)
     size = {"columns": 120}
     output = Vt100_Output(term, lambda: Size(rows=30, columns=size["columns"]), term="xterm")
@@ -339,18 +344,37 @@ def test_idle_prompt_box_redraws_cleanly_after_resizes():
             app._on_resize()
 
         def drive():
-            app.renderer.render(app, app.layout)
-            for columns in (80, 50, 120, 95):
-                resize(columns)
+            try:
                 app.renderer.render(app, app.layout)
-                screens[columns] = term.screen()
-            pipe.send_text("\r")
+                for columns in (80, 50, 120, 95):
+                    resize(columns)
+                    app.renderer.render(app, app.layout)
+                    screens[columns] = term.screen()
+            except BaseException as exc:  # noqa: BLE001 - reported below, never a hang
+                errors.append(exc)
+            finally:
+                pipe.send_text("\r")
 
+        def unstick():  # the prompt must end even if `drive` never ran
+            timed_out.append(True)
+            try:
+                pipe.send_text("\r")
+            except Exception:  # noqa: BLE001 - already closed: the prompt ended
+                pass
+
+        errors, timed_out = [], []
+        backstop = threading.Timer(20, unstick)
+        backstop.daemon = True
         pipe.send_text(typed)
         pipe.send_text("\x1b[D" * 5)  # the cursor in the middle of the text
-        app.pre_run_callables.append(lambda: app.loop.call_soon(
-            lambda: app.loop.call_later(0.2, drive)))
-        result = session.prompt("> ")
+        app.pre_run_callables.append(lambda: get_running_loop().call_later(0.2, drive))
+        backstop.start()
+        try:
+            result = session.prompt("> ")
+        finally:
+            backstop.cancel()
+    assert not errors, errors
+    assert not timed_out, "the resize driver never ran"
     assert result == typed
     assert sorted(screens) == [50, 80, 95, 120]
     for columns, screen in screens.items():
@@ -397,10 +421,22 @@ def test_console_size_is_live_on_a_terminal_despite_exported_columns(monkeypatch
     monkeypatch.setattr(ui, "_stdout_is_tty", lambda: True)
     current = {"size": os.terminal_size((120, 40))}
     monkeypatch.setattr(os, "get_terminal_size", lambda *a: current["size"])
-    con = ui.make_console()
+    con = ui.make_console(legacy_windows=False)
     assert (con.size.width, con.size.height) == (120, 40)
     current["size"] = os.terminal_size((80, 24))  # moved to the laptop screen
     assert (con.size.width, con.size.height) == (80, 24)
     # not a terminal: COLUMNS still decides, as before
     monkeypatch.setattr(ui, "_stdout_is_tty", lambda: False)
-    assert ui.make_console().size.width == 120
+    assert ui.make_console(legacy_windows=False).size.width == 120
+
+
+def test_legacy_windows_console_counts_its_reserved_column():
+    """rich reports one column less on a legacy Windows console; the terminal
+    re-wraps at its real width, so a 51-cell row still fits in 51 columns."""
+    term = ReflowTerminal(101)
+    con = ui.make_console(file=term, width=101, height=40, force_terminal=True,
+                          force_interactive=True, color_system=None, legacy_windows=True)
+    render = termreflow.ReflowLiveRender(Text("x" * 51 + "\nshort"), reflows=True)
+    con.print(render)
+    con.size = (51, 40)  # rich now says 50; the window is 51 wide
+    assert render._rows() is None  # no row re-wrapped: rich's own count stands
